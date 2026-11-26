@@ -2,7 +2,10 @@ package dnssrv
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -614,10 +617,27 @@ func (v *validator) check(ctx context.Context, qname string, qtype uint16, m *dn
 	return vSecure, ""
 }
 
-// checkCached is check with a short memory per question (the forwarded
-// answer comes from the cache, so it is the same until it expires).
+// memoKey identifies a question and the answer given for it. The verdict
+// is bound to the content: another answer to the same question (the cache
+// entry expired or was evicted, a forged reply) is validated again.
+func memoKey(q dns.Question, m *dns.Msg) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%d\n", m.Rcode)
+	for _, sec := range [][]dns.RR{m.Answer, m.Ns} {
+		for _, rr := range sec {
+			c := dns.Copy(rr)
+			c.Header().Ttl = 0 // TTLs decrease while the answer is cached
+			io.WriteString(h, c.String()+"\n")
+		}
+		h.Write([]byte{0})
+	}
+	return strings.ToLower(q.Name) + "/" + strconv.Itoa(int(q.Qtype)) + "/" + hex.EncodeToString(h.Sum(nil))
+}
+
+// checkCached is check with a short memory per question and answer (the
+// forwarded answer usually comes from the cache, so it is checked once).
 func (v *validator) checkCached(ctx context.Context, q dns.Question, m *dns.Msg) (vstatus, string) {
-	key := strings.ToLower(q.Name) + "/" + strconv.Itoa(int(q.Qtype))
+	key := memoKey(q, m)
 	now := v.now()
 	v.mu.Lock()
 	e, ok := v.memo[key]
