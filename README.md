@@ -294,6 +294,10 @@ Deux nœuds Leazone (un conteneur par hôte) et un **témoin** sur un 3e hôte (
 
 Ports à ouvrir entre les hôtes : **TCP 7443** (nœuds ↔ nœuds, nœuds → témoin).
 
+Les deux hôtes doivent avoir **les mêmes noms d'interfaces** pour les VLAN servis en direct (ex : `eno1.20` des deux
+côtés) : la configuration, répliquée, désigne les interfaces par leur nom. La page Cluster signale un VLAN présent sur
+un seul nœud.
+
 ### Ce qui se passe en cas de panne
 
 | Événement | Réaction |

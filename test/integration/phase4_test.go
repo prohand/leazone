@@ -133,8 +133,10 @@ func (e *haEnv) startNode(name, image, preferred string) {
 	if name == "lzha2" {
 		other = netB
 	}
-	run(e.t, "docker", "network", "connect", "--ip", mgmtIP[name], other, name)
+	// Start on the link network only, then connect the management network:
+	// eth0 is always the link (Docker does not keep a stable order otherwise).
 	run(e.t, "docker", "start", name)
+	run(e.t, "docker", "network", "connect", "--ip", mgmtIP[name], other, name)
 }
 
 func (e *haEnv) client(name string) *api {
@@ -217,13 +219,19 @@ var leaseRe = regexp.MustCompile(`lease of (\d+\.\d+\.\d+\.\d+) obtained`)
 func (e *haEnv) dhcpClient(i int) string {
 	e.t.Helper()
 	mac := fmt.Sprintf("02:42:00:00:aa:%02x", i)
-	out, _ := exec.Command("docker", "run", "--rm", "--network", netLink, "--mac-address", mac, busybox(),
-		"udhcpc", "-i", "eth0", "-f", "-q", "-n", "-t", "6", "-T", "2", "-s", "/bin/true").CombinedOutput()
-	m := leaseRe.FindStringSubmatch(string(out))
-	if m == nil {
-		e.t.Fatalf("client %d: no lease:\n%s", i, out)
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = exec.Command("docker", "run", "--rm", "--network", netLink, "--mac-address", mac, busybox(),
+			"udhcpc", "-i", "eth0", "-f", "-q", "-n", "-t", "6", "-T", "2", "-s", "/bin/true").CombinedOutput()
+		if m := leaseRe.FindStringSubmatch(string(out)); m != nil {
+			return m[1]
+		}
+		e.t.Logf("client %d attempt %d: %v\n%s", i, attempt+1, err, out)
+		time.Sleep(time.Second)
 	}
-	return m[1]
+	e.t.Fatalf("client %d: no lease", i)
+	return ""
 }
 
 func busybox() string {
