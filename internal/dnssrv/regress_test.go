@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -230,6 +232,47 @@ func TestDelegationForwardedWhenRecursing(t *testing.T) {
 				t.Fatalf("referral: %v", m)
 			}
 		})
+	}
+}
+
+func TestReloadKeepsUpstreamWithoutRace(t *testing.T) {
+	// Reloading an unchanged forwarder (only its position differs) keeps its
+	// live state while queries use it (run with -race).
+	up := &upstreamHandler{ip: "10.0.0.1"}
+	port := startUDPTCP(t, up)
+	e := New(quiet, 0)
+	st := dnsconf.DefaultSettings()
+	st.CacheSize = 0
+	f := fwd("f1", "", "udp", "127.0.0.1", port)
+	e.Load(nil, nil, []*dnsconf.Forwarder{f}, st)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			ask(t, e, "q"+strconv.Itoa(i)+".example", dns.TypeA, "127.0.0.1")
+			_ = e.Health()
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		c := *f
+		c.Position = i
+		e.Load(nil, nil, []*dnsconf.Forwarder{&c}, st)
+	}
+	close(stop)
+	wg.Wait()
+	after := e.st.Load().fwd.all["f1"]
+	if after.cfg.Position != 49 {
+		t.Fatalf("configuration not updated: %+v", after.cfg)
+	}
+	if h := e.Health()["f1"]; h.LastCheckAt == nil {
+		t.Fatalf("health lost on reload: %+v", h)
 	}
 }
 
