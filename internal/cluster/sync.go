@@ -163,13 +163,18 @@ func (n *Node) hChanges(r *http.Request) (any, int) {
 		return map[string]string{"error": "not primary"}, http.StatusConflict
 	}
 	p := n.peerByID(from)
-	if p != nil {
-		p.acked, p.ackedAt = after, time.Now()
-	}
 	frozen := p != nil && !p.compat.config
 	n.mu.Unlock()
 	epoch, seq := n.position(ctx)
 	resp := proto.ChangesResponse{Epoch: epoch, Seq: seq, Frozen: frozen, DEK: dekFingerprint(n.d.Box.Key())}
+	// The follower's position counts as acknowledged (failback, AfterWrite)
+	// only when its history is ours up to that point: a divergent follower
+	// with a high seq has not got our changes.
+	if p != nil && after <= seq && n.d.Repl.Has(ctx, after, fepoch) {
+		n.mu.Lock()
+		p.acked, p.ackedAt = after, time.Now()
+		n.mu.Unlock()
+	}
 	if frozen {
 		return resp, http.StatusOK // mixed versions: no config sync until aligned
 	}
@@ -265,7 +270,7 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 		if !n.stillFollowing(p.addr) {
 			return nil
 		}
-		return n.snapshotLocked(ctx, p, epoch, 0, "resynchronisation demandée")
+		return n.snapshotLocked(ctx, p, false, "resynchronisation demandée")
 	}
 	var resp proto.ChangesResponse
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -294,11 +299,8 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 		resp.Snapshot, resp.Reason, resp.Changes = true, "clé de données changée (restauration)", nil
 	}
 	if resp.Snapshot {
-		var from uint64
-		if len(resp.Changes) == 1 {
-			from = resp.Changes[0].Seq
-		}
-		return n.snapshotLocked(ctx, p, epoch, from, resp.Reason)
+		// One marker change: our history diverged from the primary's.
+		return n.snapshotLocked(ctx, p, len(resp.Changes) == 1, resp.Reason)
 	}
 	if len(resp.Changes) == 0 {
 		n.markApplied()
@@ -307,7 +309,7 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 	if err := n.d.Repl.Apply(ctx, resp.Changes); err != nil {
 		// Something does not fit (manual edit, bug): start over cleanly.
 		n.log().Error("applying changes failed, taking a snapshot", "err", err)
-		return n.snapshotLocked(ctx, p, epoch, 0, "erreur d'application")
+		return n.snapshotLocked(ctx, p, false, "erreur d'application")
 	}
 	n.markApplied()
 	n.d.ConfigApplied(ctx)
@@ -331,15 +333,9 @@ func (n *Node) markApplied() {
 }
 
 // snapshotLocked replaces the config with the primary's (n.syncMu held).
-func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, myEpoch, divergeFrom uint64, reason string) error {
-	if divergeFrom > 0 && myEpoch > 0 {
-		if k, err := n.d.Repl.SaveConflicts(ctx, myEpoch, divergeFrom); err == nil && k > 0 {
-			n.log().Warn("changes made here were not replicated before the failover: kept as conflicts", "count", k)
-			if n.d.Audit != nil {
-				n.d.Audit(ctx, "cluster.conflicts", n.d.Config.NodeName, map[string]any{"count": k})
-			}
-		}
-	}
+// When our history diverged, the local changes the primary does not have
+// are kept as conflicts first.
+func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, diverged bool, reason string) error {
 	var snap proto.Snapshot
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -358,6 +354,20 @@ func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, myEpoch, diverg
 	if !bytes.Equal(dek, n.d.Box.Key()) {
 		if err := n.d.SetDEK(ctx, dek); err != nil {
 			return err
+		}
+	}
+	if diverged {
+		// After the download (a failed one is retried) and before the
+		// journal is replaced; SaveConflicts is idempotent.
+		k, err := n.d.Repl.SaveConflicts(ctx, snap.Epochs, snap.Seq)
+		if err != nil {
+			return fmt.Errorf("conflits : %w", err)
+		}
+		if k > 0 {
+			n.log().Warn("changes made here were not replicated before the failover: kept as conflicts", "count", k)
+			if n.d.Audit != nil {
+				n.d.Audit(ctx, "cluster.conflicts", n.d.Config.NodeName, map[string]any{"count": k})
+			}
 		}
 	}
 	if err := n.d.Repl.ApplySnapshot(ctx, &snap); err != nil {

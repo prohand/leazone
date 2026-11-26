@@ -430,7 +430,7 @@ func (n *Node) decide(ctx context.Context) {
 }
 
 func (n *Node) asFollower(ctx context.Context) {
-	_, mySeq := n.position(ctx)
+	lastEpoch, mySeq := n.position(ctx)
 	n.mu.Lock()
 	if n.handingOff {
 		n.mu.Unlock()
@@ -489,7 +489,7 @@ func (n *Node) asFollower(ctx context.Context) {
 	switch n.witnessM {
 	case "container":
 		resp, err := n.witnessCall(ctx, "acquire", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName,
-			Epoch: myEpoch, Seq: mySeq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Epoch: myEpoch, Seq: mySeq, LastEpoch: &lastEpoch, LeaseMs: int64(n.Settings().LeaseMs)})
 		if err != nil || !resp.Granted {
 			reason := "témoin injoignable"
 			if err == nil {
@@ -604,8 +604,7 @@ func (n *Node) becomeSecondary(ctx context.Context, reason string) {
 }
 
 func (n *Node) asPrimary(ctx context.Context) {
-	epoch, seq := n.position(ctx)
-	_ = epoch
+	lastEpoch, seq := n.position(ctx)
 	n.mu.Lock()
 	myEpoch := n.epoch
 	// A peer elected with a newer epoch wins (e.g. after a split).
@@ -625,7 +624,7 @@ func (n *Node) asPrimary(ctx context.Context) {
 	case "container":
 		sent := time.Now()
 		resp, err := n.witnessCall(ctx, "renew", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName,
-			Epoch: myEpoch, Seq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Epoch: myEpoch, Seq: seq, LastEpoch: &lastEpoch, LeaseMs: int64(n.Settings().LeaseMs)})
 		n.mu.Lock()
 		switch {
 		case err == nil && resp.Granted:
@@ -727,7 +726,7 @@ func (n *Node) Failback(ctx context.Context) error {
 		n.mu.Unlock()
 	}()
 	// Writes are blocked: wait for the target to have everything.
-	_, seq := n.position(ctx)
+	lastEpoch, seq := n.position(ctx)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		n.mu.Lock()
@@ -744,7 +743,7 @@ func (n *Node) Failback(ctx context.Context) error {
 	newEpoch := epoch + 1
 	if n.witnessM == "container" {
 		resp, err := n.witnessCall(ctx, "transfer", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName, Epoch: epoch,
-			Seq: seq, To: target.status.NodeID, ToName: target.status.Name, ToSeq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Seq: seq, LastEpoch: &lastEpoch, To: target.status.NodeID, ToName: target.status.Name, ToSeq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
 		if err != nil || !resp.Granted {
 			if err == nil {
 				err = errors.New(resp.Reason)
@@ -777,10 +776,10 @@ func (n *Node) Promote(ctx context.Context) error {
 		epoch = max(epoch, p.status.Epoch)
 	}
 	n.mu.Unlock()
-	_, seq := n.position(ctx)
+	lastEpoch, seq := n.position(ctx)
 	if n.witnessM == "container" {
 		resp, err := n.witnessCall(ctx, "acquire", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName,
-			Epoch: epoch, Seq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Epoch: epoch, Seq: seq, LastEpoch: &lastEpoch, LeaseMs: int64(n.Settings().LeaseMs)})
 		if err != nil {
 			return fmt.Errorf("témoin injoignable : %w", err)
 		}

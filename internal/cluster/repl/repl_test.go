@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/prohand/leazone/internal/cluster/proto"
 	"github.com/prohand/leazone/internal/store"
 )
 
@@ -149,9 +150,13 @@ func TestSnapshotAndDivergence(t *testing.T) {
 		t.Fatal("divergent entry reported as known")
 	}
 	ep, _ := b.Epochs(ctx)
-	start := ep[0].StartSeq // first seq of epoch 2 on B
-	if n, err := a.SaveConflicts(ctx, ea, start); err != nil || n != 1 {
+	_, sbLast, _ := b.Position(ctx)
+	if n, err := a.SaveConflicts(ctx, ep, sbLast); err != nil || n != 1 {
 		t.Fatalf("conflicts: %d %v", n, err)
+	}
+	// A retry (snapshot download failed) does not duplicate them.
+	if n, err := a.SaveConflicts(ctx, ep, sbLast); err != nil || n != 0 {
+		t.Fatalf("conflicts saved twice: %d %v", n, err)
 	}
 	snap2, _ := b.Snapshot(ctx)
 	a.SetRecording(ctx, false, 0)
@@ -219,5 +224,25 @@ func TestMigrateDownWithTriggers(t *testing.T) {
 	}
 	if _, err := Open(ctx, db); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInHistory(t *testing.T) {
+	// Primary: single-node history (epoch 0) up to 10, epoch 3 from 11,
+	// epoch 5 from 101, last seq 120.
+	eps := []proto.EpochStart{{Epoch: 5, StartSeq: 101}, {Epoch: 3, StartSeq: 11}}
+	cases := []struct {
+		seq, epoch uint64
+		in         bool
+	}{
+		{5, 0, true}, {5, 2, false}, {11, 3, true}, {100, 3, true},
+		{96, 4, false},  // written alone in epoch 4, before the primary's next epoch
+		{101, 3, false}, // past the point where the primary moved to epoch 5
+		{120, 5, true}, {121, 5, false},
+	}
+	for _, c := range cases {
+		if got := InHistory(eps, 120, c.seq, c.epoch); got != c.in {
+			t.Errorf("seq %d epoch %d: %v, want %v", c.seq, c.epoch, got, c.in)
+		}
 	}
 }

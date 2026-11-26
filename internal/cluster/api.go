@@ -63,7 +63,7 @@ func (n *Node) Writable() error {
 // AfterWrite waits until the change just written is safe: applied by the
 // secondary (2 s max), or else recorded as committed by the witness.
 func (n *Node) AfterWrite(ctx context.Context) {
-	_, seq := n.position(ctx)
+	lastEpoch, seq := n.position(ctx)
 	n.mu.Lock()
 	var follower *peer
 	for _, p := range n.peers {
@@ -91,7 +91,7 @@ func (n *Node) AfterWrite(ctx context.Context) {
 	}
 	if n.witnessM == "container" {
 		resp, err := n.witnessCall(ctx, "renew", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName, Epoch: epoch,
-			Seq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Seq: seq, LastEpoch: &lastEpoch, LeaseMs: int64(n.Settings().LeaseMs)})
 		if err == nil && resp.Granted {
 			return
 		}
