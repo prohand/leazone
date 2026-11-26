@@ -9,7 +9,7 @@ export function SelfSignedBanner() {
   const { data } = useQuery(systemInfoQuery)
   if (!data?.selfSignedCertificate) return null
   return (
-    <div role="alert" className="flex items-center justify-center gap-2 bg-destructive px-4 py-2 text-center text-sm font-medium text-white">
+    <div role="alert" className="flex items-center justify-center gap-2 bg-red-600 px-4 py-2 text-center text-sm font-medium text-white dark:bg-red-700">
       <ShieldAlert className="size-4 shrink-0" />
       Certificat auto-signé : à remplacer avant la mise en production. Les passkeys ne fonctionneront pas.
     </div>

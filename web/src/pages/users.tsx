@@ -38,7 +38,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useCurrentUser } from "@/hooks/use-session"
-import { fieldError } from "@/lib/errors"
+import { fieldError, formError } from "@/lib/errors"
 import { formatDateTime, formatRelative } from "@/lib/format"
 import { roleLabel } from "@/lib/permissions"
 
@@ -340,6 +340,7 @@ function CreateUserDialog({
   const create = useMutation({
     mutationFn: () =>
       api.post("/users", { body: { username: username.trim(), role, ...(password ? { password } : {}) } }),
+    meta: { silent: true },
     onSuccess: (r) => onCreated(r.item?.username ?? username, r.temporaryPassword),
   })
 
@@ -407,6 +408,9 @@ function CreateUserDialog({
               <p className="text-sm text-destructive">{fieldError(create.error, "password")}</p>
             )}
           </div>
+          {formError(create.error, ["username", "password"]) && (
+            <p className="text-sm text-destructive">{formError(create.error, ["username", "password"])}</p>
+          )}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Annuler

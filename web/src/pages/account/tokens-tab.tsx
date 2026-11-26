@@ -24,7 +24,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { fieldError } from "@/lib/errors"
+import { fieldError, formError } from "@/lib/errors"
 import { formatDate, formatRelative } from "@/lib/format"
 
 const scopeLabel = { read: "Lecture", write: "Lecture et écriture" } as const
@@ -169,6 +169,7 @@ function CreateTokenDialog({
           expiresAt: expires ? new Date(`${expires}T23:59:59`).toISOString() : null,
         },
       }),
+    meta: { silent: true },
     onSuccess: (r) => onCreated(r.token ?? ""),
   })
 
@@ -217,6 +218,7 @@ function CreateTokenDialog({
             <Input id="token-expires" type="date" min={tomorrow} value={expires} onChange={(e) => setExpires(e.target.value)} />
             <p className="text-xs text-muted-foreground">Laissez vide pour un jeton sans expiration.</p>
           </div>
+          {formError(create.error, ["name"]) && <p className="text-sm text-destructive">{formError(create.error, ["name"])}</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
               Annuler

@@ -49,3 +49,13 @@ export function toastError(err: unknown, title?: string) {
   if (title) toast.error(title, { description: msg })
   else toast.error(msg)
 }
+
+/**
+ * Message for a form-level error line: undefined when the error is fully
+ * described by the given field errors (already shown next to the fields).
+ */
+export function formError(err: unknown, fields: string[]): string | undefined {
+  if (!err) return undefined
+  if (err instanceof ApiError && err.errors && Object.keys(err.errors).every((k) => fields.includes(k))) return undefined
+  return errorMessage(err)
+}

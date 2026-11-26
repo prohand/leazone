@@ -22,6 +22,8 @@ export const sessionQuery = queryOptions({
   queryKey: qk.session,
   queryFn: () => api.get("/auth/session"),
   staleTime: 60_000,
+  // Coming back to the tab after the idle timeout should land on the login page.
+  refetchOnWindowFocus: true,
   retry: 1,
 })
 

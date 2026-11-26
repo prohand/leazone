@@ -14,6 +14,19 @@ import { useCurrentUser, useLogout } from "@/hooks/use-session"
 import { visibleGroups } from "@/lib/nav"
 import { useTheme } from "@/lib/theme"
 
+// Predictable matching: every typed word must start a word of the item
+// (case and accent insensitive). Title matches rank above keyword matches.
+const norm = (s: string) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase()
+function paletteFilter(value: string, search: string, keywords?: string[]) {
+  const terms = norm(search).split(/\s+/).filter(Boolean)
+  if (terms.length === 0) return 1
+  const words = (text: string) => norm(text).split(/[\s'’.-]+/)
+  const title = words(value)
+  const all = title.concat(words((keywords ?? []).join(" ")))
+  if (!terms.every((t) => all.some((w) => w.startsWith(t)))) return 0
+  return terms.every((t) => title.some((w) => w.startsWith(t))) ? 1 : 0.5
+}
+
 type Ctx = { open: boolean; setOpen: (o: boolean) => void }
 const CommandPaletteContext = React.createContext<Ctx>({ open: false, setOpen: () => {} })
 export const useCommandPalette = () => React.useContext(CommandPaletteContext)
@@ -53,7 +66,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
   }
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen}>
+    <CommandDialog open={open} onOpenChange={setOpen} filter={paletteFilter}>
       <CommandInput placeholder="Chercher une page ou une action…" />
       <CommandList>
         <CommandEmpty>Aucun résultat.</CommandEmpty>
@@ -62,8 +75,8 @@ function CommandPalette({ open, setOpen }: Ctx) {
             {g.items.map((item) => (
               <CommandItem
                 key={item.path}
-                value={`${item.title} ${g.label}`}
-                keywords={item.keywords}
+                value={item.title}
+                keywords={[g.label, ...(item.keywords ?? [])]}
                 onSelect={() => run(() => navigate(item.path))}
               >
                 <item.icon /> {item.title}
