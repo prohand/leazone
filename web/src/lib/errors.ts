@@ -54,11 +54,12 @@ export function toastError(err: unknown, title?: string) {
  * Message for a form-level error line: undefined when the error is fully
  * described by the given field errors (already shown next to the fields).
  */
-export function formError(err: unknown, fields: string[]): string | undefined {
+export function formError(err: unknown, fields: string[] | ((key: string) => boolean)): string | undefined {
   if (!err) return undefined
   if (err instanceof ApiError && err.errors) {
     // Messages for fields the form does not show (e.g. "data.foo") go on the form-level line.
-    const unknown = Object.entries(err.errors).filter(([k]) => !fields.includes(k))
+    const shown = typeof fields === "function" ? fields : (k: string) => fields.includes(k)
+    const unknown = Object.entries(err.errors).filter(([k]) => !shown(k))
     if (unknown.length === 0) return undefined
     return unknown.map(([, v]) => v).join(" ")
   }

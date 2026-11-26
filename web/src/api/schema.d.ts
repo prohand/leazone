@@ -2362,7 +2362,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Test a saved forwarder */
+        /** Test a saved forwarder (any role) */
         post: {
             parameters: {
                 query?: never;
@@ -2381,6 +2381,619 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["ForwarderTest"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vlans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** VLAN overview (labels + VLANs detected on the host) with scope usage */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["VlanOverview"][];
+                            /** @description Scopes not linked to a VLAN */
+                            untaggedScopes?: components["schemas"]["ScopeUsage"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Give a name to a VLAN ID (config.write) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["VlanInput"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Vlan"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vlans/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Rename / change a VLAN label (config.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["VlanInput"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Vlan"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /** Delete a VLAN label (config.write). Refused while scopes use it. */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** DHCP server state */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DhcpStatus"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List scopes with usage */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Scope"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Create a scope (config.write). The reverse DNS zone of its network is created automatically. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ScopeInput"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Scope"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/scopes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** One scope */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Scope"];
+                    };
+                };
+            };
+        };
+        /** Replace a scope (config.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ScopeInput"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Scope"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /** Delete a scope, its reservations and leases (config.write, step-up required) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reservations, optionally of one scope */
+        get: {
+            parameters: {
+                query?: {
+                    scope?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Reservation"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Create a reservation (leases.write) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReservationInput"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Reservation"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/reservations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace a reservation (leases.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ReservationInput"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Reservation"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /** Delete a reservation (leases.write) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/leases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Leases (offered, bound, declined; expired/released of the last 24 h with all=true) */
+        get: {
+            parameters: {
+                query?: {
+                    scope?: string;
+                    /** @description VLAN ID */
+                    vlan?: number;
+                    state?: "offered" | "bound" | "released" | "expired" | "declined";
+                    /** @description Search IP, MAC, hostname, circuit-id */
+                    q?: string;
+                    /** @description Include released/expired */
+                    all?: boolean;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Lease"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/leases/{scope}/{ip}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope: string;
+                ip: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Release a lease now (leases.write). The client gets a NAK at its next renewal. */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    scope: string;
+                    ip: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Released */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dhcp/leases/{scope}/{ip}/reserve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope: string;
+                ip: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Turn a lease into a reservation (leases.write) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    scope: string;
+                    ip: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Reservation"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/technitium": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import zones, forwarders and DHCP scopes from a Technitium DNS Server (admin, step-up required)
+         * @description Reads the old server through its HTTP API. Use dryRun=true first to see what would be imported.
+         *     Existing objects with the same name are never overwritten (action "skip").
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["TechnitiumImportInput"];
+                };
+            };
+            responses: {
+                /** @description Report */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ImportReport"];
                     };
                 };
             };
@@ -2763,6 +3376,193 @@ export interface components {
             answers?: string[];
             /** @description French message, e.g. certificat invalide */
             error?: string;
+        };
+        Vlan: {
+            id?: string;
+            vlanId?: number;
+            /** @example Invités */
+            name?: string;
+        };
+        VlanInput: {
+            vlanId: number;
+            name: string;
+        };
+        ScopeUsage: {
+            id?: string;
+            name?: string;
+            network?: string;
+            /** @enum {string} */
+            mode?: "direct" | "relay" | "both" | "none";
+            enabled?: boolean;
+            /** @description Addresses in the range minus exclusions */
+            size?: number;
+            /** @description Bound + offered + declined + reserved */
+            used?: number;
+            activeLeases?: number;
+            percent?: number;
+            /** @description percent >= alertThreshold */
+            alert?: boolean;
+            alertThreshold?: number;
+        };
+        VlanOverview: {
+            /** @description null when the VLAN is only detected on the host */
+            id?: string | null;
+            vlanId?: number;
+            /** @description Label, empty if none */
+            name?: string;
+            /** @description Host interfaces carrying this VLAN */
+            interfaces?: {
+                name?: string;
+                parent?: string;
+                /** @description CIDR */
+                addresses?: string[];
+                dhcpEnabled?: boolean;
+            }[];
+            scopes?: components["schemas"]["ScopeUsage"][];
+        };
+        DhcpStatus: {
+            listening?: boolean;
+            error?: string;
+            port?: number;
+            /** @description Interfaces with DHCP enabled */
+            interfaces?: string[];
+            /** @description false: ping before lease cannot work (NET_RAW missing) */
+            pingAvailable?: boolean;
+        };
+        DhcpOption: {
+            code: number;
+            /** @enum {string} */
+            type: "ip" | "ips" | "string" | "u8" | "u16" | "u32" | "bool" | "hex";
+            /** @description ips: comma separated; bool: true/false; hex: e.g. 01:02:0a */
+            value: string;
+        };
+        IpRange: {
+            start: string;
+            end: string;
+        };
+        ScopeInput: {
+            /** @example 20 - Invités */
+            name: string;
+            /** @description VLAN ID (1-4094); a label is created if missing */
+            vlanId?: number | null;
+            /** @default true */
+            enabled?: boolean;
+            /** @example 192.168.20.0/24 */
+            network: string;
+            /** @example 192.168.20.100 */
+            rangeStart: string;
+            /** @example 192.168.20.199 */
+            rangeEnd: string;
+            exclusions?: components["schemas"]["IpRange"][];
+            /** @description Seconds (default 86400) */
+            leaseTime?: number;
+            gateway?: string;
+            dnsServers?: string[];
+            /** @description Option 15 (domain name sent to clients) */
+            domain?: string;
+            ntpServers?: string[];
+            options?: components["schemas"]["DhcpOption"][];
+            /** @description Direct mode: host interface in this network (e.g. eno1.20) */
+            interface?: string | null;
+            /** @description Relay mode: accept requests relayed with a giaddr in this network */
+            relay?: boolean;
+            /** @description Extra relay addresses (giaddr) outside the network */
+            relayAgents?: string[];
+            /** @default true */
+            ddnsEnabled?: boolean;
+            /** @description Zone for automatic A records, e.g. invites.lan (created if missing) */
+            ddnsDomain?: string;
+            /** @default false */
+            pingCheck?: boolean;
+            /** @default 80 */
+            alertThreshold?: number;
+        };
+        Scope: components["schemas"]["ScopeInput"] & {
+            id?: string;
+            vlanName?: string;
+            /** @enum {string} */
+            mode?: "direct" | "relay" | "both" | "none";
+            usage?: components["schemas"]["ScopeUsage"];
+            reverseZones?: string[];
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        ReservationInput: {
+            scopeId: string;
+            /** @description aa:bb:cc:dd:ee:ff (mac or clientId required) */
+            mac?: string;
+            /** @description Option 61 in hex, e.g. 01:aa:bb:cc:dd:ee:ff */
+            clientId?: string;
+            ip: string;
+            hostname?: string;
+            description?: string;
+        };
+        Reservation: components["schemas"]["ReservationInput"] & {
+            id?: string;
+            scopeName?: string;
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        Lease: {
+            scopeId?: string;
+            scopeName?: string;
+            vlanId?: number | null;
+            ip?: string;
+            mac?: string;
+            clientId?: string;
+            hostname?: string;
+            /** @enum {string} */
+            state?: "offered" | "bound" | "released" | "expired" | "declined";
+            /** Format: date-time */
+            starts?: string;
+            /** Format: date-time */
+            ends?: string;
+            /** @description Option 82.1, printable or hex */
+            circuitId?: string;
+            /** @description Option 82.2, printable or hex */
+            remoteId?: string;
+            /** @description Relay address, empty in direct mode */
+            giaddr?: string;
+            reserved?: boolean;
+            /** @description FQDN registered in DNS */
+            dnsName?: string | null;
+        };
+        TechnitiumImportInput: {
+            /** @example http://10.0.0.5:5380 */
+            url: string;
+            /** @description API token (preferred) */
+            token?: string;
+            username?: string;
+            password?: string;
+            /** @default true */
+            tlsVerify?: boolean;
+            /** @default true */
+            dryRun?: boolean;
+            /** @default true */
+            zones?: boolean;
+            /** @default true */
+            forwarders?: boolean;
+            /** @default true */
+            dhcp?: boolean;
+        };
+        ImportItem: {
+            /** @enum {string} */
+            kind?: "zone" | "forwarder" | "scope" | "reservation";
+            name?: string;
+            /** @enum {string} */
+            action?: "create" | "skip" | "error";
+            detail?: string;
+        };
+        ImportReport: {
+            dryRun?: boolean;
+            /** @description Technitium version */
+            source?: string;
+            items?: components["schemas"]["ImportItem"][];
+            created?: number;
+            skipped?: number;
+            errors?: number;
         };
     };
     responses: {

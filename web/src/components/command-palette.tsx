@@ -1,10 +1,27 @@
 import * as React from "react"
 import { useNavigate } from "react-router"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import { Eraser, Forward, Globe, LogOut, Monitor, Moon, Plus, SearchCheck, SlidersHorizontal, Sun, UserRound } from "lucide-react"
+import {
+  BookmarkPlus,
+  Download,
+  Eraser,
+  Forward,
+  Globe,
+  LogOut,
+  Monitor,
+  Moon,
+  Network,
+  Plus,
+  SearchCheck,
+  SlidersHorizontal,
+  Sun,
+  Tag,
+  TextSearch,
+  UserRound,
+} from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/api/client"
-import { zonesQuery } from "@/api/queries"
+import { scopesQuery, zonesQuery } from "@/api/queries"
 import {
   CommandDialog,
   CommandEmpty,
@@ -69,6 +86,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
   const role = user?.role
   // Zones are listed for quick jumps; fetched only while the palette is open.
   const zones = useQuery({ ...zonesQuery, enabled: open, staleTime: 30_000 })
+  const scopes = useQuery({ ...scopesQuery, enabled: open, staleTime: 30_000, refetchInterval: false })
   const flush = useMutation({
     mutationFn: () => api.post("/dns/cache/flush", { body: {} }),
     onSuccess: (r) => toast.success(`Cache DNS vidé : ${r?.removed ?? 0} entrée(s) supprimée(s).`),
@@ -124,6 +142,59 @@ function CommandPalette({ open, setOpen }: Ctx) {
             ))}
           </CommandGroup>
         )}
+        {(scopes.data?.items ?? []).length > 0 && (
+          <CommandGroup heading="Étendues DHCP">
+            {(scopes.data?.items ?? []).map((sc) => (
+              <CommandItem
+                key={sc.id}
+                value={`Étendue ${sc.name}`}
+                keywords={["dhcp", "baux", "scope", sc.network ?? "", sc.vlanId != null ? `vlan ${sc.vlanId}` : ""]}
+                onSelect={() => run(() => navigate(`/dhcp/leases?scope=${encodeURIComponent(sc.id ?? "")}`))}
+              >
+                <Network /> {sc.name}
+                <span className="ml-auto font-mono text-xs text-muted-foreground">{sc.network}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+        <CommandSeparator />
+        <CommandGroup heading="DHCP">
+          <CommandItem
+            value="Rechercher un bail"
+            keywords={["lease", "client", "IP", "MAC", "trouver", "appareil"]}
+            onSelect={() => run(() => navigate("/dhcp/leases?search=1"), true)}
+          >
+            <TextSearch /> Rechercher un bail
+          </CommandItem>
+          {can(role, "config.write") && (
+            <CommandItem value="Nouvelle étendue" keywords={["créer", "ajouter", "scope", "plage", "dhcp"]} onSelect={() => run(() => navigate("/dhcp/scopes?new=1"), true)}>
+              <Plus /> Nouvelle étendue
+            </CommandItem>
+          )}
+          {can(role, "leases.write") && (
+            <CommandItem
+              value="Nouvelle réservation"
+              keywords={["créer", "ajouter", "IP fixe", "MAC", "dhcp"]}
+              onSelect={() => run(() => navigate("/dhcp/reservations?new=1"), true)}
+            >
+              <BookmarkPlus /> Nouvelle réservation
+            </CommandItem>
+          )}
+          {can(role, "config.write") && (
+            <CommandItem value="Nommer un VLAN" keywords={["vlan", "nom", "étiquette", "label"]} onSelect={() => run(() => navigate("/vlans?new=1"), true)}>
+              <Tag /> Nommer un VLAN
+            </CommandItem>
+          )}
+          {can(role, "admin") && (
+            <CommandItem
+              value="Importer depuis Technitium"
+              keywords={["import", "migration", "technitium", "zones", "redirecteurs"]}
+              onSelect={() => run(() => navigate("/settings?tab=import"))}
+            >
+              <Download /> Importer depuis Technitium
+            </CommandItem>
+          )}
+        </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="DNS">
           <CommandItem

@@ -7,12 +7,13 @@ import type { Role } from "@/api/types"
 export type Action =
   | "read"
   | "records.write" // DNS records, leases, reservations
+  | "leases.write" // same right as records.write: release leases, reservations
   | "config.write" // zones, forwarders, scopes, interfaces, modules
   | "admin" // users, HA, settings, backup, DNSSEC keys
 
 const matrix: Record<Role, ReadonlySet<Action>> = {
-  admin: new Set<Action>(["read", "records.write", "config.write", "admin"]),
-  operator: new Set<Action>(["read", "records.write"]),
+  admin: new Set<Action>(["read", "records.write", "leases.write", "config.write", "admin"]),
+  operator: new Set<Action>(["read", "records.write", "leases.write"]),
   readonly: new Set<Action>(["read"]),
 }
 

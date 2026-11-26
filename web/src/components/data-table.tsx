@@ -54,6 +54,9 @@ export function DataTable<T>({
   getRowId,
   onRowClick,
   rowClassName,
+  search,
+  onSearchChange,
+  searchAutoFocus,
 }: {
   columns: ColumnDef<T, unknown>[]
   data: T[] | undefined
@@ -66,16 +69,22 @@ export function DataTable<T>({
   /** Makes rows clickable (and keyboard focusable). */
   onRowClick?: (row: T) => void
   rowClassName?: (row: T) => string | undefined
+  /** Controlled search text (e.g. kept in the URL); uncontrolled when omitted. */
+  search?: string
+  onSearchChange?: (value: string) => void
+  searchAutoFocus?: boolean
 }) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting)
-  const [globalFilter, setGlobalFilter] = React.useState("")
+  const [ownFilter, setOwnFilter] = React.useState("")
+  const globalFilter = search ?? ownFilter
+  const setGlobalFilter = (v: string) => (onSearchChange ? onSearchChange(v) : setOwnFilter(v))
 
   const table = useReactTable<T>({
     data: data ?? [],
     columns,
     state: { sorting, globalFilter },
     onSortingChange: setSorting,
-    onGlobalFilterChange: setGlobalFilter,
+    onGlobalFilterChange: (u) => setGlobalFilter(String((typeof u === "function" ? u(globalFilter) : u) ?? "")),
     globalFilterFn: containsFilter as FilterFn<T>,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -95,6 +104,7 @@ export function DataTable<T>({
             value={globalFilter}
             onChange={(e) => setGlobalFilter(e.target.value)}
             placeholder={searchPlaceholder}
+            autoFocus={searchAutoFocus}
             className="pl-8"
             aria-label="Rechercher"
           />

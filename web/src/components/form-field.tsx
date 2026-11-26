@@ -23,7 +23,11 @@ export function Field({
       <Label htmlFor={htmlFor}>{label}</Label>
       {children}
       {help && <p className="text-xs text-muted-foreground">{help}</p>}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <p data-slot="field-error" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
     </div>
   )
 }

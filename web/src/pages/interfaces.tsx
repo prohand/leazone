@@ -6,6 +6,7 @@ import { api } from "@/api/client"
 import { interfacesQuery, qk } from "@/api/queries"
 import type { DnsListener, InterfaceType, NetInterface } from "@/api/types"
 import { DataTable, SortHeader } from "@/components/data-table"
+import { DhcpStatusBanner } from "@/components/dhcp"
 import { PageHeader } from "@/components/page-header"
 import { StatusDot } from "@/components/status-dot"
 import { Badge } from "@/components/ui/badge"
@@ -86,8 +87,30 @@ export default function InterfacesPage() {
     },
   })
 
+  const toggleDhcp = useMutation({
+    mutationFn: (v: { name: string; enabled: boolean }) =>
+      api.patch("/interfaces/{name}", { params: { name: v.name }, body: { dhcpEnabled: v.enabled } }),
+    onSuccess: (iface, v) => {
+      qc.setQueryData(qk.interfaces, (old: { items?: NetInterface[] } | undefined) =>
+        old ? { ...old, items: (old.items ?? []).map((i) => (i.name === v.name ? iface : i)) } : old,
+      )
+      void qc.invalidateQueries({ queryKey: qk.interfaces })
+      void qc.invalidateQueries({ queryKey: qk.dhcpStatus })
+      void qc.invalidateQueries({ queryKey: qk.vlans })
+      if (!v.enabled) return void toast.success(`DHCP désactivé sur ${v.name}.`)
+      const hasV4 = (iface.addresses ?? []).some((a) => a.family !== "ipv6")
+      if (!hasV4)
+        toast.warning(`DHCP activé sur ${v.name}, sans adresse IPv4`, {
+          description: "Leazone ne peut répondre en direct que sur une interface qui a une IP dans le réseau de l'étendue.",
+        })
+      else toast.success(`DHCP activé sur ${v.name}.`, { description: "Les étendues en mode direct sur cette interface répondent aux clients." })
+    },
+  })
+
   const pendingName = toggleDns.isPending ? toggleDns.variables?.name : undefined
   const mutate = toggleDns.mutate
+  const pendingDhcp = toggleDhcp.isPending ? toggleDhcp.variables?.name : undefined
+  const mutateDhcp = toggleDhcp.mutate
 
   const columns = React.useMemo<ColumnDef<NetInterface, unknown>[]>(
     () => [
@@ -181,14 +204,21 @@ export default function InterfacesPage() {
       {
         id: "dhcp",
         accessorFn: (i) => (i.dhcpEnabled ? 1 : 0),
-        header: "DHCP",
-        enableSorting: false,
+        header: ({ column }) => <SortHeader column={column} title="DHCP" />,
         enableGlobalFilter: false,
-        cell: ({ row }) => (
-          <WithTooltip text="Disponible en phase 3">
-            <Switch checked={!!row.original.dhcpEnabled} disabled aria-label={`DHCP sur ${row.original.name}`} />
-          </WithTooltip>
-        ),
+        cell: ({ row }) => {
+          const i = row.original
+          return (
+            <WithTooltip text={canEdit ? undefined : "Réservé aux administrateurs"}>
+              <Switch
+                checked={!!i.dhcpEnabled}
+                disabled={!canEdit || pendingDhcp === i.name || i.type === "loopback"}
+                onCheckedChange={(v) => i.name && mutateDhcp({ name: i.name, enabled: v })}
+                aria-label={`DHCP sur ${i.name}`}
+              />
+            </WithTooltip>
+          )
+        },
       },
       {
         id: "listeners",
@@ -212,7 +242,7 @@ export default function InterfacesPage() {
         },
       },
     ],
-    [canEdit, pendingName, mutate],
+    [canEdit, pendingName, mutate, pendingDhcp, mutateDhcp],
   )
 
   const all = list.data?.items
@@ -228,6 +258,7 @@ export default function InterfacesPage() {
         title="Interfaces"
         description="Les VLAN se créent sur l'hôte (netplan ou systemd-networkd) ; Leazone ne fait que les détecter, en quelques secondes."
       />
+      <DhcpStatusBanner />
       {list.isError && <p className="mb-3 text-sm text-destructive">{errorMessage(list.error)}</p>}
       <DataTable
         columns={columns}

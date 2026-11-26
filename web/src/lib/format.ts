@@ -1,6 +1,7 @@
 const dateTime = new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short" })
 const dateOnly = new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium" })
 const rtf = new Intl.RelativeTimeFormat("fr-FR", { numeric: "auto" })
+const rtfShort = new Intl.RelativeTimeFormat("fr-FR", { numeric: "always", style: "short" })
 
 export function formatDateTime(value?: string | null): string {
   if (!value) return "—"
@@ -53,4 +54,17 @@ export function describeUserAgent(ua?: string): string {
             ? "Linux"
             : ""
   return os ? `${browser} · ${os}` : browser
+}
+
+/** Compact relative time: "dans 3 h", "il y a 12 min", "dans 2 j". */
+export function formatRelativeShort(value?: string | null): string {
+  if (!value) return "—"
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return "—"
+  const diff = (d.getTime() - Date.now()) / 1000
+  const abs = Math.abs(diff)
+  if (abs < 60) return diff >= 0 ? "dans moins d'1 min" : "à l'instant"
+  if (abs < 3600) return rtfShort.format(Math.round(diff / 60), "minute")
+  if (abs < 86400) return rtfShort.format(Math.round(diff / 3600), "hour")
+  return rtfShort.format(Math.round(diff / 86400), "day")
 }

@@ -24,6 +24,20 @@ export const qk = {
   zone: (id: string) => ["dns", "zones", id] as const,
   records: (id: string) => ["dns", "zones", id, "records"] as const,
   forwarders: ["dns", "forwarders"] as const,
+  vlans: ["vlans"] as const,
+  dhcp: ["dhcp"] as const,
+  dhcpStatus: ["dhcp", "status"] as const,
+  scopes: ["dhcp", "scopes"] as const,
+  reservations: (scope?: string) => ["dhcp", "reservations", scope ?? ""] as const,
+  leasesAll: ["dhcp", "leases"] as const,
+  leases: (f: LeaseFilters) => ["dhcp", "leases", f] as const,
+}
+
+export type LeaseFilters = {
+  scope?: string
+  vlan?: number
+  state?: "offered" | "bound" | "released" | "expired" | "declined"
+  all?: boolean
 }
 
 export const sessionQuery = queryOptions({
@@ -90,3 +104,41 @@ export const forwardersQuery = queryOptions({
   // Health changes on its own.
   refetchInterval: 15_000,
 })
+
+// ---- Phase 3: DHCP and VLANs ----
+
+export const vlansQuery = queryOptions({
+  queryKey: qk.vlans,
+  queryFn: () => api.get("/vlans"),
+  refetchInterval: 10_000,
+})
+
+export const dhcpStatusQuery = queryOptions({
+  queryKey: qk.dhcpStatus,
+  queryFn: () => api.get("/dhcp/status"),
+  refetchInterval: 15_000,
+})
+
+export const scopesQuery = queryOptions({
+  queryKey: qk.scopes,
+  queryFn: () => api.get("/dhcp/scopes"),
+  // Usage moves with the leases.
+  refetchInterval: 10_000,
+})
+
+export const reservationsQuery = (scope?: string) =>
+  queryOptions({
+    queryKey: qk.reservations(scope),
+    queryFn: () => api.get("/dhcp/reservations", { query: scope ? { scope } : undefined }),
+  })
+
+export const leasesQuery = (f: LeaseFilters) =>
+  queryOptions({
+    queryKey: qk.leases(f),
+    queryFn: () =>
+      api.get("/dhcp/leases", {
+        query: { scope: f.scope, vlan: f.vlan, state: f.state, all: f.all ? true : undefined },
+      }),
+    // "Real time" view: clients come and go.
+    refetchInterval: 5_000,
+  })

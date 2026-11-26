@@ -18,6 +18,10 @@ const InterfacesPage = React.lazy(() => import("@/pages/interfaces"))
 const ZonesPage = React.lazy(() => import("@/pages/dns/zones"))
 const ZoneDetailPage = React.lazy(() => import("@/pages/dns/zone-detail"))
 const ForwardersPage = React.lazy(() => import("@/pages/dns/forwarders"))
+const VlansPage = React.lazy(() => import("@/pages/vlans"))
+const ScopesPage = React.lazy(() => import("@/pages/dhcp/scopes"))
+const LeasesPage = React.lazy(() => import("@/pages/dhcp/leases"))
+const ReservationsPage = React.lazy(() => import("@/pages/dhcp/reservations"))
 const ComingSoonPage = React.lazy(() => import("@/pages/coming-soon"))
 const NotFoundPage = React.lazy(() => import("@/pages/not-found"))
 
@@ -47,15 +51,15 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           { path: "/interfaces", element: <InterfacesPage /> },
-          soon("/vlans"),
+          { path: "/vlans", element: <VlansPage /> },
           { path: "/dns/zones", element: <ZonesPage /> },
           { path: "/dns/zones/:id", element: <ZoneDetailPage /> },
           { path: "/dns/forwarders", element: <ForwardersPage /> },
           soon("/blocking"),
           soon("/dnssec"),
-          soon("/dhcp/scopes"),
-          soon("/dhcp/leases"),
-          soon("/dhcp/reservations"),
+          { path: "/dhcp/scopes", element: <ScopesPage /> },
+          { path: "/dhcp/leases", element: <LeasesPage /> },
+          { path: "/dhcp/reservations", element: <ReservationsPage /> },
           soon("/cluster"),
           { path: "/logs", element: <LogsPage /> },
           { path: "/account", element: <AccountPage /> },
