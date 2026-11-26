@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -56,6 +57,59 @@ func (s *Service) GuardCheck(ctx context.Context, keys ...string) error {
 		return &RateLimitError{RetryAfter: worst}
 	}
 	return nil
+}
+
+// GuardEnter is GuardCheck for an attempt that is about to be verified. The
+// check and the reservation of the attempt are atomic: concurrent attempts
+// count as already failed until they end, so a parallel burst cannot run
+// more attempts than the threshold allows. The caller records the outcome
+// (GuardFail / GuardReset) and then calls release.
+func (s *Service) GuardEnter(ctx context.Context, keys ...string) (release func(), err error) {
+	s.guardMu.Lock()
+	defer s.guardMu.Unlock()
+	now := s.Now()
+	var worst time.Duration
+	for _, k := range keys {
+		var failures int
+		var until, updated int64
+		err := s.db.QueryRowContext(ctx, `SELECT failures, locked_until, updated_at FROM login_guard WHERE key = ?`, k).
+			Scan(&failures, &until, &updated)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if now.Sub(time.UnixMilli(updated)) > guardMemory {
+			failures = 0
+		}
+		if d := time.UnixMilli(until).Sub(now); d > worst {
+			worst = d
+		}
+		// Attempts in flight may all still fail: refuse one that could go
+		// over the threshold until they end.
+		if n := s.inflight[k]; n > 0 && failures+n >= threshold(k) && worst < time.Second {
+			worst = time.Second
+		}
+	}
+	if worst > 0 {
+		return nil, &RateLimitError{RetryAfter: worst}
+	}
+	if s.inflight == nil {
+		s.inflight = map[string]int{}
+	}
+	for _, k := range keys {
+		s.inflight[k]++
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.guardMu.Lock()
+			defer s.guardMu.Unlock()
+			for _, k := range keys {
+				if s.inflight[k]--; s.inflight[k] <= 0 {
+					delete(s.inflight, k)
+				}
+			}
+		})
+	}, nil
 }
 
 // GuardFail records one failure for each key and locks keys over threshold.

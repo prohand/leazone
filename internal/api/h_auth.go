@@ -246,7 +246,7 @@ func (s *Server) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	id, opts, err := s.auth.BeginPasskeyLogin(r.Context(), rp, nil, auth.CeremonyLogin)
+	id, opts, err := s.auth.BeginPasskeyLogin(r.Context(), rp, nil, auth.CeremonyLogin, client(r).IP.String())
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -265,10 +265,12 @@ func (s *Server) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ipk := auth.IPKey(client(r).IP.String())
-	if err := s.auth.GuardCheck(r.Context(), ipk); err != nil {
+	release, err := s.auth.GuardEnter(r.Context(), ipk)
+	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
+	defer release()
 	u, err := s.auth.FinishPasskeyLogin(r.Context(), rp, nil, auth.CeremonyLogin, in.CeremonyID, in.Credential)
 	if err != nil {
 		_ = s.auth.GuardFail(r.Context(), ipk)
@@ -291,7 +293,7 @@ func (s *Server) passkeyBegin(w http.ResponseWriter, r *http.Request, kind strin
 	if !ok {
 		return
 	}
-	id, opts, err := s.auth.BeginPasskeyLogin(r.Context(), rp, current(r).User, kind)
+	id, opts, err := s.auth.BeginPasskeyLogin(r.Context(), rp, current(r).User, kind, client(r).IP.String())
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -339,13 +341,15 @@ func (s *Server) completeMFA(r *http.Request, p *principal, method string) error
 	if err := s.auth.UpgradeSession(r.Context(), p.Session); err != nil {
 		return err
 	}
+	_ = s.auth.GuardReset(r.Context(), auth.MFAKey(p.User.Username))
 	_ = s.auth.TouchLogin(r.Context(), p.User.ID)
 	s.record(r, "auth.login.success", p.User.Username, audit.Success, map[string]any{"method": "password+" + method})
 	return nil
 }
 
-// codeCheck runs a code verification with brute-force protection shared with
-// the password login (same per-IP and per-account counters).
+// codeCheck runs a code verification with brute-force protection: the per-IP
+// counter of the password login and a per-account counter of second factor
+// codes, which a good password does not clear.
 func (s *Server) codeCheck(w http.ResponseWriter, r *http.Request, action string, check func(code string) error) bool {
 	var in struct {
 		Code string `json:"code"`
@@ -355,11 +359,13 @@ func (s *Server) codeCheck(w http.ResponseWriter, r *http.Request, action string
 		return false
 	}
 	p := current(r)
-	keys := []string{auth.IPKey(client(r).IP.String()), auth.UserKey(p.User.Username)}
-	if err := s.auth.GuardCheck(r.Context(), keys...); err != nil {
+	keys := []string{auth.IPKey(client(r).IP.String()), auth.MFAKey(p.User.Username)}
+	release, err := s.auth.GuardEnter(r.Context(), keys...)
+	if err != nil {
 		s.fail(w, r, err)
 		return false
 	}
+	defer release()
 	if err := check(in.Code); err != nil {
 		if errors.Is(err, auth.ErrBadCode) {
 			_ = s.auth.GuardFail(r.Context(), keys...)

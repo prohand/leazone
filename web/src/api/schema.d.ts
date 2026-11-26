@@ -551,7 +551,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Change own password */
+        /** Change own password. Revokes the other sessions and all the API tokens of the account. */
         post: {
             parameters: {
                 query?: never;
@@ -630,7 +630,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start passkey registration */
+        /** Start passkey registration (step-up required once the account has a passkey or TOTP, except during the forced MFA setup) */
         post: {
             parameters: {
                 query?: never;
@@ -649,6 +649,7 @@ export interface paths {
                         "application/json": components["schemas"]["WebAuthnBegin"];
                     };
                 };
+                403: components["responses"]["Problem"];
             };
         };
         delete?: never;
@@ -830,7 +831,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate a new TOTP secret (not active until confirmed) */
+        /** Generate a new TOTP secret, not active until confirmed (step-up required once the account has a passkey or TOTP, except during the forced MFA setup) */
         post: {
             parameters: {
                 query?: never;
@@ -854,6 +855,7 @@ export interface paths {
                         };
                     };
                 };
+                403: components["responses"]["Problem"];
             };
         };
         delete?: never;
@@ -1069,7 +1071,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create an API token (secret returned once) */
+        /** Create an API token, secret returned once (step-up required when the account has a passkey or TOTP) */
         post: {
             parameters: {
                 query?: never;
@@ -1101,6 +1103,7 @@ export interface paths {
                         };
                     };
                 };
+                403: components["responses"]["Problem"];
             };
         };
         delete?: never;
@@ -1251,7 +1254,7 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        /** Update role or disable a user (admin) */
+        /** Update role or disable a user (admin, step-up required). A role change or a deactivation ends the user's sessions. */
         patch: {
             parameters: {
                 query?: never;
@@ -1294,7 +1297,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Remove all MFA methods of a user (admin, step-up required). User must set up MFA again. */
+        /** Remove all MFA methods of a user (admin, step-up required). Revokes the user's sessions and API tokens; the user must set up MFA again. */
         post: {
             parameters: {
                 query?: never;
@@ -1332,7 +1335,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set a temporary password (admin, step-up required). Revokes the user's sessions. */
+        /** Set a temporary password (admin, step-up required). Revokes the user's sessions and API tokens. */
         post: {
             parameters: {
                 query?: never;
@@ -1391,7 +1394,7 @@ export interface paths {
                 };
             };
         };
-        /** Update security settings (admin, step-up required) */
+        /** Update security settings (admin, step-up required). Sessions of users who must now use MFA but have no accepted factor are ended. */
         put: {
             parameters: {
                 query?: never;
@@ -4631,7 +4634,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Replace the whole configuration with a backup (admin, step-up, primary only). Users, passkeys and TOTP come from the backup; current sessions stay open. */
+        /** Replace the whole configuration with a backup (admin, step-up, primary only). Users, passkeys and TOTP come from the backup, but second factors that this node no longer has for an existing user (deleted passkeys, disabled or replaced TOTP, regenerated recovery codes) are not brought back. All sessions (including the caller's) and all API tokens are revoked. The backup must contain an active admin. */
         post: {
             parameters: {
                 query?: never;

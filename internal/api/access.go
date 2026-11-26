@@ -49,7 +49,12 @@ type access struct {
 	levels []auth.Level    // accepted session levels (default: full only)
 	perm   auth.Permission // required permission (ignored when public)
 	stepUp bool            // requires a recent passkey/TOTP re-verification
-	local  bool            // set by handle(): does not change replicated config
+	// stepUpMFA requires the step-up from a fully authenticated session whose
+	// user has a factor to step up with. Adding a factor or a token must not
+	// turn a stolen session into lasting access; the forced enrollment
+	// (mfa_setup) and accounts without any factor are not asked.
+	stepUpMFA bool
+	local     bool // set by handle(): does not change replicated config
 }
 
 var (
@@ -57,6 +62,8 @@ var (
 	anyLevel  = access{levels: []auth.Level{auth.LevelMFAPending, auth.LevelMFASetup, auth.LevelFull}, perm: auth.PermSelf}
 	mfaStep   = access{levels: []auth.Level{auth.LevelMFAPending}, perm: auth.PermSelf}
 	enrolling = access{levels: []auth.Level{auth.LevelMFASetup, auth.LevelFull}, perm: auth.PermSelf}
+	// enrollingStepUp starts the enrollment of a new second factor.
+	enrollingStepUp = access{levels: enrolling.levels, perm: auth.PermSelf, stepUpMFA: true}
 )
 
 func need(p auth.Permission) access       { return access{perm: p} }
@@ -141,6 +148,17 @@ func (s *Server) guard(a access, h http.HandlerFunc) http.Handler {
 				return
 			}
 			if !s.auth.Elevated(p.Session) {
+				problem(w, http.StatusForbidden, TStepUp, "Confirmez votre identité avec une passkey ou un code TOTP.")
+				return
+			}
+		}
+		if a.stepUpMFA && p.Session != nil && p.Session.Level == auth.LevelFull && !s.auth.Elevated(p.Session) {
+			m, err := s.auth.MFA(r.Context(), p.User.ID)
+			if err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			if s.auth.CanStepUp(m) {
 				problem(w, http.StatusForbidden, TStepUp, "Confirmez votre identité avec une passkey ou un code TOTP.")
 				return
 			}
