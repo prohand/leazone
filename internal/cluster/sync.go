@@ -28,6 +28,16 @@ func (n *Node) post(ctx context.Context, url string, in, out any) error {
 }
 
 func (n *Node) do(ctx context.Context, method, url string, in, out any) error {
+	return n.doWith(ctx, n.client, method, url, in, out)
+}
+
+// doLong is do without the client's overall 10 s timeout, for the snapshot
+// and the full exchange: ctx bounds them (60 s).
+func (n *Node) doLong(ctx context.Context, method, url string, in, out any) error {
+	return n.doWith(ctx, &http.Client{Transport: n.client.Transport}, method, url, in, out)
+}
+
+func (n *Node) doWith(ctx context.Context, c *http.Client, method, url string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -41,7 +51,7 @@ func (n *Node) do(ctx context.Context, method, url string, in, out any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := n.client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return err
 	}
@@ -339,7 +349,7 @@ func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, diverged bool, 
 	var snap proto.Snapshot
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if err := n.do(cctx, http.MethodGet, p.addr+"/cluster/v1/snapshot", nil, &snap); err != nil {
+	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/snapshot", nil, &snap); err != nil {
 		return err
 	}
 	kek, err := pki.KEK(n.d.Config.ClusterKey)
@@ -412,8 +422,8 @@ func toUpdate(l dhcpsrv.Lease) proto.LeaseUpdate {
 
 func fromUpdate(u proto.LeaseUpdate) (dhcpsrv.Lease, bool) {
 	ip, err := netip.ParseAddr(u.IP)
-	if err != nil {
-		return dhcpsrv.Lease{}, false
+	if err != nil || !ip.Is4() {
+		return dhcpsrv.Lease{}, false // DHCPv4 leases only
 	}
 	return dhcpsrv.Lease{ScopeID: u.ScopeID, IP: ip, MAC: u.MAC, ClientID: u.ClientID, Hostname: u.Hostname, State: u.State,
 		Starts: u.Starts, Ends: u.Ends, CircuitID: u.CircuitID, RemoteID: u.RemoteID, GIAddr: u.GIAddr, Owner: u.Owner, HLC: u.HLC}, true
@@ -467,13 +477,15 @@ func (n *Node) syncLeasesNow(ctx context.Context) {
 func (n *Node) shipLeases(ctx context.Context) {
 	n.stateMu.Lock()
 	defer n.stateMu.Unlock()
+	peers := n.alivePeers()
+	if len(peers) == 0 {
+		// Peer down: keep the outbox (capped by the engine); the full
+		// exchange at its return also covers what was dropped.
+		return
+	}
 	list := n.d.DHCP.TakeOutbox()
 	if len(list) == 0 {
 		return
-	}
-	peers := n.alivePeers()
-	if len(peers) == 0 {
-		return // peer down: the full exchange at its return covers it
 	}
 	ups := make([]proto.LeaseUpdate, 0, len(list))
 	for _, l := range list {
@@ -521,27 +533,29 @@ func (n *Node) shipLoop(ctx context.Context) {
 }
 
 // fullExchange pulls all leases and state of a peer that just came back.
-func (n *Node) fullExchange(ctx context.Context, p *peer) {
+// It fails unless both were received and applied.
+func (n *Node) fullExchange(ctx context.Context, p *peer) error {
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var ups []proto.LeaseUpdate
-	if err := n.do(cctx, http.MethodGet, p.addr+"/cluster/v1/leases", nil, &ups); err == nil {
-		list := make([]dhcpsrv.Lease, 0, len(ups))
-		for _, u := range ups {
-			if l, ok := fromUpdate(u); ok {
-				list = append(list, l)
-			}
-		}
-		n.d.DHCP.ApplyRemote(cctx, list)
-	} else {
-		n.log().Warn("lease exchange", "err", err)
+	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/leases", nil, &ups); err != nil {
+		return fmt.Errorf("baux : %w", err)
 	}
+	list := make([]dhcpsrv.Lease, 0, len(ups))
+	for _, u := range ups {
+		if l, ok := fromUpdate(u); ok {
+			list = append(list, l)
+		}
+	}
+	n.d.DHCP.ApplyRemote(cctx, list)
 	var rows []proto.StateRow
-	if err := n.do(cctx, http.MethodGet, p.addr+"/cluster/v1/state", nil, &rows); err == nil {
-		if err := n.d.Repl.ApplyState(cctx, rows); err != nil {
-			n.log().Warn("state exchange", "err", err)
-		}
+	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/state", nil, &rows); err != nil {
+		return fmt.Errorf("état : %w", err)
 	}
+	if err := n.d.Repl.ApplyState(cctx, rows); err != nil {
+		return fmt.Errorf("état : %w", err)
+	}
+	return nil
 }
 
 // ---- planned switchover ----

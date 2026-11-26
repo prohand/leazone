@@ -93,17 +93,24 @@ type Deps struct {
 }
 
 type peer struct {
-	addr     string
-	status   proto.NodeStatus
-	lastOK   time.Time // last successful outgoing heartbeat
-	lastIn   time.Time // last incoming heartbeat
-	latency  time.Duration
-	lastErr  string
-	acked    uint64 // follower position confirmed by its pulls
-	ackedAt  time.Time
-	wasAlive bool
-	compat   compatibility
-	hashes   map[string]string
+	addr    string
+	status  proto.NodeStatus
+	lastOK  time.Time // last successful outgoing heartbeat
+	lastIn  time.Time // last incoming heartbeat
+	latency time.Duration
+	lastErr string
+	acked   uint64 // follower position confirmed by its pulls
+	ackedAt time.Time
+	compat  compatibility
+	hashes  map[string]string
+	// nodeID is the last node ID seen at this address (persisted): it
+	// changes when the peer is reinstalled.
+	nodeID string
+	// Full lease/state exchange: needed after the peer was down,
+	// incompatible or restarted; retried until it succeeds.
+	needExchange  bool
+	exchanging    bool
+	exchangeAfter time.Time
 }
 
 type compatibility struct {
@@ -123,23 +130,27 @@ type Node struct {
 
 	settings atomic.Pointer[Settings] // read without n.mu (used under it)
 
-	mu           sync.Mutex
-	role         proto.Role
-	epoch        uint64
-	primaryID    string
-	primaryURL   string
-	peers        map[string]*peer // by cluster address
-	lastPrimary  time.Time        // last time a live primary was seen
-	witness      witnessState
-	partnerDown  bool
-	handingOff   bool
-	frozen       string // non-empty: config writes blocked (mixed versions)
-	inSyncSince  time.Time
-	forceResync  bool
-	blocked      string // last reason the node could not promote
-	lastApplied  time.Time
-	knownNodes   []string
-	syncMu       sync.Mutex
+	mu          sync.Mutex
+	role        proto.Role
+	epoch       uint64
+	primaryID   string
+	primaryURL  string
+	peers       map[string]*peer // by cluster address
+	lastPrimary time.Time        // last time a live primary was seen
+	witness     witnessState
+	partnerDown bool
+	handingOff  bool
+	frozen      string // non-empty: config writes blocked (mixed versions)
+	inSyncSince time.Time
+	forceResync bool
+	blocked     string // last reason the node could not promote
+	lastApplied time.Time
+	syncMu      sync.Mutex
+	// writeMu: config writes hold it shared from the Writable check to
+	// their commit (BeginWrite); losing the primary role takes it
+	// exclusively before journaling stops, so no write in progress on the
+	// primary ends up unjournaled.
+	writeMu      sync.RWMutex
 	stateMu      sync.Mutex
 	appliedNotif chan struct{}
 }
@@ -168,7 +179,7 @@ func New(d Deps) (*Node, error) {
 	n.client = &http.Client{Transport: &http.Transport{TLSClientConfig: ca.ClientConfig(cert), Proxy: nil,
 		MaxIdleConnsPerHost: 4, IdleConnTimeout: 60 * time.Second}, Timeout: 10 * time.Second}
 	for _, a := range d.Config.Peers {
-		n.peers[a] = &peer{addr: a}
+		n.peers[a] = &peer{addr: a, needExchange: true}
 	}
 	switch {
 	case strings.HasPrefix(d.Config.Witness, "https://"):
@@ -179,9 +190,48 @@ func New(d Deps) (*Node, error) {
 		n.witnessM = "none"
 	}
 	if v, _ := d.DB.Meta(context.Background(), "cluster_nodes"); v != "" {
-		n.knownNodes = strings.Split(v, ",")
+		n.loadNodeIDs(v)
 	}
 	return n, nil
+}
+
+// loadNodeIDs restores the node ID last seen at each peer address
+// ("addr=id,..."), so the DHCP split is right before the first heartbeat.
+// The older format (a bare list of IDs, never purged) is only used when it
+// designates the single configured peer unambiguously.
+func (n *Node) loadNodeIDs(v string) {
+	var legacy []string
+	for _, e := range strings.Split(v, ",") {
+		addr, id, ok := strings.Cut(e, "=")
+		if !ok {
+			if e != "" && e != n.d.NodeID {
+				legacy = append(legacy, e)
+			}
+			continue
+		}
+		if p := n.peers[addr]; p != nil {
+			p.nodeID = id
+		}
+	}
+	if len(legacy) == 1 && len(n.peers) == 1 {
+		for _, p := range n.peers {
+			if p.nodeID == "" {
+				p.nodeID = legacy[0]
+			}
+		}
+	}
+}
+
+// saveNodeIDs persists the node ID of each configured peer (n.mu held).
+func (n *Node) saveNodeIDs() {
+	var list []string
+	for _, p := range n.peers {
+		if p.nodeID != "" {
+			list = append(list, p.addr+"="+p.nodeID)
+		}
+	}
+	sort.Strings(list)
+	_ = n.d.DB.SetMeta(context.Background(), "cluster_nodes", strings.Join(list, ","))
 }
 
 func (n *Node) log() *slog.Logger { return n.d.Log }
@@ -356,41 +406,57 @@ func (n *Node) heartbeats(ctx context.Context) {
 
 // peerStatus records a peer status (n.mu held).
 func (n *Node) peerStatus(p *peer, self, st proto.NodeStatus) {
+	if !p.status.StartedAt.IsZero() && !st.StartedAt.Equal(p.status.StartedAt) {
+		p.needExchange = true // restarted: what it had not shipped yet is only in its database
+	}
 	p.status = st
 	p.compat = compare(self, st)
-	if st.NodeID != "" && !contains(n.knownNodes, st.NodeID) {
-		n.knownNodes = append(n.knownNodes, st.NodeID)
-		sort.Strings(n.knownNodes)
-		_ = n.d.DB.SetMeta(context.Background(), "cluster_nodes", strings.Join(n.knownNodes, ","))
+	if st.NodeID != "" && st.NodeID != p.nodeID {
+		// New peer, or reinstalled (new node ID): the old ID no longer
+		// takes a share of the DHCP pool.
+		p.nodeID = st.NodeID
+		n.saveNodeIDs()
 	}
 }
 
-// transitions runs full exchanges when a peer comes (back) online.
+// exchangeRetry is the delay before a failed full exchange is tried again.
+const exchangeRetry = 5 * time.Second
+
+// transitions runs full exchanges when a peer comes (back) online or
+// becomes compatible, and retries them until they succeed.
 func (n *Node) transitions(ctx context.Context) {
 	n.mu.Lock()
 	var back []*peer
+	now := time.Now()
 	for _, p := range n.peers {
-		alive := p.alive(n.deadAfter())
-		if alive && !p.wasAlive && p.compat.ok {
-			back = append(back, p)
+		if !p.alive(n.deadAfter()) || !p.compat.ok {
+			p.needExchange = true // exchange again once it is reachable and compatible
+			continue
 		}
-		p.wasAlive = alive
+		if p.needExchange && !p.exchanging && !now.Before(p.exchangeAfter) {
+			p.exchanging = true
+			back = append(back, p)
+			n.log().Info("peer online: exchanging leases and state", "peer", p.status.Name)
+		}
 	}
 	n.mu.Unlock()
 	for _, p := range back {
-		n.log().Info("peer online: exchanging leases and state", "peer", p.status.Name)
-		go n.fullExchange(context.WithoutCancel(ctx), p)
+		go func(p *peer) {
+			err := n.fullExchange(context.WithoutCancel(ctx), p)
+			n.mu.Lock()
+			p.exchanging = false
+			if err == nil {
+				p.needExchange = false
+			} else {
+				p.exchangeAfter = time.Now().Add(exchangeRetry)
+			}
+			n.mu.Unlock()
+			if err != nil {
+				n.log().Warn("full exchange with the peer failed, will retry", "err", err)
+			}
+		}(p)
 	}
 	n.applyDHCPPolicy()
-}
-
-func contains(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 // ---- election ----
@@ -416,6 +482,22 @@ func (n *Node) anyAlivePeer() *peer {
 	}
 	return nil
 }
+
+// peerSeenWithin reports whether a peer was heard from within d (n.mu held).
+func (n *Node) peerSeenWithin(d time.Duration) bool {
+	for _, p := range n.peers {
+		if p.alive(d) {
+			return true
+		}
+	}
+	return false
+}
+
+// leaseMargin is how long before the end of the witness lease the primary
+// gives up its role when it cannot renew. The next check may come up to
+// one witness call (at most interval) plus one loop pause (interval) later,
+// plus one interval for the rest of the round.
+func (n *Node) leaseMargin() time.Duration { return 3 * n.interval() }
 
 func (n *Node) decide(ctx context.Context) {
 	n.mu.Lock()
@@ -590,11 +672,18 @@ func (n *Node) becomeSecondary(ctx context.Context, reason string) {
 	n.mu.Lock()
 	was := n.role
 	n.role, n.partnerDown, n.lastPrimary = proto.RoleSecondary, false, time.Now()
+	epoch := n.epoch
 	n.mu.Unlock()
-	_ = n.d.Repl.SetRecording(ctx, false, n.epoch)
+	// No new config write passes Writable from here on.
+	n.applyDHCPPolicy()
 	if n.d.VIP != nil {
 		_ = n.d.VIP.Down()
 	}
+	// Writes that started as primary finish while still journaled, then
+	// journaling stops.
+	n.writeMu.Lock()
+	_ = n.d.Repl.SetRecording(ctx, false, epoch)
+	n.writeMu.Unlock()
 	if was == proto.RolePrimary {
 		n.log().Warn("this node is no longer primary", "reason", reason)
 		if n.d.Audit != nil {
@@ -617,6 +706,10 @@ func (n *Node) asPrimary(ctx context.Context) {
 		}
 	}
 	peerUp := n.anyAlivePeer()
+	// Partner-down (whole pool served here) waits two more intervals after
+	// the peer is declared dead, so that a peer cut from us has applied
+	// its own "no new addresses" policy first (see applyDHCPPolicy).
+	peerRecent := n.peerSeenWithin(n.deadAfter() + 2*n.interval())
 	n.mu.Unlock()
 
 	witnessOK := false
@@ -637,8 +730,9 @@ func (n *Node) asPrimary(ctx context.Context) {
 			return
 		default:
 			n.witness.reachable, n.witness.lastErr = false, err.Error()
-			// Keep the role while the lease we got is still valid (with margin).
-			witnessOK = time.Since(n.witness.lastOK) < n.leaseDur()-n.interval()
+			// Keep the role while the lease we got is still valid, with a
+			// margin covering the time until the next check.
+			witnessOK = time.Since(n.witness.lastOK) < n.leaseDur()-n.leaseMargin()
 		}
 		n.mu.Unlock()
 		if peerUp == nil && !witnessOK {
@@ -658,7 +752,7 @@ func (n *Node) asPrimary(ctx context.Context) {
 	}
 	n.mu.Lock()
 	// Partner down: only when the witness confirms we hold the lease.
-	n.partnerDown = peerUp == nil && n.witnessM == "container" && witnessOK
+	n.partnerDown = !peerRecent && n.witnessM == "container" && witnessOK
 	n.mu.Unlock()
 	n.maybeFailback(ctx, seq)
 }
@@ -719,13 +813,17 @@ func (n *Node) Failback(ctx context.Context) error {
 	}
 	n.handingOff = true
 	epoch := n.epoch
+	targetID, targetName := target.status.NodeID, target.status.Name
 	n.mu.Unlock()
 	defer func() {
 		n.mu.Lock()
 		n.handingOff = false
 		n.mu.Unlock()
 	}()
-	// Writes are blocked: wait for the target to have everything.
+	// New writes are refused (handingOff); let those in progress commit.
+	n.writeMu.Lock()
+	n.writeMu.Unlock() //nolint:staticcheck // empty critical section: waits for writers
+	// Wait for the target to have everything.
 	lastEpoch, seq := n.position(ctx)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -743,7 +841,7 @@ func (n *Node) Failback(ctx context.Context) error {
 	newEpoch := epoch + 1
 	if n.witnessM == "container" {
 		resp, err := n.witnessCall(ctx, "transfer", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName, Epoch: epoch,
-			Seq: seq, LastEpoch: &lastEpoch, To: target.status.NodeID, ToName: target.status.Name, ToSeq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Seq: seq, LastEpoch: &lastEpoch, To: targetID, ToName: targetName, ToSeq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
 		if err != nil || !resp.Granted {
 			if err == nil {
 				err = errors.New(resp.Reason)
@@ -752,7 +850,7 @@ func (n *Node) Failback(ctx context.Context) error {
 		}
 		newEpoch = resp.Epoch
 	}
-	n.becomeSecondary(ctx, "rebascule vers "+target.status.Name)
+	n.becomeSecondary(ctx, "rebascule vers "+targetName)
 	if err := n.post(ctx, target.addr+"/cluster/v1/handoff", proto.Handoff{FromID: n.d.NodeID, Epoch: newEpoch, Seq: seq}, nil); err != nil {
 		n.log().Warn("handoff message failed: the target will take the role by itself", "err", err)
 	}
@@ -802,7 +900,14 @@ func (n *Node) applyDHCPPolicy() {
 	n.mu.Lock()
 	mode := n.Settings().DHCPMode
 	role, partnerDown := n.role, n.partnerDown
-	nodes := append([]string{n.d.NodeID}, n.knownNodes...)
+	peerSeen := n.anyAlivePeer() != nil
+	// Only the nodes configured now share the pool: this node and the ID
+	// last seen at each peer address (a reinstalled peer replaces its old
+	// ID, so both nodes compute the same split).
+	nodes := []string{n.d.NodeID}
+	for _, p := range n.peers {
+		nodes = append(nodes, p.nodeID)
+	}
 	n.mu.Unlock()
 	nodes = uniq(nodes)
 	all := func(string, uint32) bool { return true }
@@ -816,6 +921,12 @@ func (n *Node) applyDHCPPolicy() {
 		n.d.DHCP.SetPolicy(all, allC)
 	case mode == "active-passive" && role == proto.RoleSecondary:
 		n.d.DHCP.SetPolicy(none, noneC)
+	case role != proto.RolePrimary && (mode == "active-passive" || (n.witnessM == "container" && !peerSeen)):
+		// Not following a primary that may be serving the whole pool
+		// (active-passive, or partner-down after the witness gave it the
+		// role while we are cut from it): no new address, existing leases
+		// and reservations only (own clients).
+		n.d.DHCP.SetPolicy(none, dhcpsrv.Buckets(nodes, n.d.NodeID))
 	default:
 		// Load balancing, or a degraded state: own clients and own addresses.
 		n.d.DHCP.SetPolicy(dhcpsrv.AddressOwner(nodes, n.d.NodeID), dhcpsrv.Buckets(nodes, n.d.NodeID))

@@ -761,6 +761,14 @@ func (s *Store) ClearOutbox(ctx context.Context) error {
 	return err
 }
 
+// TrimOutbox keeps at most keep pending state rows (the newest): while the
+// peer is down the outbox grows; the full exchange at its return covers
+// the rows dropped.
+func (s *Store) TrimOutbox(ctx context.Context, keep int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM state_outbox WHERE id <= (SELECT MAX(id) FROM state_outbox) - ?`, keep)
+	return err
+}
+
 // FullState returns every state row (initial exchange after a (re)join).
 func (s *Store) FullState(ctx context.Context) ([]proto.StateRow, error) {
 	var out []proto.StateRow

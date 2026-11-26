@@ -64,7 +64,7 @@ type Node struct {
 
 	backup       *backup.Service
 	afterRestore func(context.Context)
-	writable     func() error // nil on a single node
+	writable     func() (done func(), err error) // nil on a single node
 }
 
 // Run starts the node and blocks until ctx is cancelled.
@@ -261,7 +261,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		WrapDEK: func(dek []byte) string { return n.master.Seal(dek, "dek") }}
 	n.afterRestore = reloadAll
 	if node != nil {
-		n.writable = node.Writable
+		n.writable = node.BeginWrite
 	}
 
 	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
@@ -407,6 +407,8 @@ func (n *Node) housekeeping(ctx context.Context) {
 			_ = n.repl.Trim(ctx, 20000)
 			if !n.cfg.Clustered() {
 				_ = n.repl.ClearOutbox(ctx)
+			} else {
+				_ = n.repl.TrimOutbox(ctx, 100000) // peer down for a long time
 			}
 		}
 	}
@@ -492,9 +494,11 @@ func (n *Node) control(ctx context.Context, req control.Request) control.Respons
 		}
 		dry := req.Args["dryRun"] == "true"
 		if !dry && n.writable != nil {
-			if err := n.writable(); err != nil {
+			done, err := n.writable()
+			if err != nil {
 				return control.Response{Message: err.Error()}
 			}
+			defer done()
 		}
 		res, err := n.backup.Restore(ctx, []byte(req.Args["content"]), pw, dry)
 		if err != nil {

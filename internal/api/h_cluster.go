@@ -36,7 +36,10 @@ func (b *bufferedWriter) WriteHeader(code int)        { b.status = code }
 // clusterWrite runs a config change on the primary only, and answers once
 // the change is safe (applied by the secondary or committed at the witness).
 func (s *Server) clusterWrite(w http.ResponseWriter, r *http.Request, h http.HandlerFunc) {
-	if err := s.cluster.Writable(); err != nil {
+	// The node stays primary (and journaling) until the handler has
+	// committed: a role change waits for it.
+	done, err := s.cluster.BeginWrite()
+	if err != nil {
 		var np cluster.NotPrimaryError
 		if errors.As(err, &np) {
 			writeJSON(w, http.StatusConflict, map[string]any{"type": TNotPrimary, "title": titles[TNotPrimary],
@@ -47,7 +50,10 @@ func (s *Server) clusterWrite(w http.ResponseWriter, r *http.Request, h http.Han
 		return
 	}
 	bw := &bufferedWriter{h: http.Header{}, status: http.StatusOK}
-	h(bw, r)
+	func() {
+		defer done() // even if the handler panics: a step-down would wait forever
+		h(bw, r)
+	}()
 	if bw.status < 400 {
 		s.cluster.AfterWrite(context.WithoutCancel(r.Context()))
 	}
