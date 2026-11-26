@@ -368,7 +368,9 @@ func (e *Engine) pick(s *scopeRT, mac, cid string, requested netip.Addr, now tim
 	}
 	if l := e.clientLease(s.ID, mac, cid); l != nil {
 		ip := dhcpconf.U32(l.IP)
-		if !skip[ip] && e.usable(s, ip, mac, cid, now) {
+		// An expired lease is reused only on an address this node owns: the
+		// peer may have given it away while the lease was not active.
+		if !skip[ip] && e.usable(s, ip, mac, cid, now) && (l.Active(now) || e.Owns(s.ID, ip)) {
 			return l.IP, true
 		}
 	}

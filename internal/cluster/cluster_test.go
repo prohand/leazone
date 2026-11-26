@@ -257,7 +257,10 @@ func TestFailoverAndReturn(t *testing.T) {
 	}
 	h.waitSame(n1, n2, 3*time.Second)
 	hist, _ := n1.node.d.Repl.Epochs(context.Background())
-	if len(hist) < 3 || hist[0].Reason != "retour du primaire d'origine" {
+	// The handoff message may be late under load: then node1 takes the role
+	// by itself (the witness already gave it), with its own epoch.
+	if len(hist) < 3 || hist[0].NodeID != "id-node1" ||
+		(hist[0].Reason != "retour du primaire d'origine" && hist[0].Reason != "démarrage du cluster") {
 		t.Fatalf("history: %+v", hist)
 	}
 	if primaries(n1, n2) != 1 {

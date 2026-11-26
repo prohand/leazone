@@ -752,3 +752,29 @@ func TestIgnoredRateLimitPurged(t *testing.T) {
 		t.Fatalf("ignored entries after sweep = %d", count())
 	}
 }
+
+// Renew-only (no address owned, e.g. a node cut from its peer): an active
+// lease is still renewed, but an expired one is not handed out again.
+func TestRenewOnlyKeepsActiveLeasesOnly(t *testing.T) {
+	e, _, now := newEngine(t)
+	ctx := context.Background()
+	active, _ := dora(t, e, mac(1), 10)
+	expired, _ := dora(t, e, mac(2), 10)
+	if !active.IsValid() || !expired.IsValid() {
+		t.Fatal("no lease")
+	}
+	e.SetPolicy(func(string, uint32) bool { return false }, func(byte) bool { return true })
+	// Lease time is long enough for one hour; move past the end of mac(2)'s
+	// lease after renewing mac(1)'s.
+	*now = now.Add(time.Duration(e.scopes[firstScope(e, "eth0.10")].LeaseTime) * time.Second / 2)
+	if r := e.Handle(ctx, Packet{Msg: renew(mac(1), active), IfIndex: 10}); r == nil || r.Msg.MessageType() != dhcpv4.MessageTypeAck {
+		t.Fatalf("renewal of an active lease: %v", r)
+	}
+	*now = now.Add(time.Duration(e.scopes[firstScope(e, "eth0.10")].LeaseTime)*time.Second/2 + time.Minute)
+	if r := e.Handle(ctx, Packet{Msg: discover(mac(2)), IfIndex: 10}); r != nil {
+		t.Fatalf("expired address offered again in renew-only: %v", ipOf(r.Msg.YourIPAddr))
+	}
+	if r := e.Handle(ctx, Packet{Msg: request(mac(2), expired, netip.Addr{}), IfIndex: 10}); r == nil || r.Msg.MessageType() != dhcpv4.MessageTypeNak {
+		t.Fatalf("INIT-REBOOT on an expired lease in renew-only: %v", r)
+	}
+}

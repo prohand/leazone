@@ -186,10 +186,12 @@ func (w *Watcher) Refresh() {
 // channel when its socket fails: the subscription is then renewed at the
 // next poll.
 func (w *Watcher) Run(ctx context.Context) {
-	w.Refresh()
 	done := make(chan struct{})
 	defer close(done)
+	// Subscribe before the first snapshot: a change made in between would
+	// otherwise wait for the next poll.
 	linkCh, addrCh := w.subscribeLinks(done), w.subscribeAddrs(done)
+	w.Refresh()
 	poll := time.NewTicker(w.pollEvery)
 	defer poll.Stop()
 	var debounce <-chan time.Time

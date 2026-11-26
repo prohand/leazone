@@ -134,10 +134,10 @@ func (m *Manager) RenewIfNeeded(ctx context.Context) error {
 }
 
 // Run checks the certificate twice a day until ctx is done and renews the
-// self-signed one before it expires. writable (optional) tells whether this
+// self-signed one before it expires. beginWrite (optional) tells whether this
 // node may change the replicated configuration: in a cluster only the
 // primary renews, the other node picks the new certificate up with Reload.
-func (m *Manager) Run(ctx context.Context, writable func() error) {
+func (m *Manager) Run(ctx context.Context, beginWrite func() (done func(), err error)) {
 	t := time.NewTicker(12 * time.Hour)
 	defer t.Stop()
 	for {
@@ -146,12 +146,22 @@ func (m *Manager) Run(ctx context.Context, writable func() error) {
 			return
 		case <-t.C:
 		}
-		if writable != nil && writable() != nil {
-			continue
+		m.renewTick(ctx, beginWrite)
+	}
+}
+
+// renewTick renews the certificate when needed, only where config may be
+// written (cluster primary), holding that right until the change is stored.
+func (m *Manager) renewTick(ctx context.Context, beginWrite func() (func(), error)) {
+	if beginWrite != nil {
+		done, err := beginWrite()
+		if err != nil {
+			return
 		}
-		if err := m.RenewIfNeeded(ctx); err != nil {
-			m.log.Warn("certificate renewal failed", "err", err)
-		}
+		defer done()
+	}
+	if err := m.RenewIfNeeded(ctx); err != nil {
+		m.log.Warn("certificate renewal failed", "err", err)
 	}
 }
 

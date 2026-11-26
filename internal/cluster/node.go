@@ -146,6 +146,10 @@ type Node struct {
 	blocked     string // last reason the node could not promote
 	lastApplied time.Time
 	syncMu      sync.Mutex
+	// promoteMu serializes the two ways to become primary: the election
+	// (asFollower) and a planned handoff from the peer, so a node is not
+	// promoted twice (one extra epoch) when both happen together.
+	promoteMu sync.Mutex
 	// writeMu: config writes hold it shared from the Writable check to
 	// their commit (BeginWrite); losing the primary role takes it
 	// exclusively before journaling stops, so no write in progress on the
@@ -567,6 +571,14 @@ func (n *Node) asFollower(ctx context.Context) {
 	if myEpoch == 0 && mySeq == 0 && n.d.Config.PreferredRole != "primary" && peerUp == nil {
 		n.setRole(proto.RoleIsolated)
 		return
+	}
+	n.promoteMu.Lock()
+	defer n.promoteMu.Unlock()
+	n.mu.Lock()
+	already := n.role == proto.RolePrimary || n.handingOff
+	n.mu.Unlock()
+	if already {
+		return // a handoff made this node primary meanwhile
 	}
 	switch n.witnessM {
 	case "container":

@@ -134,7 +134,12 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	var node *cluster.Node
 	dm := dnsmgr.New(dnsconf.New(n.db), engine, watcher, log)
 	dm.DB, dm.DNSSEC = n.db, dnssec.NewStore(n.db, n.box)
-	dm.Writable = func() bool { return node == nil || node.Writable() == nil }
+	dm.BeginWrite = func() (func(), error) {
+		if node == nil {
+			return func() {}, nil
+		}
+		return node.BeginWrite()
+	}
 
 	// Ad blocking (optional module): engine consulted by the DNS server.
 	blockEngine := blocking.NewEngine()
@@ -263,6 +268,8 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if node != nil {
 		n.writable = node.BeginWrite
 	}
+	// Renew the self-signed HTTPS certificate while running (primary only).
+	go tm.Run(ctx, n.writable)
 
 	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
 		Blocking: bm, Stats: rec, QueryLog: qlog, Backup: n.backup, AfterRestore: reloadAll,

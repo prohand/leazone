@@ -391,6 +391,13 @@ func (e *Engine) request(ctx context.Context, p Packet, s *scopeRT, src netip.Ad
 			e.mu.Unlock()
 			return e.nak(p, s, src)
 		}
+	case mine && !cur.Active(now) && !e.Owns(s.ID, u):
+		// Expired lease on an address this node does not hand out now
+		// (renew-only while cut from the peer, or the peer's half): the
+		// other node may have given it to someone else meanwhile.
+		e.mu.Unlock()
+		e.log.Info("DHCP NAK: expired lease on an address not owned by this node", "mac", mac, "ip", want, "scope", s.Name)
+		return e.nak(p, s, src)
 	case mine:
 		// The configuration may have changed since the lease was given
 		// (exclusion, new range, reservation for another client).
@@ -409,7 +416,7 @@ func (e *Engine) request(ctx context.Context, p Packet, s *scopeRT, src netip.Ad
 	default:
 		// INIT-REBOOT or renewal of a lease we do not know (lost database,
 		// other node...): accept only if the address is free and allocatable.
-		if !e.usable(s, u, mac, cid, now) || (cur == nil && !e.Owns(s.ID, u)) {
+		if !e.usable(s, u, mac, cid, now) || ((cur == nil || !cur.Active(now)) && !e.Owns(s.ID, u)) {
 			e.mu.Unlock()
 			e.log.Info("DHCP NAK: address not available", "mac", mac, "ip", want, "scope", s.Name)
 			return e.nak(p, s, src)

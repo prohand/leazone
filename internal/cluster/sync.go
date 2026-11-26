@@ -569,7 +569,14 @@ func (n *Node) hHandoff(r *http.Request) (any, int) {
 	if seq != h.Seq {
 		return map[string]string{"error": "pas à jour"}, http.StatusConflict
 	}
-	n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
+	n.promoteMu.Lock()
+	defer n.promoteMu.Unlock()
+	n.mu.Lock()
+	already := n.role == proto.RolePrimary && n.epoch >= h.Epoch
+	n.mu.Unlock()
+	if !already { // else the election just made this node primary
+		n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
+	}
 	return map[string]bool{"ok": true}, http.StatusOK
 }
 
