@@ -2,11 +2,12 @@
 
 Serveur **DNS + DHCP** léger, avec haute disponibilité, interface web moderne, conçu pour Docker.
 
-> **État : phase 4 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
+> **État : phase 5 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
 > codes de secours, sessions, rôles, jetons d'API, audit), l'image Docker, le **DNS** (zones, redirecteurs
 > UDP/TCP/DoT/DoH, cache, écoute par interface), le **DHCP multi-VLAN** (direct et relais, enregistrement DNS
 > automatique), l'**import depuis Technitium** et la **haute disponibilité** (2 nœuds + témoin, bascule automatique,
-> IP virtuelle). Blocage et DNSSEC (phase 5), tableau de bord et sauvegardes (phase 6) arrivent ensuite.
+> IP virtuelle), le **blocage des publicités** et **DNSSEC** (signature des zones, validation). Tableau de bord,
+> métriques et sauvegardes (phase 6) arrivent ensuite.
 > Le plan complet est dans [docs/PLAN.md](docs/PLAN.md).
 
 ---
@@ -253,6 +254,71 @@ et n'est pas enregistré.
 
 ---
 
+## Modules optionnels : blocage et DNSSEC
+
+Désactivés par défaut. *Paramètres > Modules* (admin) : on/off **sans redémarrage**, appliqué aux deux nœuds en HA.
+Les pages *Blocage* et *DNSSEC* n'apparaissent que si le module est actif.
+
+### Blocage des publicités et traqueurs
+
+1. *Blocage > Listes > Ajouter* : une URL (formats hosts, domaines, AdBlock `||domaine^` ; détection automatique).
+   Trois listes connues sont proposées en un clic. La liste est téléchargée tout de suite, puis toutes les 24 h
+   (réglable) ; bouton **Mettre à jour maintenant**.
+2. **Liste noire / liste blanche** manuelles : un domaine bloque ou autorise aussi ses sous-domaines.
+   **La liste blanche gagne toujours.** Les exceptions AdBlock (`@@||domaine^`) sont respectées.
+3. **Où bloquer** : par réseau client (ex : `192.168.30.0/24`), par VLAN ou par interface.
+   La règle la plus précise gagne (réseau, puis VLAN, puis interface), sinon le réglage par défaut.
+4. **Réponse** : `NXDOMAIN` (défaut) ou adresse nulle `0.0.0.0` / `::`. La réponse porte le code EDE « Blocked ».
+5. **Pause** : 5 min, 1 h, 24 h (les deux nœuds), bouton *Reprendre*.
+
+Les traqueurs cachés derrière un CNAME (« CNAME cloaking ») sont bloqués aussi. *Tester un domaine* dit si un nom
+est bloqué et par quelle liste. Les statistiques (% bloqué, domaines les plus bloqués) sont celles du nœud affiché.
+En HA, chaque nœud télécharge les listes lui-même (seul l'abonnement est répliqué).
+
+> Le conteneur télécharge les listes : il lui faut un accès HTTPS sortant (proxy : `HTTPS_PROXY` est respecté).
+
+### DNSSEC : signer vos zones
+
+1. *DNSSEC* > choisir la zone > **Signer la zone** : ECDSA P-256 (recommandé) ou Ed25519, NSEC3 (recommandé,
+   cache la liste des noms) ou NSEC.
+2. Copiez l'enregistrement **DS** affiché et donnez-le à votre registrar (bureau d'enregistrement).
+3. Une fois le DS publié, cliquez **J'ai publié le DS**.
+
+| Clé | Rôle | Changement |
+|---|---|---|
+| ZSK | Signe les enregistrements | **Automatique** tous les 90 jours (nouvelle clé annoncée 2 h avant, ancienne gardée 2 jours) |
+| KSK | Signe les clés (c'est elle que vise le DS) | **Manuel** : *Changer la KSK*, publiez le nouveau DS, puis *J'ai publié le DS* |
+
+- Les clés sont créées une seule fois sur le primaire puis **répliquées chiffrées** : les deux nœuds signent avec les
+  mêmes clés. Les signatures sont valables 15 jours et renouvelées chaque jour, sans action.
+- *Exporter les clés* (admin + revérification passkey/TOTP) : fichier au format BIND, **contient les clés privées**.
+- *Arrêter la signature* : **retirez d'abord le DS chez le registrar**, sinon les résolveurs qui valident
+  ne pourront plus joindre la zone.
+
+Vérifier depuis un poste (BIND 9.18+), avec le DS de la zone :
+
+```bash
+cat > anchors.conf <<'END'
+trust-anchors { maison.lan. static-ds 12345 13 2 "ABCDEF..."; };
+END
+delv @192.168.1.2 -a anchors.conf +root=maison.lan nas.maison.lan A   # « ; fully validated »
+```
+
+### DNSSEC : valider les réponses des redirecteurs
+
+Option séparée (*Paramètres > Modules*). Leazone vérifie lui-même la chaîne de confiance depuis la racine
+(ancres officielles de l'IANA, clés 20326 et 38696) :
+
+- réponse signée et valide : bit **AD** pour les clients qui le demandent ;
+- domaine non signé (prouvé par la zone parente) : réponse normale, sans AD ;
+- signature fausse ou absente là où elle est obligatoire : **SERVFAIL** (code EDE « DNSSEC Bogus »).
+  Un client peut passer outre avec le bit CD (`dig +cd`).
+
+> Les redirecteurs doivent transmettre les données DNSSEC (1.1.1.1, 9.9.9.9, 8.8.8.8 le font). Un redirecteur
+> qui les supprime rend tous les domaines signés « bogus » : désactivez alors la validation.
+
+---
+
 ## Haute disponibilité en 5 minutes
 
 Deux nœuds Leazone (un conteneur par hôte) et un **témoin** sur un 3e hôte (petite VM, NAS, Raspberry Pi).
@@ -326,6 +392,8 @@ sur l'IP virtuelle 4,3 s après la panne.
   et chaque bail est envoyé à l'autre nœud **avant** l'accusé de réception au client. Un même bail ne peut donc jamais
   être donné à deux clients, même si les nœuds sont coupés l'un de l'autre.
 - Quand le témoin confirme que l'autre nœud est en panne, le survivant sert tous les clients et toute la plage.
+- Un client qui attend depuis 5 s ou plus (l'autre nœud redémarre, par exemple) est servi par n'importe quel nœud,
+  toujours dans la moitié de plage de ce nœud.
 - **Actif/passif** (*Cluster > Paramètres*) : seul le primaire répond.
 - Relais : mettez les **deux** nœuds en `ip helper-address`.
 
@@ -463,6 +531,18 @@ sudo ss -lntup | grep ':53 '
 
 Pour systemd-resolved : `DNSStubListener=no` dans `/etc/systemd/resolved.conf`, puis `systemctl restart systemd-resolved`.
 Leazone réessaie tout seul toutes les 20 secondes : pas besoin de le redémarrer.
+
+**Le blocage ne bloque rien**
+- *Paramètres > Modules* : le module est-il actif ? *Blocage* : pas de pause en cours ?
+- *Listes* : nombre d'entrées > 0 et pas d'erreur en rouge (le conteneur doit pouvoir sortir en HTTPS).
+- *Tester un domaine* avec l'IP du client : « Le blocage ne s'applique pas à ce client » = une règle *Où bloquer*.
+- Le navigateur garde ses propres réponses en cache quelques minutes, et certains utilisent leur propre DNS (DoH) :
+  désactivez « DNS sécurisé » dans le navigateur.
+
+**DNSSEC : tous les domaines répondent SERVFAIL**
+La validation est active mais le redirecteur supprime les signatures, ou l'heure du serveur est fausse
+(les signatures ont une date de validité). Vérifiez l'heure (`timedatectl`), changez de redirecteur ou
+désactivez la validation.
 
 **Un VLAN n'apparaît pas dans *Interfaces***
 - Vérifiez sur l'hôte : `ip -d link show` doit montrer l'interface (ex : `eno1.20`, `vlan protocol 802.1Q id 20`).

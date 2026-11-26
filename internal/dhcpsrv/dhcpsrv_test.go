@@ -431,3 +431,19 @@ func TestSelectingOtherServerKeepsItsOffer(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadBalanceMaxSecs(t *testing.T) {
+	e, _, _ := newEngine(t)
+	ctx := context.Background()
+	e.mu.Lock()
+	e.Serves = func(uint8) bool { return false } // every client belongs to the partner
+	e.mu.Unlock()
+	if r := e.Handle(ctx, Packet{Msg: discover(mac(61)), IfIndex: 10}); r != nil {
+		t.Fatal("answered the partner's client")
+	}
+	// The client has been waiting 6 s: the partner is probably down or restarting.
+	waited := discover(mac(61), func(d *dhcpv4.DHCPv4) { d.NumSeconds = 6 })
+	if r := e.Handle(ctx, Packet{Msg: waited, IfIndex: 10}); r == nil {
+		t.Fatal("client waiting for 6 s not answered")
+	}
+}

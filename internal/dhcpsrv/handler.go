@@ -224,8 +224,17 @@ func (e *Engine) answers(p Packet, mt dhcpv4.MessageType, src netip.Addr) bool {
 	e.mu.Lock()
 	serves := e.Serves
 	e.mu.Unlock()
-	return serves(ClientHash(m))
+	if serves(ClientHash(m)) {
+		return true
+	}
+	// The client has been trying for a while (its partner may be restarting):
+	// answer anyway, from our own half of the pool (RFC 3074 §6, like ISC
+	// dhcpd "load balance max seconds").
+	return (mt == dhcpv4.MessageTypeDiscover || mt == dhcpv4.MessageTypeRequest) && m.NumSeconds >= LoadBalanceMaxSecs
 }
+
+// LoadBalanceMaxSecs: above this "secs" value, both nodes answer a client.
+const LoadBalanceMaxSecs = 5
 
 func (e *Engine) leaseFields(p Packet, l *Lease) {
 	m := p.Msg

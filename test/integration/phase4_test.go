@@ -360,6 +360,51 @@ func TestPhase4HA(t *testing.T) {
 	}
 	t.Log("✔ the primary holds the virtual IP; DNS answers on it")
 
+	// DNSSEC: keys created once on the primary, replicated (encrypted); the
+	// secondary signs with the same keys (Ed25519: identical signatures).
+	if s := a1.do("PUT", "/api/v1/settings/modules", map[string]bool{"dnssec": true}, nil); s != 200 {
+		t.Fatalf("modules: %d", s)
+	}
+	var zl struct{ Items []struct{ ID, Name string } }
+	e.tok("lzha1", "GET", "/api/v1/dns/zones", nil, &zl)
+	zid := ""
+	for _, z := range zl.Items {
+		if z.Name == "ha.lan" {
+			zid = z.ID
+		}
+	}
+	if s := e.tok("lzha1", "POST", "/api/v1/dnssec/zones/"+zid+"/enable", map[string]any{"algorithm": 15}, nil); s != 200 {
+		t.Fatalf("sign zone: %d", s)
+	}
+	signed := func(ip string) string {
+		c := &dns.Client{Timeout: 2 * time.Second}
+		q := new(dns.Msg)
+		q.SetQuestion("ha.lan.", dns.TypeSOA)
+		q.SetEdns0(1232, true)
+		r, _, err := c.Exchange(q, net.JoinHostPort(ip, "53"))
+		if err != nil {
+			return ""
+		}
+		for _, rr := range r.Answer {
+			if sig, ok := rr.(*dns.RRSIG); ok {
+				return fmt.Sprint(sig.KeyTag, sig.Inception, sig.Expiration, sig.Signature)
+			}
+		}
+		return ""
+	}
+	sigDeadline := time.Now().Add(15 * time.Second)
+	for {
+		s1, s2 := signed(nodeIP["lzha1"]), signed(nodeIP["lzha2"])
+		if s1 != "" && s1 == s2 {
+			break
+		}
+		if time.Now().After(sigDeadline) {
+			t.Fatalf("signatures differ between nodes:\n%s\n%s", s1, s2)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Log("✔ DNSSEC: zone signed on the primary, the secondary serves the very same signatures")
+
 	// Primary failure.
 	run(t, "docker", "stop", "-t", "2", "lzha1")
 	start := time.Now()

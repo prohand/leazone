@@ -507,6 +507,12 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 | Journal de config | Entrées écrites par le code | Triggers SQLite générés depuis le schéma | Aucune modification ne peut échapper à la réplication |
 | Actions « Mon compte » sur le secondaire | Relayées au primaire | Refusées (lecture seule, lien vers le primaire) | Plus simple et sûr ; en pratique on passe par l'IP virtuelle |
 | Dernière connexion d'un utilisateur | Colonne de `users` | Table d'état `user_activity` | Écrite sur n'importe quel nœud |
+| Signatures ECDSA en HA | Mêmes signatures sur les 2 nœuds | Mêmes clés et mêmes fenêtres de validité (alignées sur le jour UTC) ; signatures Ed25519 identiques, ECDSA différentes mais toutes valides | ECDSA est aléatoire par nature ; un validateur accepte l'une ou l'autre |
+| NSEC3 | Paramètres libres | 0 itération, sans sel, sans opt-out | Recommandation RFC 9276 |
+| Vérification DNSSEC | `delv` + `ldns-verify-zone` | `delv` (BIND) sur toutes les formes de réponse | Pas de transfert de zone (AXFR) pour `ldns-verify-zone` |
+| Validation, joker | Preuve complète | Réponse par joker acceptée si une preuve NSEC/NSEC3 signée l'accompagne (sans calcul exact de couverture) | Cas rare ; les autres preuves (NXDOMAIN, NODATA, délégation non signée, opt-out) sont vérifiées en entier |
+| Listes de blocage en HA | — | Chaque nœud télécharge les listes ; l'abonnement, les règles et la pause sont répliqués | Pas de gros fichiers dans la réplication |
+| Pause du blocage | — | Réglage répliqué (les deux nœuds) | Les clients utilisent l'un ou l'autre nœud |
 
 ## 12. Décisions
 
