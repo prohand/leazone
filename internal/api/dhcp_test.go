@@ -124,7 +124,7 @@ func TestDHCPScopeLeaseDDNSAndVLANView(t *testing.T) {
 		}
 	}
 	c.do("GET", "/api/v1/vlans", nil, &vl)
-	if len(vl.Items) != 1 || vl.Items[0].VLANID != 20 || vl.Items[0].Name != "20 - Invités" || len(vl.Items[0].Interfaces) != 1 ||
+	if len(vl.Items) != 1 || vl.Items[0].VLANID != 20 || vl.Items[0].Name != "Invités" || len(vl.Items[0].Interfaces) != 1 ||
 		vl.Items[0].Scopes[0].ActiveLeases != 1 || vl.Items[0].Scopes[0].Size != 100 {
 		t.Fatalf("vlans: %+v", vl)
 	}

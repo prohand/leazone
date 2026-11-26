@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -375,9 +376,16 @@ func (s *Store) checkOverlap(ctx context.Context, sc Scope, exceptID string) err
 	return nil
 }
 
+// vlanPrefix matches a leading "20 - " in scope names like "20 - Invités".
+var vlanPrefix = regexp.MustCompile(`^\s*\d+\s*[-–:]\s*`)
+
 func (s *Store) ensureVLAN(ctx context.Context, tx *sql.Tx, vlanID *int, name string) error {
 	if vlanID == nil {
 		return nil
+	}
+	// The VLAN card shows "20 - <label>": do not repeat the number.
+	if n := vlanPrefix.ReplaceAllString(name, ""); n != "" {
+		name = n
 	}
 	now := s.Now().UnixMilli()
 	_, err := tx.ExecContext(ctx, `INSERT INTO vlans(id, vlan_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)

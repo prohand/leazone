@@ -149,6 +149,33 @@ func (s *Server) listVLANs(w http.ResponseWriter, r *http.Request) {
 		v := get(it.VLANID)
 		v.Interfaces = append(v.Interfaces, vi)
 	}
+	// A direct scope's interface carries its VLAN even when it is not an
+	// 802.1Q sub-interface (access port, untagged on the switch side).
+	hostIfaces := map[string]vlanIface{}
+	for _, it := range s.dhcp.Ifaces.Interfaces() {
+		vi := vlanIface{Name: it.Name, Parent: it.Parent, Addresses: []string{}, DHCPEnabled: set[it.Name].DHCPEnabled}
+		for _, a := range it.Addresses {
+			vi.Addresses = append(vi.Addresses, a.Prefix.String())
+		}
+		hostIfaces[it.Name] = vi
+	}
+	for _, sc := range scopes {
+		if sc.VLANID == nil || sc.Interface == nil {
+			continue
+		}
+		vi, ok := hostIfaces[*sc.Interface]
+		if !ok {
+			continue
+		}
+		v := get(*sc.VLANID)
+		dup := false
+		for _, x := range v.Interfaces {
+			dup = dup || x.Name == vi.Name
+		}
+		if !dup {
+			v.Interfaces = append(v.Interfaces, vi)
+		}
+	}
 	untagged := []scopeUsage{}
 	for _, sc := range scopes {
 		if sc.VLANID == nil {

@@ -35,7 +35,7 @@ func TestScopeValidationAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sc.VLANName != "20 - Invités" || sc.LeaseTime != 86400 || sc.Mode() != "none" {
+	if sc.VLANName != "Invités" || sc.LeaseTime != 86400 || sc.Mode() != "none" {
 		t.Fatalf("%+v", sc)
 	}
 	// Overlapping network refused (a client must never get an IP of another VLAN).
