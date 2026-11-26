@@ -201,3 +201,73 @@ func TestMemoKey(t *testing.T) {
 		t.Fatal("content does not change the key")
 	}
 }
+
+func TestDelegationForwardedWhenRecursing(t *testing.T) {
+	z, recs := testZones() // sub.maison.lan is delegated
+	glob := &upstreamHandler{ip: "10.0.0.1"}
+	cond := &upstreamHandler{ip: "10.0.0.2"}
+	for _, c := range []struct {
+		name string
+		fwds []*dnsconf.Forwarder
+		want string
+	}{
+		{"global", []*dnsconf.Forwarder{fwd("g", "", "udp", "127.0.0.1", startUDPTCP(t, glob))}, "10.0.0.1"},
+		{"conditional", []*dnsconf.Forwarder{
+			fwd("g", "", "udp", "127.0.0.1", startUDPTCP(t, glob)),
+			fwd("c", "sub.maison.lan", "udp", "127.0.0.1", startUDPTCP(t, cond)),
+		}, "10.0.0.2"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := New(quiet, 0)
+			e.Load(z, recs, c.fwds, dnsconf.DefaultSettings())
+			m := ask(t, e, "host.sub.maison.lan", dns.TypeA, "192.168.1.2")
+			if m.Rcode != dns.RcodeSuccess || len(m.Answer) != 1 || m.Answer[0].(*dns.A).A.String() != c.want {
+				t.Fatalf("delegated name not forwarded: %v", m)
+			}
+			// Clients that may not recurse still get the referral.
+			m = ask(t, e, "host.sub.maison.lan", dns.TypeA, "203.0.113.1")
+			if m.Rcode != dns.RcodeSuccess || m.Authoritative || len(m.Answer) != 0 || len(m.Ns) != 1 {
+				t.Fatalf("referral: %v", m)
+			}
+		})
+	}
+}
+
+type nameBlocker string
+
+func (b nameBlocker) Filter(name string, _, _ netip.Addr, _ bool) (bool, bool) {
+	return dns.Fqdn(name) == string(b), false
+}
+
+func TestLocalCNAMETargetBlocked(t *testing.T) {
+	z, recs := testZones() // ext.maison.lan CNAME target.example.
+	e := New(quiet, 0)
+	e.SetBlocker(nameBlocker("target.example."))
+	e.Load(z, recs, []*dnsconf.Forwarder{fwd("g", "", "udp", "127.0.0.1", startUDPTCP(t, &upstreamHandler{ip: "10.0.0.1"}))}, dnsconf.DefaultSettings())
+	q := new(dns.Msg)
+	q.SetQuestion("ext.maison.lan.", dns.TypeA)
+	m, src := e.handle(context.Background(), q, netip.MustParseAddr("192.168.1.2"))
+	if src != SourceBlocked || m.Rcode != dns.RcodeNameError || len(m.Answer) != 0 {
+		t.Fatalf("blocked CNAME target resolved: %s %v", src, m)
+	}
+}
+
+func TestLocalCNAMETargetValidated(t *testing.T) {
+	auth, _, ksk := signedPair(t, dns.ECDSAP256SHA256, "nsec")
+	h := &tamperer{auth: auth}
+	h.on.Store(true)
+	val := validatingEngine(t, h, ksk, dnsconf.DefaultSettings())
+	z := &dnsconf.Zone{ID: "h", Name: "home.lan", Kind: dnsconf.KindPrimary, TTL: 3600, Serial: 1,
+		SOA: dnsconf.SOA{PrimaryNS: "ns.home.lan.", AdminEmail: "admin@home.lan", Refresh: 3600, Retry: 600, Expire: 604800, Minimum: 300}}
+	recs := map[string][]*dnsconf.Record{"h": {{Name: "alias", Type: "CNAME", Data: dnsconf.RecordData{Target: "www.maison.lan."}}}}
+	val.Load([]*dnsconf.Zone{z}, recs, []*dnsconf.Forwarder{fwd("f1", "", "udp", "127.0.0.1", startUDPTCP(t, h))}, dnsconf.DefaultSettings())
+	m := askDO(val, "alias.home.lan", dns.TypeA)
+	if m.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("forged CNAME target accepted: %v", m)
+	}
+	for _, rr := range m.Answer {
+		if a, ok := rr.(*dns.A); ok && a.A.String() == "10.6.6.6" {
+			t.Fatalf("forged address served: %v", m)
+		}
+	}
+}
