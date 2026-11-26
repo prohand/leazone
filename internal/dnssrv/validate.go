@@ -3,6 +3,7 @@ package dnssrv
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -616,7 +617,7 @@ func (v *validator) check(ctx context.Context, qname string, qtype uint16, m *dn
 // checkCached is check with a short memory per question (the forwarded
 // answer comes from the cache, so it is the same until it expires).
 func (v *validator) checkCached(ctx context.Context, q dns.Question, m *dns.Msg) (vstatus, string) {
-	key := strings.ToLower(q.Name) + "/" + dns.TypeToString[q.Qtype]
+	key := strings.ToLower(q.Name) + "/" + strconv.Itoa(int(q.Qtype))
 	now := v.now()
 	v.mu.Lock()
 	e, ok := v.memo[key]

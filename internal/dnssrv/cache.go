@@ -2,6 +2,7 @@ package dnssrv
 
 import (
 	"container/list"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,7 +48,8 @@ func (c *cache) configure(max int, minTTL, maxTTL, negMax uint32) {
 }
 
 func cacheKey(q dns.Question, do bool) string {
-	k := strings.ToLower(q.Name) + "|" + dns.TypeToString[q.Qtype] + "|" + dns.ClassToString[q.Qclass]
+	// Numeric type and class: the mnemonic is "" for unknown types.
+	k := strings.ToLower(q.Name) + "|" + strconv.Itoa(int(q.Qtype)) + "|" + strconv.Itoa(int(q.Qclass))
 	if do {
 		k += "|do"
 	}
