@@ -186,7 +186,6 @@ export function ListInput({
         type="button"
         variant="outline"
         size="sm"
-        id={values.length === 0 ? id : undefined}
         onClick={() => {
           focusNext.current = values.length
           onChange([...values, ""])

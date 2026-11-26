@@ -24,6 +24,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { useDebounced } from "@/hooks/use-debounced"
 import { useCurrentUser } from "@/hooks/use-session"
 import { ipToInt, leaseStateLabel, leaseStates, vlanLabel } from "@/lib/dhcp"
 import { errorMessage } from "@/lib/errors"
@@ -71,7 +72,9 @@ export default function LeasesPage() {
   const stateParam = params.get("state") as LeaseState | null
   const state = stateParam && leaseStates.includes(stateParam) ? stateParam : undefined
   const showOld = params.get("all") === "1"
-  const q = params.get("q") ?? ""
+  // Search text lives in local state (typing stays smooth) and is mirrored in the URL.
+  const [q, setQ] = React.useState(() => params.get("q") ?? "")
+  const debouncedQ = useDebounced(q, 300)
 
   const setParam = (key: string, value: string | undefined) =>
     setParams(
@@ -84,6 +87,10 @@ export default function LeasesPage() {
       },
       { replace: true },
     )
+
+  React.useEffect(() => {
+    if ((params.get("q") ?? "") !== debouncedQ) setParam("q", debouncedQ || undefined)
+  }, [debouncedQ])
 
   // Released and expired leases are only returned with all=true.
   const filters: LeaseFilters = {
@@ -304,7 +311,7 @@ export default function LeasesPage() {
         loading={list.isPending}
         getRowId={leaseKey}
         search={q}
-        onSearchChange={(v) => setParam("q", v || undefined)}
+        onSearchChange={setQ}
         searchAutoFocus={focusSearch}
         searchPlaceholder="IP, MAC, nom, circuit-id…"
         initialSorting={[{ id: "ip", desc: false }]}

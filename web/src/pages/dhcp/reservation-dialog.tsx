@@ -90,7 +90,14 @@ export function ReservationDialog({
     if (open && !form.scopeId && items.length === 1) setForm((f) => ({ ...f, scopeId: items[0].id ?? "" }))
   }, [open, items.length])
 
-  const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }))
+  const set = (patch: Partial<Form>) => {
+    setForm((f) => ({ ...f, ...patch }))
+    // Editing a field hides its client-side error.
+    setLocal((l) => {
+      const keys = Object.keys(patch).flatMap((k) => (k === "by" ? ["mac", "clientId"] : [k]))
+      return keys.some((k) => k in l) ? Object.fromEntries(Object.entries(l).filter(([k]) => !keys.includes(k))) : l
+    })
+  }
   const err = (k: string) => local[k] ?? fieldError(save.error, k)
   const scope = items.find((s) => s.id === form.scopeId)
   const net = parseNet4(scope?.network ?? "")

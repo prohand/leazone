@@ -329,7 +329,18 @@ export function ScopeDialog({
     if (save.isError) scrollToError()
   }, [save.error])
 
-  const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }))
+  // Editing a field hides its client-side error (and those of its list items).
+  const clearLocal = (keys: string[]) =>
+    setLocal((l) => {
+      const next = Object.fromEntries(
+        Object.entries(l).filter(([k]) => !keys.some((p) => k === p || k.startsWith(`${p}[`) || k.startsWith(`${p}.`))),
+      )
+      return Object.keys(next).length === Object.keys(l).length ? l : next
+    })
+  const set = (patch: Partial<Form>) => {
+    setForm((f) => ({ ...f, ...patch }))
+    clearLocal(Object.keys(patch).map((k) => (k === "leaseValue" || k === "leaseUnit" ? "leaseTime" : k)))
+  }
   const err = (k: string) => local[k] ?? fieldError(save.error, k)
   const errItem = (prefix: string, i: number) =>
     err(`${prefix}[${i}]`) ?? err(`${prefix}[${i}].start`) ?? err(`${prefix}[${i}].end`)
@@ -366,6 +377,7 @@ export function ScopeDialog({
       return
     }
     const id = Number(choice)
+    clearLocal(["vlanId", "name", "interface", "network", "rangeStart", "rangeEnd"])
     setForm((f) => {
       let next: Form = { ...f, vlanId: choice }
       const label = knownVlans.find((v) => v.id === id)?.name
@@ -379,6 +391,7 @@ export function ScopeDialog({
   }
 
   const setNetwork = (v: string) => {
+    clearLocal(["network", "rangeStart", "rangeEnd"])
     setForm((f) => {
       const r = !rangeTouched ? suggestRange(v) : null
       return { ...f, network: v, ...(r ? { rangeStart: r.start, rangeEnd: r.end } : {}) }
@@ -393,6 +406,7 @@ export function ScopeDialog({
       setVlanChoice(knownVlans.some((v) => v.id === iface.vlanId) ? String(iface.vlanId) : "other")
     }
     next = fillFromIface(next, iface)
+    clearLocal(["interface", "vlanId", "network", "rangeStart", "rangeEnd"])
     setForm(next)
   }
 

@@ -97,6 +97,8 @@ export function ImportTab() {
   const set = (patch: Partial<Form>) => {
     setForm((f) => ({ ...f, ...patch }))
     if (run.isError) run.reset()
+    const keys = Object.keys(patch).flatMap((k) => (k === "zones" || k === "forwarders" || k === "dhcp" ? ["what"] : [k]))
+    setLocal((l) => (keys.some((k) => k in l) ? Object.fromEntries(Object.entries(l).filter(([k]) => !keys.includes(k))) : l))
   }
   const err = (k: string) => local[k] ?? fieldError(run.error, k)
   const fingerprint = JSON.stringify(toInput(form, true))
