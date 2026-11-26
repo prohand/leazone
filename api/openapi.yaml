@@ -887,6 +887,221 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ForwarderTest" }
 
+  /vlans:
+    get:
+      summary: VLAN overview (labels + VLANs detected on the host) with scope usage
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/VlanOverview" } }
+                  untaggedScopes: { type: array, items: { $ref: "#/components/schemas/ScopeUsage" }, description: "Scopes not linked to a VLAN" }
+    post:
+      summary: Give a name to a VLAN ID (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VlanInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vlan" }
+  /vlans/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Rename / change a VLAN label (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VlanInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vlan" }
+    delete:
+      summary: Delete a VLAN label (config.write). Refused while scopes use it.
+      responses:
+        "204": { description: Deleted }
+
+  /dhcp/status:
+    get:
+      summary: DHCP server state
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DhcpStatus" }
+  /dhcp/scopes:
+    get:
+      summary: List scopes with usage
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Scope" } }
+    post:
+      summary: Create a scope (config.write). The reverse DNS zone of its network is created automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScopeInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Scope" }
+  /dhcp/scopes/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: One scope
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Scope" }
+    put:
+      summary: Replace a scope (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScopeInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Scope" }
+    delete:
+      summary: Delete a scope, its reservations and leases (config.write, step-up required)
+      responses:
+        "204": { description: Deleted }
+
+  /dhcp/reservations:
+    get:
+      summary: Reservations, optionally of one scope
+      parameters:
+        - { name: scope, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Reservation" } }
+    post:
+      summary: Create a reservation (leases.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReservationInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reservation" }
+  /dhcp/reservations/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Replace a reservation (leases.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReservationInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reservation" }
+    delete:
+      summary: Delete a reservation (leases.write)
+      responses:
+        "204": { description: Deleted }
+
+  /dhcp/leases:
+    get:
+      summary: Leases (offered, bound, declined; expired/released of the last 24 h with all=true)
+      parameters:
+        - { name: scope, in: query, schema: { type: string } }
+        - { name: vlan, in: query, schema: { type: integer }, description: "VLAN ID" }
+        - { name: state, in: query, schema: { type: string, enum: [offered, bound, released, expired, declined] } }
+        - { name: q, in: query, schema: { type: string }, description: "Search IP, MAC, hostname, circuit-id" }
+        - { name: all, in: query, schema: { type: boolean }, description: "Include released/expired" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Lease" } }
+  /dhcp/leases/{scope}/{ip}:
+    parameters:
+      - { name: scope, in: path, required: true, schema: { type: string } }
+      - { name: ip, in: path, required: true, schema: { type: string } }
+    delete:
+      summary: Release a lease now (leases.write). The client gets a NAK at its next renewal.
+      responses:
+        "204": { description: Released }
+  /dhcp/leases/{scope}/{ip}/reserve:
+    parameters:
+      - { name: scope, in: path, required: true, schema: { type: string } }
+      - { name: ip, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Turn a lease into a reservation (leases.write)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reservation" }
+
+  /import/technitium:
+    post:
+      summary: Import zones, forwarders and DHCP scopes from a Technitium DNS Server (admin, step-up required)
+      description: |
+        Reads the old server through its HTTP API. Use dryRun=true first to see what would be imported.
+        Existing objects with the same name are never overwritten (action "skip").
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TechnitiumImportInput" }
+      responses:
+        "200":
+          description: Report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportReport" }
+
 components:
   securitySchemes:
     session:
@@ -1271,3 +1486,183 @@ components:
         rcode: { type: string }
         answers: { type: array, items: { type: string } }
         error: { type: string, description: "French message, e.g. certificat invalide" }
+
+    Vlan:
+      type: object
+      properties:
+        id: { type: string }
+        vlanId: { type: integer, minimum: 1, maximum: 4094 }
+        name: { type: string, example: Invités }
+
+    VlanInput:
+      type: object
+      required: [vlanId, name]
+      properties:
+        vlanId: { type: integer, minimum: 1, maximum: 4094 }
+        name: { type: string, maxLength: 64 }
+
+    ScopeUsage:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        network: { type: string }
+        mode: { type: string, enum: [direct, relay, both, none] }
+        enabled: { type: boolean }
+        size: { type: integer, description: "Addresses in the range minus exclusions" }
+        used: { type: integer, description: "Bound + offered + declined + reserved" }
+        activeLeases: { type: integer }
+        percent: { type: number }
+        alert: { type: boolean, description: "percent >= alertThreshold" }
+        alertThreshold: { type: integer }
+
+    VlanOverview:
+      type: object
+      properties:
+        id: { type: [string, "null"], description: "null when the VLAN is only detected on the host" }
+        vlanId: { type: integer }
+        name: { type: string, description: "Label, empty if none" }
+        interfaces:
+          type: array
+          description: Host interfaces carrying this VLAN
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              parent: { type: string }
+              addresses: { type: array, items: { type: string }, description: "CIDR" }
+              dhcpEnabled: { type: boolean }
+        scopes: { type: array, items: { $ref: "#/components/schemas/ScopeUsage" } }
+
+    DhcpStatus:
+      type: object
+      properties:
+        listening: { type: boolean }
+        error: { type: string }
+        port: { type: integer }
+        interfaces: { type: array, items: { type: string }, description: "Interfaces with DHCP enabled" }
+        pingAvailable: { type: boolean, description: "false: ping before lease cannot work (NET_RAW missing)" }
+
+    DhcpOption:
+      type: object
+      required: [code, type, value]
+      properties:
+        code: { type: integer, minimum: 1, maximum: 254 }
+        type: { type: string, enum: [ip, ips, string, u8, u16, u32, bool, hex] }
+        value: { type: string, description: "ips: comma separated; bool: true/false; hex: e.g. 01:02:0a" }
+
+    IpRange:
+      type: object
+      required: [start, end]
+      properties:
+        start: { type: string }
+        end: { type: string }
+
+    ScopeInput:
+      type: object
+      required: [name, network, rangeStart, rangeEnd]
+      properties:
+        name: { type: string, example: "20 - Invités" }
+        vlanId: { type: [integer, "null"], description: "VLAN ID (1-4094); a label is created if missing" }
+        enabled: { type: boolean, default: true }
+        network: { type: string, example: 192.168.20.0/24 }
+        rangeStart: { type: string, example: 192.168.20.100 }
+        rangeEnd: { type: string, example: 192.168.20.199 }
+        exclusions: { type: array, items: { $ref: "#/components/schemas/IpRange" } }
+        leaseTime: { type: integer, description: "Seconds (default 86400)" }
+        gateway: { type: string }
+        dnsServers: { type: array, items: { type: string } }
+        domain: { type: string, description: "Option 15 (domain name sent to clients)" }
+        ntpServers: { type: array, items: { type: string } }
+        options: { type: array, items: { $ref: "#/components/schemas/DhcpOption" } }
+        interface: { type: [string, "null"], description: "Direct mode: host interface in this network (e.g. eno1.20)" }
+        relay: { type: boolean, description: "Relay mode: accept requests relayed with a giaddr in this network" }
+        relayAgents: { type: array, items: { type: string }, description: "Extra relay addresses (giaddr) outside the network" }
+        ddnsEnabled: { type: boolean, default: true }
+        ddnsDomain: { type: string, description: "Zone for automatic A records, e.g. invites.lan (created if missing)" }
+        pingCheck: { type: boolean, default: false }
+        alertThreshold: { type: integer, default: 80 }
+
+    Scope:
+      allOf:
+        - $ref: "#/components/schemas/ScopeInput"
+        - type: object
+          properties:
+            id: { type: string }
+            vlanName: { type: string }
+            mode: { type: string, enum: [direct, relay, both, none] }
+            usage: { $ref: "#/components/schemas/ScopeUsage" }
+            reverseZones: { type: array, items: { type: string } }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+
+    ReservationInput:
+      type: object
+      required: [scopeId, ip]
+      properties:
+        scopeId: { type: string }
+        mac: { type: string, description: "aa:bb:cc:dd:ee:ff (mac or clientId required)" }
+        clientId: { type: string, description: "Option 61 in hex, e.g. 01:aa:bb:cc:dd:ee:ff" }
+        ip: { type: string }
+        hostname: { type: string }
+        description: { type: string }
+
+    Reservation:
+      allOf:
+        - $ref: "#/components/schemas/ReservationInput"
+        - type: object
+          properties:
+            id: { type: string }
+            scopeName: { type: string }
+            createdAt: { type: string, format: date-time }
+
+    Lease:
+      type: object
+      properties:
+        scopeId: { type: string }
+        scopeName: { type: string }
+        vlanId: { type: [integer, "null"] }
+        ip: { type: string }
+        mac: { type: string }
+        clientId: { type: string }
+        hostname: { type: string }
+        state: { type: string, enum: [offered, bound, released, expired, declined] }
+        starts: { type: string, format: date-time }
+        ends: { type: string, format: date-time }
+        circuitId: { type: string, description: "Option 82.1, printable or hex" }
+        remoteId: { type: string, description: "Option 82.2, printable or hex" }
+        giaddr: { type: string, description: "Relay address, empty in direct mode" }
+        reserved: { type: boolean }
+        dnsName: { type: [string, "null"], description: "FQDN registered in DNS" }
+
+    TechnitiumImportInput:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, example: "http://10.0.0.5:5380" }
+        token: { type: string, description: "API token (preferred)" }
+        username: { type: string }
+        password: { type: string }
+        tlsVerify: { type: boolean, default: true }
+        dryRun: { type: boolean, default: true }
+        zones: { type: boolean, default: true }
+        forwarders: { type: boolean, default: true }
+        dhcp: { type: boolean, default: true }
+
+    ImportItem:
+      type: object
+      properties:
+        kind: { type: string, enum: [zone, forwarder, scope, reservation] }
+        name: { type: string }
+        action: { type: string, enum: [create, skip, error] }
+        detail: { type: string }
+
+    ImportReport:
+      type: object
+      properties:
+        dryRun: { type: boolean }
+        source: { type: string, description: "Technitium version" }
+        items: { type: array, items: { $ref: "#/components/schemas/ImportItem" } }
+        created: { type: integer }
+        skipped: { type: integer }
+        errors: { type: integer }
