@@ -213,14 +213,14 @@ func TestCacheTTL(t *testing.T) {
 	q := dns.Question{Name: "a.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	m := new(dns.Msg)
 	m.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 10}, A: net.ParseIP("1.2.3.4")}}
-	c.set(q, false, m) // TTL 10 raised to the minimum 60
+	c.set(q, false, false, m) // TTL 10 raised to the minimum 60
 	now = now.Add(30 * time.Second)
-	got := c.get(q, false)
+	got := c.get(q, false, false)
 	if got == nil || got.Answer[0].Header().Ttl != 30 {
 		t.Fatalf("ttl after 30 s: %v", got)
 	}
 	now = now.Add(31 * time.Second)
-	if c.get(q, false) != nil {
+	if c.get(q, false, false) != nil {
 		t.Fatal("expired entry returned")
 	}
 	// LRU eviction.
@@ -229,9 +229,9 @@ func TestCacheTTL(t *testing.T) {
 		qi := dns.Question{Name: strconv.Itoa(i) + ".example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 		mi := new(dns.Msg)
 		mi.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: qi.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 50}, A: net.ParseIP("1.2.3.4")}}
-		c.set(qi, false, mi)
+		c.set(qi, false, false, mi)
 	}
-	if c.len() != 2 || c.get(dns.Question{Name: "0.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}, false) != nil {
+	if c.len() != 2 || c.get(dns.Question{Name: "0.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}, false, false) != nil {
 		t.Fatal("LRU eviction failed")
 	}
 }

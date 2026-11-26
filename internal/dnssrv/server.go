@@ -380,10 +380,10 @@ func (e *Engine) mayRecurse(st *state, client netip.Addr) bool {
 // concurrent queries.
 func (e *Engine) forward(ctx context.Context, st *state, q dns.Question, do, cd bool) (*dns.Msg, string, error) {
 	q.Name = dns.Fqdn(q.Name)
-	if m := e.cache.get(q, do); m != nil {
+	if m := e.cache.get(q, do, cd); m != nil {
 		return m, SourceCache, nil
 	}
-	key := cacheKey(q, do)
+	key := cacheKey(q, do, cd)
 	v, err, _ := e.sf.Do(key, func() (any, error) {
 		qm := new(dns.Msg)
 		qm.SetQuestion(q.Name, q.Qtype)
@@ -395,7 +395,7 @@ func (e *Engine) forward(ctx context.Context, st *state, q dns.Question, do, cd 
 		if err != nil {
 			return nil, err
 		}
-		e.cache.set(q, do, r)
+		e.cache.set(q, do, cd, r)
 		return r, nil
 	})
 	if err != nil {
