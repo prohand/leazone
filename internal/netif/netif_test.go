@@ -86,3 +86,29 @@ func find(l []Interface, name string) (Interface, bool) {
 	}
 	return Interface{}, false
 }
+
+// TestClosedEventChannel: netlink closes an event channel when its socket
+// fails. The watcher must not spin on it and must subscribe again.
+func TestClosedEventChannel(t *testing.T) {
+	w := NewWatcher(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.pollEvery = 20 * time.Millisecond
+	resub := make(chan struct{}, 16)
+	calls := 0
+	w.subLinks = func(ch chan netlink.LinkUpdate, _ <-chan struct{}, _ func(error)) error {
+		if calls++; calls == 1 {
+			close(ch) // Receive failed
+		} else {
+			resub <- struct{}{}
+		}
+		return nil
+	}
+	w.subAddrs = func(chan netlink.AddrUpdate, <-chan struct{}, func(error)) error { return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	select {
+	case <-resub:
+	case <-time.After(5 * time.Second):
+		t.Fatal("link events not subscribed again after the channel was closed")
+	}
+}

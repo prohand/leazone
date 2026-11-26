@@ -133,11 +133,22 @@ type Watcher struct {
 	list []Interface
 	subs []func([]Interface)
 	kick chan struct{}
+
+	// Event sources and polling period (replaced in tests).
+	subLinks  func(ch chan netlink.LinkUpdate, done <-chan struct{}, cb func(error)) error
+	subAddrs  func(ch chan netlink.AddrUpdate, done <-chan struct{}, cb func(error)) error
+	pollEvery time.Duration
 }
 
 // NewWatcher builds a watcher; call Run to start it.
 func NewWatcher(log *slog.Logger) *Watcher {
-	return &Watcher{log: log, kick: make(chan struct{}, 1)}
+	return &Watcher{log: log, kick: make(chan struct{}, 1), pollEvery: 30 * time.Second,
+		subLinks: func(ch chan netlink.LinkUpdate, done <-chan struct{}, cb func(error)) error {
+			return netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{ErrorCallback: cb})
+		},
+		subAddrs: func(ch chan netlink.AddrUpdate, done <-chan struct{}, cb func(error)) error {
+			return netlink.AddrSubscribeWithOptions(ch, done, netlink.AddrSubscribeOptions{ErrorCallback: cb})
+		}}
 }
 
 // Interfaces returns the last known snapshot.
@@ -171,29 +182,32 @@ func (w *Watcher) Refresh() {
 }
 
 // Run listens for netlink link and address events until ctx is done. A
-// periodic refresh (30 s) also covers missed events.
+// periodic refresh (30 s) also covers missed events. netlink closes an event
+// channel when its socket fails: the subscription is then renewed at the
+// next poll.
 func (w *Watcher) Run(ctx context.Context) {
 	w.Refresh()
-	linkCh := make(chan netlink.LinkUpdate, 64)
-	addrCh := make(chan netlink.AddrUpdate, 64)
 	done := make(chan struct{})
 	defer close(done)
-	if err := netlink.LinkSubscribeWithOptions(linkCh, done, netlink.LinkSubscribeOptions{ErrorCallback: w.subErr}); err != nil {
-		w.log.Warn("netlink link events unavailable, polling only", "err", err)
-	}
-	if err := netlink.AddrSubscribeWithOptions(addrCh, done, netlink.AddrSubscribeOptions{ErrorCallback: w.subErr}); err != nil {
-		w.log.Warn("netlink address events unavailable, polling only", "err", err)
-	}
-	poll := time.NewTicker(30 * time.Second)
+	linkCh, addrCh := w.subscribeLinks(done), w.subscribeAddrs(done)
+	poll := time.NewTicker(w.pollEvery)
 	defer poll.Stop()
 	var debounce <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-linkCh:
+		case _, ok := <-linkCh:
+			if !ok {
+				w.log.Warn("netlink link events stopped, resubscribing at next poll")
+				linkCh = nil // a nil channel is never ready: no busy loop
+			}
 			debounce = time.After(300 * time.Millisecond)
-		case <-addrCh:
+		case _, ok := <-addrCh:
+			if !ok {
+				w.log.Warn("netlink address events stopped, resubscribing at next poll")
+				addrCh = nil
+			}
 			debounce = time.After(300 * time.Millisecond)
 		case <-w.kick:
 			debounce = time.After(10 * time.Millisecond)
@@ -201,9 +215,33 @@ func (w *Watcher) Run(ctx context.Context) {
 			debounce = nil
 			w.Refresh()
 		case <-poll.C:
+			if linkCh == nil {
+				linkCh = w.subscribeLinks(done)
+			}
+			if addrCh == nil {
+				addrCh = w.subscribeAddrs(done)
+			}
 			w.Refresh()
 		}
 	}
+}
+
+// subscribeLinks subscribes to link events.
+func (w *Watcher) subscribeLinks(done <-chan struct{}) chan netlink.LinkUpdate {
+	ch := make(chan netlink.LinkUpdate, 64)
+	if err := w.subLinks(ch, done, w.subErr); err != nil {
+		w.log.Warn("netlink link events unavailable, polling only", "err", err)
+	}
+	return ch // never ready when the subscription failed
+}
+
+// subscribeAddrs subscribes to address events.
+func (w *Watcher) subscribeAddrs(done <-chan struct{}) chan netlink.AddrUpdate {
+	ch := make(chan netlink.AddrUpdate, 64)
+	if err := w.subAddrs(ch, done, w.subErr); err != nil {
+		w.log.Warn("netlink address events unavailable, polling only", "err", err)
+	}
+	return ch // never ready when the subscription failed
 }
 
 // Kick asks for a refresh soon (used after settings changes).
