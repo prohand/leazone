@@ -94,7 +94,9 @@ st=$(curl -sk -X POST -H 'Content-Type: application/json' -H "Origin: $B" $B/api
   -d "{\"username\":\"admin\",\"password\":\"$newpw\"}")
 echo "$st" | grep -q '"mfa_setup_required"' && ok "login with the new password" || ko "login after reset: $st"
 docker exec $NAME /leazone admin reset-mfa admin | grep -q "MFA réinitialisé" && ok "admin reset-mfa" || ko "reset-mfa"
-docker exec $NAME /leazone migrate status | grep -q "schéma de la base : 1" && ok "migrate status" || ko "migrate status"
+ms=$(docker exec $NAME /leazone migrate status)
+[[ "$ms" =~ schéma\ de\ la\ base\ :\ ([0-9]+),\ attendu\ par\ cette\ version\ :\ ([0-9]+) ]] && \
+  [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ] && ok "migrate status: schema up to date (${BASH_REMATCH[1]})" || ko "migrate status: $ms"
 
 echo "== restart keeps data (no new admin password)"
 docker restart $NAME >/dev/null
