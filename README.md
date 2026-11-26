@@ -2,10 +2,11 @@
 
 Serveur **DNS + DHCP** léger, avec haute disponibilité, interface web moderne, conçu pour Docker.
 
-> **État : phase 3 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
+> **État : phase 4 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
 > codes de secours, sessions, rôles, jetons d'API, audit), l'image Docker, le **DNS** (zones, redirecteurs
 > UDP/TCP/DoT/DoH, cache, écoute par interface), le **DHCP multi-VLAN** (direct et relais, enregistrement DNS
-> automatique) et l'**import depuis Technitium**. HA (phase 4), blocage et DNSSEC (phase 5) arrivent ensuite.
+> automatique), l'**import depuis Technitium** et la **haute disponibilité** (2 nœuds + témoin, bascule automatique,
+> IP virtuelle). Blocage et DNSSEC (phase 5), tableau de bord et sauvegardes (phase 6) arrivent ensuite.
 > Le plan complet est dans [docs/PLAN.md](docs/PLAN.md).
 
 ---
@@ -252,6 +253,104 @@ et n'est pas enregistré.
 
 ---
 
+## Haute disponibilité en 5 minutes
+
+Deux nœuds Leazone (un conteneur par hôte) et un **témoin** sur un 3e hôte (petite VM, NAS, Raspberry Pi).
+
+```text
+   hôte 1 (dns1)            hôte 2 (dns2)            hôte 3
+ ┌──────────────┐  7443  ┌──────────────┐         ┌─────────┐
+ │ leazone      │◄──────►│ leazone      │         │ témoin  │
+ │ primaire     │ mTLS   │ secondaire   │         │         │
+ └──────┬───────┘        └──────┬───────┘         └────▲────┘
+        └────────── 7443 ───────┴───────── 7443 ───────┘
+        IP virtuelle 192.168.1.10 (portée par le primaire)
+```
+
+1. **Une clé de cluster**, la même partout (c'est elle qui authentifie les nœuds entre eux) :
+   ```bash
+   mkdir -p compose/secrets && openssl rand -base64 32 > compose/secrets/cluster_key && touch compose/secrets/admin_password
+   ```
+   Copiez `compose/secrets/cluster_key` sur les 3 hôtes.
+2. **Le témoin** (hôte 3) :
+   ```bash
+   docker compose -f compose/witness.yml up -d
+   ```
+3. **La configuration** (identique sur les hôtes 1 et 2) :
+   ```bash
+   cp compose/.env.ha.example compose/.env
+   ```
+   Renseignez `NODE1_IP`, `NODE2_IP`, `LEAZONE_WITNESS=https://<ip-témoin>:7443`, et si vous voulez une IP virtuelle :
+   `LEAZONE_VIP` et `NODE1_VIP_INTERFACE` / `NODE2_VIP_INTERFACE`.
+4. **Les nœuds** :
+   ```bash
+   docker compose -f compose/ha-node1.yml --env-file compose/.env up -d
+   ```
+   ```bash
+   docker compose -f compose/ha-node2.yml --env-file compose/.env up -d
+   ```
+5. Ouvrez l'interface du nœud 1 (ou l'IP virtuelle) : la page **Cluster** montre le primaire, le secondaire et le témoin.
+   Configurez tout sur le primaire : le secondaire reçoit chaque modification, en lecture seule.
+
+Ports à ouvrir entre les hôtes : **TCP 7443** (nœuds ↔ nœuds, nœuds → témoin).
+
+### Ce qui se passe en cas de panne
+
+| Événement | Réaction |
+|---|---|
+| Le primaire ne répond plus (3 heartbeats manqués, 3 s par défaut) | Le secondaire demande le rôle au témoin ; le témoin l'accorde quand le bail du primaire a expiré (6 s) et si le secondaire a **toutes** les modifications validées. Il prend l'IP virtuelle (ARP gratuit) et sert tous les clients DHCP |
+| Le lien entre les deux nœuds est coupé, les deux voient le témoin | Le primaire garde son bail, le secondaire ne peut pas le prendre : **jamais deux primaires** |
+| Le primaire perd tout le réseau | Il redevient secondaire de lui-même (plus de quorum) avant que le témoin ne donne le rôle à l'autre |
+| L'ancien primaire revient | Toujours **secondaire d'abord**, resynchronisation, puis retour à son rôle (auto après 5 min par défaut, ou bouton *Rebasculer*) |
+| Modification faite sur un primaire juste avant qu'il soit coupé, jamais transmise | Rien n'est perdu en silence : elle apparaît dans *Cluster > Conflits*, avec *Réappliquer* / *Ignorer* |
+
+Mesuré dans les tests Docker : promotion du secondaire **4 s** après l'arrêt du primaire, DNS de nouveau servi
+sur l'IP virtuelle 4,3 s après la panne.
+
+### Le témoin : conteneur ou IP à pinger
+
+| `LEAZONE_WITNESS` | Protection |
+|---|---|
+| `https://<ip>:7443` (conteneur témoin) | **Complète** : jamais deux primaires, et un nœud en retard ne peut pas devenir primaire |
+| `ping:<ip>` (ex : la passerelle) | **Partielle** : protège si un nœud est isolé, mais si seul le lien entre les deux nœuds coupe, les deux peuvent devenir primaires. Le DHCP reste sûr (chaque nœud ne donne que ses propres adresses) ; les modifications faites des deux côtés finissent en conflits |
+| vide | Pas de bascule automatique : bouton *Promouvoir ce nœud* sur la page Cluster |
+
+### DHCP en HA
+
+- **Load-balancing** (par défaut) : chaque client est servi par un seul nœud selon le hachage de sa MAC ou de son
+  identifiant client (RFC 3074), environ 50/50. Chaque nœud ne donne de **nouvelles** adresses que dans sa moitié de la plage,
+  et chaque bail est envoyé à l'autre nœud **avant** l'accusé de réception au client. Un même bail ne peut donc jamais
+  être donné à deux clients, même si les nœuds sont coupés l'un de l'autre.
+- Quand le témoin confirme que l'autre nœud est en panne, le survivant sert tous les clients et toute la plage.
+- **Actif/passif** (*Cluster > Paramètres*) : seul le primaire répond.
+- Relais : mettez les **deux** nœuds en `ip helper-address`.
+
+### Passkeys et HTTPS en HA
+
+Utilisez **le même nom** pour les deux nœuds (celui de l'IP virtuelle, ou nginx devant l'IP virtuelle) et le même
+`LEAZONE_PUBLIC_URL`. Une passkey est liée à un nom : avec un nom par nœud, elle ne marcherait plus après une bascule.
+Le certificat importé est répliqué (chiffré) sur les deux nœuds.
+
+### Mise à jour sans coupure
+
+1. Mettez à jour le **secondaire** :
+   ```bash
+   docker compose -f compose/ha-node2.yml --env-file compose/.env pull
+   ```
+   ```bash
+   docker compose -f compose/ha-node2.yml --env-file compose/.env up -d
+   ```
+   Pendant que les versions diffèrent, la configuration est **en lecture seule** (bandeau orange) ; DNS, DHCP et baux
+   continuent d'être servis et synchronisés.
+2. Mettez à jour le **primaire** de la même façon (`ha-node1.yml`). Le secondaire prend le relais pendant le redémarrage,
+   puis le nœud 1 reprend son rôle.
+3. Les deux nœuds ont la même version : la configuration redevient modifiable.
+
+Deux versions trop éloignées (version majeure différente, ou plus d'une version mineure d'écart) refusent de se
+synchroniser, avec un message clair sur la page Cluster : mettez-les à jour l'une après l'autre.
+
+---
+
 ## Comptes et sécurité
 
 - **Rôles** : `admin` (tout), `operator` (baux, réservations, enregistrements DNS), `readonly` (lecture seule).
@@ -333,7 +432,7 @@ l'ancienne version (`leazone version` affiche le schéma), puis lancez l'ancienn
 docker compose -f compose/single.yml --env-file compose/.env run --rm leazone migrate down --to 1
 ```
 
-La procédure sans coupure en HA arrive avec la phase 4.
+En HA, suivez « Mise à jour sans coupure » plus haut.
 
 ---
 
@@ -385,6 +484,18 @@ Les noms locaux répondent à tous. Pour les noms externes, ajoutez le réseau d
 - Derrière nginx : `LEAZONE_PUBLIC_URL` doit être exactement l'URL du navigateur, et `LEAZONE_TRUSTED_PROXIES` l'IP de nginx.
 - Si vous avez réglé un RP ID (*Paramètres > Sécurité*), le nom du navigateur doit être ce domaine ou un sous-domaine.
 - Une passkey est liée au nom : si vous changez de nom, il faut en enregistrer une nouvelle.
+
+**Le cluster ne se forme pas (page Cluster : nœud « hors ligne »)**
+- TCP 7443 doit être ouvert entre les nœuds et vers le témoin (`nc -vz <ip> 7443`).
+- La clé de cluster doit être **identique** partout (sinon : « certificat de cluster refusé »).
+- `LEAZONE_CLUSTER_ADDR` / `NODEx_IP` : l'adresse que l'**autre** nœud utilise pour joindre celui-ci.
+
+**Un nœud reste « isolé »**
+Il ne voit ni le primaire ni le droit de devenir primaire (témoin injoignable, ou données en retard). Vérifiez le
+témoin (`docker logs leazone-witness`) et la page Cluster (raison affichée). Sans témoin, utilisez *Promouvoir ce nœud*.
+
+**« Ce nœud est secondaire : configuration en lecture seule »**
+C'est normal : modifiez sur le primaire (lien dans le bandeau), ou passez par l'IP virtuelle.
 
 **Je me suis bloqué avec la liste d'IP autorisées**
 `docker exec -it leazone leazone admin reset-ui-allowlist`.

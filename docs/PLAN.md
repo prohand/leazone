@@ -503,6 +503,10 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 | Baux « temps réel » | SSE | Rafraîchissement toutes les 5 s | Plus simple ; SSE reporté au tableau de bord (phase 6) |
 | Import Technitium | Phase 6 | Phase 3 | Demandé plus tôt |
 | Tables DHCP | Tables séparées pour exclusions/options | Colonnes JSON | Toujours lues avec l'étendue |
+| CA du cluster | CA générée puis enrôlement par défi HMAC | CA Ed25519 **dérivée** de la clé de cluster (HKDF) sur chaque nœud | Aucun enrôlement : connaître la clé = être membre ; mêmes garanties (mTLS 1.3) |
+| Journal de config | Entrées écrites par le code | Triggers SQLite générés depuis le schéma | Aucune modification ne peut échapper à la réplication |
+| Actions « Mon compte » sur le secondaire | Relayées au primaire | Refusées (lecture seule, lien vers le primaire) | Plus simple et sûr ; en pratique on passe par l'IP virtuelle |
+| Dernière connexion d'un utilisateur | Colonne de `users` | Table d'état `user_activity` | Écrite sur n'importe quel nœud |
 
 ## 12. Décisions
 
