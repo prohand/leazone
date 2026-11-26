@@ -20,15 +20,15 @@ const (
 
 // Query is what the DNS server reports for each answer.
 type Query struct {
-	Time    time.Time
-	Client  string
-	Name    string
-	Source  string // local, cache, forwarder, blocked, refused, error
-	Failed  bool   // SERVFAIL or error
+	Time   time.Time
+	Client string
+	Name   string
+	Source string // local, cache, forwarder, blocked, refused, error
+	Failed bool   // SERVFAIL or error
 }
 
 type slot struct {
-	start                   int64 // unix seconds of the bucket start, 0 = empty
+	start                    int64 // unix seconds of the bucket start, 0 = empty
 	queries, cached, blocked uint64
 }
 
@@ -152,6 +152,10 @@ func (r *Recorder) Summary(n int) Summary {
 	for i := range out.Series {
 		minutes[out.Series[i].T.Unix()] = &out.Series[i]
 	}
+	// Queries per second over the last ~minute: the current bucket and the
+	// five before it, divided by the time they really cover.
+	curBucket := now - now%10
+	qpsFrom := curBucket - 50
 	var lastMin, hourQ, hourC uint64
 	for _, s := range r.series {
 		if s.start == 0 || now-s.start >= 3600 {
@@ -162,13 +166,13 @@ func (r *Recorder) Summary(n int) Summary {
 			p.Cached += s.cached
 			p.Blocked += s.blocked
 		}
-		if now-s.start < 60 {
+		if s.start >= qpsFrom {
 			lastMin += s.queries
 		}
 		hourQ += s.queries
 		hourC += s.cached
 	}
-	out.QPS = float64(int(float64(lastMin)/60*10+0.5)) / 10
+	out.QPS = float64(int(float64(lastMin)/float64(max(now-qpsFrom, 1))*10+0.5)) / 10
 	if hourQ > 0 {
 		out.CacheHitRate = float64(int(float64(hourC)/float64(hourQ)*1000+0.5)) / 10
 	}

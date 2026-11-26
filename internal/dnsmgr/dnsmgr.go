@@ -12,10 +12,10 @@ import (
 
 	"github.com/prohand/leazone/internal/dnsconf"
 	"github.com/prohand/leazone/internal/dnssec"
-	"github.com/prohand/leazone/internal/modules"
-	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/dnssrv"
+	"github.com/prohand/leazone/internal/modules"
 	"github.com/prohand/leazone/internal/netif"
+	"github.com/prohand/leazone/internal/store"
 )
 
 // Interfaces is the source of host interfaces (netif.Watcher in production).
