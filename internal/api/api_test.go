@@ -27,7 +27,9 @@ import (
 	apispec "github.com/prohand/leazone/api"
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/backup"
 	"github.com/prohand/leazone/internal/blocking"
+	"github.com/prohand/leazone/internal/cluster/repl"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/ddns"
 	"github.com/prohand/leazone/internal/dhcpconf"
@@ -110,6 +112,14 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	box, _ := secrets.NewBox(secrets.NewDEK())
+	rs, err := repl.Open(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.SetRecording(ctx, true, 0); err != nil {
+		t.Fatal(err)
+	}
+	master, _ := secrets.NewBox(secrets.NewDEK())
 	svc, err := auth.NewService(ctx, db, box, log)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +175,15 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(h.dhcp.Server.Close)
-	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, DHCP: h.dhcp, Blocking: h.blocking, Stats: h.stats, QueryLog: h.qlog, Log: log, UI: ui, Spec: spec})
+	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, DHCP: h.dhcp, Blocking: h.blocking, Stats: h.stats, QueryLog: h.qlog, Log: log,
+		Backup: &backup.Service{DB: db, Repl: rs, Box: box, Node: "node-test", Time: 1, MemoryKiB: 64,
+			WrapDEK: func(dek []byte) string { return master.Seal(dek, "dek") }},
+		AfterRestore: func(ctx context.Context) {
+			_ = svc.ReloadSettings(ctx)
+			_ = h.blocking.Reload(ctx)
+			_ = h.dns.Reload(ctx)
+			_ = h.dhcp.Reload(ctx)
+		}, UI: ui, Spec: spec})
 	h.ts = httptest.NewTLSServer(h.srv.Handler())
 	t.Cleanup(h.ts.Close)
 	return h

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,6 +37,11 @@ Commandes :
   admin reset-mfa <user>        Supprime le MFA d'un compte (secours)
   admin reset-password <user>   Donne un nouveau mot de passe à un compte (secours)
   admin reset-ui-allowlist      Vide la liste d'IP autorisées pour l'interface
+  backup [-o fichier] [--password-file f]
+                                Sauvegarde toute la config en YAML (sortie standard par défaut).
+                                Mot de passe : --password-file ou LEAZONE_BACKUP_PASSWORD_FILE
+  restore <fichier|-> [--dry-run] [--password-file f]
+                                Remplace la config par une sauvegarde (- = entrée standard)
   migrate status                Affiche la version du schéma de la base
   migrate down --to N           Revient au schéma N (nœud arrêté)
   caps                          Affiche les capabilities Linux effectives
@@ -62,6 +68,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return migrate(args, stdout, stderr)
 	case "caps":
 		return showCaps(stdout)
+	case "backup":
+		return backupCmd(args, stdout, stderr)
+	case "restore":
+		return restoreCmd(args, os.Stdin, stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "leazone %s (commit %s, built %s, schema %d, cluster protocol %s)\n",
 			version.Version, version.Commit, version.BuildDate, store.LatestSchema(), version.ClusterProtocol)
@@ -295,4 +305,116 @@ func install(src, dst string) error {
 		return err
 	}
 	return caps.SetFile(dst)
+}
+
+func readPasswordFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(b), "\r\n"), nil
+}
+
+func backupCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	out := fs.String("o", "", "fichier de sortie (défaut : sortie standard)")
+	pwFile := fs.String("password-file", "", "fichier contenant le mot de passe")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, ok := loadConfig(stderr)
+	if !ok {
+		return 1
+	}
+	pw, err := readPasswordFile(*pwFile)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	resp, err := control.Call(cfg.ControlSocket, control.Request{Cmd: "backup", Args: map[string]string{"password": pw}}, 2*time.Minute)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if !resp.OK {
+		fmt.Fprintln(stderr, resp.Message)
+		return 1
+	}
+	content, _ := resp.Data["content"].(string)
+	if *out == "" {
+		fmt.Fprint(stdout, content)
+		return 0
+	}
+	if err := os.WriteFile(*out, []byte(content), 0o600); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "Sauvegarde écrite dans %s (%d octets).\n", *out, len(content))
+	return 0
+}
+
+func restoreCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dry := fs.Bool("dry-run", false, "vérifie le fichier et le mot de passe sans rien écrire")
+	pwFile := fs.String("password-file", "", "fichier contenant le mot de passe")
+	// Accept flags before or after the file name.
+	var file string
+	var rest []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			if file == "" {
+				file = a
+				continue
+			}
+		}
+		rest = append(rest, a)
+	}
+	if err := fs.Parse(rest); err != nil {
+		return 2
+	}
+	if file == "" && fs.NArg() > 0 {
+		file = fs.Arg(0)
+	}
+	if file == "" {
+		fmt.Fprintln(stderr, "usage : leazone restore <fichier|-> [--dry-run] [--password-file f]")
+		return 2
+	}
+	cfg, ok := loadConfig(stderr)
+	if !ok {
+		return 1
+	}
+	var data []byte
+	var err error
+	if file == "-" {
+		data, err = io.ReadAll(io.LimitReader(stdin, 64<<20))
+	} else {
+		data, err = os.ReadFile(file)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	pw, err := readPasswordFile(*pwFile)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	req := control.Request{Cmd: "restore", Args: map[string]string{"content": string(data), "password": pw,
+		"dryRun": fmt.Sprint(*dry)}}
+	resp, err := control.Call(cfg.ControlSocket, req, 5*time.Minute)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if !resp.OK {
+		fmt.Fprintln(stderr, resp.Message)
+		return 1
+	}
+	fmt.Fprintln(stdout, resp.Message)
+	return 0
 }

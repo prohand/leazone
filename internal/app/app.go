@@ -23,6 +23,7 @@ import (
 	"github.com/prohand/leazone/internal/api"
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/backup"
 	"github.com/prohand/leazone/internal/blocking"
 	"github.com/prohand/leazone/internal/caps"
 	"github.com/prohand/leazone/internal/cluster"
@@ -60,6 +61,10 @@ type Node struct {
 	auth   *auth.Service
 	audit  *audit.Log
 	ready  atomic.Bool
+
+	backup       *backup.Service
+	afterRestore func(context.Context)
+	writable     func() error // nil on a single node
 }
 
 // Run starts the node and blocks until ctx is cancelled.
@@ -199,6 +204,30 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	go hm.Run(ctx)
 
+	// reloadAll applies a configuration changed from outside the API
+	// (replication, restore).
+	reloadAll := func(ctx context.Context) {
+		if err := n.auth.ReloadSettings(ctx); err != nil {
+			log.Warn("reload security settings", "err", err)
+		}
+		if err := tm.Reload(ctx); err != nil {
+			log.Warn("reload certificate", "err", err)
+		}
+		loadLogSettings(ctx)
+		if err := bm.Reload(ctx); err != nil {
+			log.Warn("reload blocking", "err", err)
+		}
+		if err := dm.Reload(ctx); err != nil {
+			log.Warn("reload DNS", "err", err)
+		}
+		if err := hm.Reload(ctx); err != nil {
+			log.Warn("reload DHCP", "err", err)
+		}
+		if node != nil {
+			node.Reload(ctx)
+		}
+	}
+
 	// High availability.
 	if cfg.Clustered() {
 		vipM, err := vip.New(cfg.VIP, cfg.VIPInterface, log)
@@ -214,27 +243,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		if p, ok := dhcpEngine.Pinger.(*dhcpsrv.ICMPPinger); ok && p != nil {
 			deps.Pinger = p
 		}
-		deps.ConfigApplied = func(ctx context.Context) {
-			if err := n.auth.ReloadSettings(ctx); err != nil {
-				log.Warn("reload security settings", "err", err)
-			}
-			if err := tm.Reload(ctx); err != nil {
-				log.Warn("reload certificate", "err", err)
-			}
-			loadLogSettings(ctx)
-			if err := bm.Reload(ctx); err != nil {
-				log.Warn("reload blocking", "err", err)
-			}
-			if err := dm.Reload(ctx); err != nil {
-				log.Warn("reload DNS", "err", err)
-			}
-			if err := hm.Reload(ctx); err != nil {
-				log.Warn("reload DHCP", "err", err)
-			}
-			if node != nil {
-				node.Reload(ctx)
-			}
-		}
+		deps.ConfigApplied = reloadAll
 		if node, err = cluster.New(deps); err != nil {
 			return fmt.Errorf("cluster: %w", err)
 		}
@@ -247,7 +256,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 
 	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
-		Blocking: bm, Stats: rec, QueryLog: qlog,
+		Blocking: bm, Stats: rec, QueryLog: qlog, Backup: n.backup, AfterRestore: reloadAll,
 		Log: log, UI: web.Dist(), Spec: spec})
 
 	ln, err := net.Listen("tcp", cfg.HTTPListen)
@@ -264,6 +273,13 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		log.Warn("control socket unavailable: CLI commands (healthcheck, admin) will not work", "err", err)
 	}
 
+	n.backup = &backup.Service{DB: n.db, Repl: n.repl, Box: n.box, Node: cfg.NodeName,
+		WrapDEK: func(dek []byte) string { return n.master.Seal(dek, "dek") }}
+	n.afterRestore = reloadAll
+	if node != nil {
+		n.writable = node.Writable
+	}
+	go n.autoBackups(ctx)
 	go n.housekeeping(ctx)
 	n.ready.Store(true)
 	log.Info("web interface ready", "listen", cfg.HTTPListen, "publicUrl", cfg.PublicURL)
@@ -394,6 +410,28 @@ func (n *Node) housekeeping(ctx context.Context) {
 	}
 }
 
+// autoBackups writes a daily backup in /data/backups when a backup
+// password is configured.
+func (n *Node) autoBackups(ctx context.Context) {
+	if n.cfg.BackupPass == "" {
+		return
+	}
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if path, err := n.backup.Auto(ctx, n.cfg.DataDir, n.cfg.BackupPass); err != nil {
+			n.log.Warn("automatic backup failed", "err", err)
+		} else if path != "" {
+			n.log.Info("automatic backup written", "file", path)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // control answers CLI sub-commands on the local socket.
 func (n *Node) control(ctx context.Context, req control.Request) control.Response {
 	switch req.Cmd {
@@ -431,6 +469,44 @@ func (n *Node) control(ctx context.Context, req control.Request) control.Respons
 		_ = n.auth.GuardReset(ctx, auth.UserKey(u.Username))
 		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "user.password_reset", Target: u.Username})
 		return control.Response{OK: true, Message: "Nouveau mot de passe pour " + u.Username + " : " + pw}
+	case "backup":
+		pw := req.Args["password"]
+		if pw == "" {
+			pw = n.cfg.BackupPass
+		}
+		if pw == "" {
+			return control.Response{Message: "mot de passe requis : --password-file, ou LEAZONE_BACKUP_PASSWORD_FILE"}
+		}
+		data, err := n.backup.Create(ctx, pw)
+		if err != nil {
+			return control.Response{Message: err.Error()}
+		}
+		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "backup.create", Target: n.cfg.NodeName})
+		return control.Response{OK: true, Data: map[string]any{"content": string(data)}}
+	case "restore":
+		pw := req.Args["password"]
+		if pw == "" {
+			pw = n.cfg.BackupPass
+		}
+		dry := req.Args["dryRun"] == "true"
+		if !dry && n.writable != nil {
+			if err := n.writable(); err != nil {
+				return control.Response{Message: err.Error()}
+			}
+		}
+		res, err := n.backup.Restore(ctx, []byte(req.Args["content"]), pw, dry)
+		if err != nil {
+			return control.Response{Message: err.Error()}
+		}
+		if dry {
+			return control.Response{OK: true, Message: fmt.Sprintf("Sauvegarde valide : %s, version %s, nœud %s.",
+				res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Version, res.Node)}
+		}
+		n.afterRestore(ctx)
+		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "backup.restore", Target: res.Node,
+			Details: map[string]any{"createdAt": res.CreatedAt, "tables": res.Tables}})
+		return control.Response{OK: true, Message: fmt.Sprintf("Configuration restaurée (sauvegarde du %s, nœud %s).",
+			res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Node)}
 	case "reset-ui-allowlist":
 		sec := n.auth.Security()
 		sec.UIAllowedNetworks = nil

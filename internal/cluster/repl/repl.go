@@ -879,3 +879,83 @@ func Equal(a, b *proto.Snapshot) bool {
 	jb, _ := json.Marshal(b.Tables)
 	return bytes.Equal(ja, jb)
 }
+
+// Export returns all configuration rows by table (for backups). The
+// cluster history (epochs) is left out.
+func (s *Store) Export(ctx context.Context) (map[string][]map[string]any, error) {
+	snap, err := s.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	delete(snap.Tables, "epochs")
+	return snap.Tables, nil
+}
+
+// ConfigTableNames lists the restorable tables, parents first.
+func (s *Store) ConfigTableNames() []string {
+	var out []string
+	for _, t := range s.config {
+		if t.name != "epochs" {
+			out = append(out, t.name)
+		}
+	}
+	return out
+}
+
+// Restore replaces the configuration with tables (from a backup) in one
+// transaction. Changes are journaled like any local write, so a secondary
+// follows. Unknown columns are ignored, missing ones keep their default.
+// extra runs inside the same transaction (to store the data key).
+func (s *Store) Restore(ctx context.Context, tables map[string][]map[string]any, extra func(*sql.Tx) error) error {
+	return s.db.Tx(ctx, func(tx *sql.Tx) error {
+		for i := len(s.config) - 1; i >= 0; i-- {
+			t := s.config[i]
+			if t.name == "epochs" {
+				continue
+			}
+			keep := map[string]bool{}
+			for _, r := range tables[t.name] {
+				keep[fmt.Sprint(r[t.pk])] = true
+			}
+			where := ""
+			if t.filter != "" {
+				where = " WHERE " + t.filter
+			}
+			rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT CAST(%s AS TEXT) FROM %s%s`, t.pk, t.name, where))
+			if err != nil {
+				return err
+			}
+			var del []string
+			for rows.Next() {
+				var k string
+				if err := rows.Scan(&k); err != nil {
+					rows.Close()
+					return err
+				}
+				if !keep[k] {
+					del = append(del, k)
+				}
+			}
+			rows.Close()
+			for _, k := range del {
+				if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE CAST(%s AS TEXT) = ?`, t.name, t.pk), k); err != nil {
+					return fmt.Errorf("%s: %w", t.name, err)
+				}
+			}
+		}
+		for _, t := range s.config {
+			if t.name == "epochs" {
+				continue
+			}
+			for _, r := range tables[t.name] {
+				if err := s.upsert(ctx, tx, t, r); err != nil {
+					return fmt.Errorf("%s: %w", t.name, err)
+				}
+			}
+		}
+		if extra != nil {
+			return extra(tx)
+		}
+		return nil
+	})
+}

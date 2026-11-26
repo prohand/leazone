@@ -3,6 +3,8 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,7 +169,7 @@ func (n *Node) hChanges(r *http.Request) (any, int) {
 	frozen := p != nil && !p.compat.config
 	n.mu.Unlock()
 	epoch, seq := n.position(ctx)
-	resp := proto.ChangesResponse{Epoch: epoch, Seq: seq, Frozen: frozen}
+	resp := proto.ChangesResponse{Epoch: epoch, Seq: seq, Frozen: frozen, DEK: dekFingerprint(n.d.Box.Key())}
 	if frozen {
 		return resp, http.StatusOK // mixed versions: no config sync until aligned
 	}
@@ -285,6 +287,11 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 	defer n.syncMu.Unlock()
 	if !n.stillFollowing(p.addr) {
 		return nil
+	}
+	if !resp.Snapshot && resp.DEK != "" && resp.DEK != dekFingerprint(n.d.Box.Key()) {
+		// The primary's data key changed (backup restored): rows ahead are
+		// encrypted with a key we do not have yet. The snapshot carries it.
+		resp.Snapshot, resp.Reason, resp.Changes = true, "clé de données changée (restauration)", nil
 	}
 	if resp.Snapshot {
 		var from uint64
@@ -540,4 +547,10 @@ func (n *Node) hHandoff(r *http.Request) (any, int) {
 	}
 	n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
 	return map[string]bool{"ok": true}, http.StatusOK
+}
+
+// dekFingerprint identifies a data key without revealing it.
+func dekFingerprint(key []byte) string {
+	h := sha256.Sum256(append([]byte("leazone-dek-id:"), key...))
+	return hex.EncodeToString(h[:8])
 }

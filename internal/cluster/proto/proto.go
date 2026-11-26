@@ -88,7 +88,8 @@ type ChangesResponse struct {
 	Snapshot bool     `json:"snapshot"` // the follower must take a snapshot
 	Reason   string   `json:"reason"`
 	Changes  []Change `json:"changes"`
-	Frozen   bool     `json:"frozen"` // mixed versions: config is read-only
+	Frozen   bool     `json:"frozen"`        // mixed versions: config is read-only
+	DEK      string   `json:"dek,omitempty"` // fingerprint of the primary's data key
 }
 
 // Snapshot is the whole replicated configuration.

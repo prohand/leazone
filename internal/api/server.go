@@ -14,6 +14,7 @@ import (
 
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/backup"
 	"github.com/prohand/leazone/internal/blocking"
 	"github.com/prohand/leazone/internal/cluster"
 	"github.com/prohand/leazone/internal/config"
@@ -38,9 +39,12 @@ type Server struct {
 	blocking *blocking.Manager
 	stats    *stats.Recorder
 	qlog     *querylog.Log
-	log      *slog.Logger
-	ui       fs.FS
-	spec     []byte
+	backup   *backup.Service
+	// afterRestore reloads every service after a restore.
+	afterRestore func(ctx context.Context)
+	log          *slog.Logger
+	ui           fs.FS
+	spec         []byte
 
 	mux    *http.ServeMux
 	routes []Route
@@ -68,14 +72,17 @@ type Deps struct {
 	Blocking *blocking.Manager
 	Stats    *stats.Recorder
 	QueryLog *querylog.Log
-	Log      *slog.Logger
-	UI       fs.FS
-	Spec     []byte // OpenAPI as JSON
+	Backup   *backup.Service
+	// AfterRestore reloads every service after a restore.
+	AfterRestore func(ctx context.Context)
+	Log          *slog.Logger
+	UI           fs.FS
+	Spec         []byte // OpenAPI as JSON
 }
 
 // New builds the server and registers all routes.
 func New(d Deps) *Server {
-	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, cluster: d.Cluster, blocking: d.Blocking, stats: d.Stats, qlog: d.QueryLog, log: d.Log, ui: d.UI,
+	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, cluster: d.Cluster, blocking: d.Blocking, stats: d.Stats, qlog: d.QueryLog, backup: d.Backup, afterRestore: d.AfterRestore, log: d.Log, ui: d.UI,
 		spec: d.Spec, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s
