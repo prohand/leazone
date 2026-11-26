@@ -57,7 +57,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=v${{ steps.v.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=v${{ steps.v.outputs.version }}
-            type=raw,value=latest
+          # "latest" is added automatically for the highest semver tag.
 
       - name: Build and push (amd64 + arm64, SBOM, provenance)
         id: build
