@@ -135,19 +135,29 @@ func TestPhase2DNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer busy.Close()
-	var it2 struct {
-		DNSListeners []struct{ Protocol, State, Error string }
-	}
-	a.do("PATCH", "/api/v1/interfaces/lzi2", map[string]any{"dnsEnabled": true}, &it2)
-	found := false
-	for _, l := range it2.DNSListeners {
-		if l.Protocol == "udp" && l.State == "error" && strings.Contains(l.Error, "déjà utilisé") {
-			found = true
+	a.do("PATCH", "/api/v1/interfaces/lzi2", map[string]any{"dnsEnabled": true}, nil)
+	// The interface was just created: wait for Leazone to see it and try to bind.
+	var msg string
+	for deadline := time.Now().Add(10 * time.Second); msg == "" && time.Now().Before(deadline); time.Sleep(300 * time.Millisecond) {
+		var list struct {
+			Items []struct {
+				Name         string
+				DNSListeners []struct{ Protocol, State, Error string }
+			}
+		}
+		a.do("GET", "/api/v1/interfaces", nil, &list)
+		for _, it := range list.Items {
+			for _, l := range it.DNSListeners {
+				if it.Name == "lzi2" && l.Protocol == "udp" && l.State == "error" && strings.Contains(l.Error, "déjà utilisé") {
+					msg = l.Error
+				}
+			}
 		}
 	}
-	if !found {
-		t.Fatalf("port conflict not reported: %+v", it2.DNSListeners)
+	if msg == "" {
+		t.Fatal("port conflict not reported")
 	}
+	it2 := struct{ DNSListeners []struct{ Error string } }{DNSListeners: []struct{ Error string }{{msg}}}
 	t.Log("✔ port 53 conflict reported clearly: " + it2.DNSListeners[0].Error[:60] + "…")
 
 	// Container hardening.
