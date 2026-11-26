@@ -1,0 +1,7 @@
+/leazone
+/dist/
+*.db
+*.db-wal
+*.db-shm
+.env
+/compose/secrets/
