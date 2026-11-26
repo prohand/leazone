@@ -1,0 +1,54 @@
+# Leazone - witness (tie-breaker), on a THIRD host (small VM, NAS, Raspberry Pi).
+# It needs the same cluster key as the nodes and must be reachable on TCP 7443
+# from both nodes. It stores almost nothing (who is primary, epoch).
+#
+#   mkdir -p compose/secrets && cp <cluster_key from node 1> compose/secrets/cluster_key
+#   docker compose -f compose/witness.yml up -d
+#
+# Then on the nodes: LEAZONE_WITNESS=https://<witness-ip>:7443
+
+name: leazone-witness
+
+services:
+  witness:
+    image: ${LEAZONE_IMAGE:-ghcr.io/prohand/leazone:latest}
+    build:
+      context: ..
+    container_name: leazone-witness
+    command: ["witness"]
+    restart: unless-stopped
+    user: "${LEAZONE_UID:-1000}:${LEAZONE_GID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]       # no capability needed (port 7443)
+    ports:
+      - "7443:7443"
+    environment:
+      LEAZONE_CLUSTER_LISTEN: ":7443"
+      LEAZONE_CLUSTER_KEY_FILE: /run/secrets/cluster_key
+      LEAZONE_LOG_LEVEL: ${LEAZONE_LOG_LEVEL:-info}
+      TZ: ${TZ:-Europe/Paris}
+    secrets:
+      - cluster_key
+    volumes:
+      - witness-data:/data
+    healthcheck:
+      test: ["CMD", "/leazone", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+secrets:
+  cluster_key:
+    file: ./secrets/cluster_key
+
+volumes:
+  witness-data:

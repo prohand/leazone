@@ -49,6 +49,7 @@ type access struct {
 	levels []auth.Level    // accepted session levels (default: full only)
 	perm   auth.Permission // required permission (ignored when public)
 	stepUp bool            // requires a recent passkey/TOTP re-verification
+	local  bool            // set by handle(): does not change replicated config
 }
 
 var (
@@ -65,7 +66,27 @@ func needStepUp(p auth.Permission) access { return access{perm: p, stepUp: true}
 func (s *Server) handle(pattern string, a access, h http.HandlerFunc) {
 	method, path, _ := strings.Cut(pattern, " ")
 	s.routes = append(s.routes, Route{Method: method, Path: path})
+	a.local = localRoute(method, path)
 	s.mux.Handle(method+" /api/v1"+path, s.guard(a, h))
+}
+
+// localRoute lists the state-changing routes that do not change the
+// replicated configuration: they work on every node of a cluster (login,
+// MFA checks, tests, cache, lease release, cluster operations).
+func localRoute(method, path string) bool {
+	switch {
+	case method == http.MethodGet || method == http.MethodHead:
+		return true
+	case strings.HasPrefix(path, "/auth/"):
+		return true
+	case path == "/dns/lookup", path == "/dns/forwarders/test", path == "/dns/forwarders/{id}/test", path == "/dns/cache/flush":
+		return true
+	case method == http.MethodDelete && (path == "/me/sessions/{id}" || path == "/dhcp/leases/{scope}/{ip}"):
+		return true
+	case strings.HasPrefix(path, "/cluster/") && path != "/cluster/settings":
+		return true
+	}
+	return false
 }
 
 // guard authenticates the caller and enforces level, permission, CSRF and step-up.
@@ -122,6 +143,10 @@ func (s *Server) guard(a access, h http.HandlerFunc) http.Handler {
 				problem(w, http.StatusForbidden, TStepUp, "Confirmez votre identité avec une passkey ou un code TOTP.")
 				return
 			}
+		}
+		if unsafe && !a.local && s.cluster != nil {
+			s.clusterWrite(w, r, h)
+			return
 		}
 		h(w, r)
 	})

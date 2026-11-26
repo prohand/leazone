@@ -14,6 +14,7 @@ import (
 
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/cluster"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/dhcpmgr"
 	"github.com/prohand/leazone/internal/dnsmgr"
@@ -23,16 +24,17 @@ import (
 
 // Server holds the dependencies of the HTTP handlers.
 type Server struct {
-	cfg   *config.Config
-	db    *store.DB
-	auth  *auth.Service
-	audit *audit.Log
-	tls   *tlsmgr.Manager
-	dns   *dnsmgr.Manager
-	dhcp  *dhcpmgr.Manager
-	log   *slog.Logger
-	ui    fs.FS
-	spec  []byte
+	cfg     *config.Config
+	db      *store.DB
+	auth    *auth.Service
+	audit   *audit.Log
+	tls     *tlsmgr.Manager
+	dns     *dnsmgr.Manager
+	dhcp    *dhcpmgr.Manager
+	cluster *cluster.Node // nil on a single node
+	log     *slog.Logger
+	ui      fs.FS
+	spec    []byte
 
 	mux    *http.ServeMux
 	routes []Route
@@ -49,21 +51,22 @@ type Route struct {
 
 // Deps are the server dependencies.
 type Deps struct {
-	Config *config.Config
-	DB     *store.DB
-	Auth   *auth.Service
-	Audit  *audit.Log
-	TLS    *tlsmgr.Manager
-	DNS    *dnsmgr.Manager
-	DHCP   *dhcpmgr.Manager
-	Log    *slog.Logger
-	UI     fs.FS
-	Spec   []byte // OpenAPI as JSON
+	Config  *config.Config
+	DB      *store.DB
+	Auth    *auth.Service
+	Audit   *audit.Log
+	TLS     *tlsmgr.Manager
+	DNS     *dnsmgr.Manager
+	DHCP    *dhcpmgr.Manager
+	Cluster *cluster.Node
+	Log     *slog.Logger
+	UI      fs.FS
+	Spec    []byte // OpenAPI as JSON
 }
 
 // New builds the server and registers all routes.
 func New(d Deps) *Server {
-	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, log: d.Log, ui: d.UI,
+	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, cluster: d.Cluster, log: d.Log, ui: d.UI,
 		spec: d.Spec, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s

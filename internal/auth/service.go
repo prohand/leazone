@@ -40,6 +40,18 @@ func NewService(ctx context.Context, db *store.DB, box *secrets.Box, log *slog.L
 	return s, nil
 }
 
+// ReloadSettings re-reads the security settings (after replication).
+func (s *Service) ReloadSettings(ctx context.Context) error {
+	sec := DefaultSecurity()
+	if _, err := s.db.GetSetting(ctx, SettingsKey, &sec); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.sec = sec
+	s.mu.Unlock()
+	return nil
+}
+
 // Security returns a copy of the current security settings.
 func (s *Service) Security() SecuritySettings {
 	s.mu.RLock()

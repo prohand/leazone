@@ -68,6 +68,7 @@ func (s *Server) registerRoutes() {
 	s.registerDNSRoutes()
 	s.registerDHCPRoutes()
 	s.registerImportRoutes()
+	s.registerClusterRoutes()
 
 	// Unknown API paths answer JSON 404 instead of the SPA.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

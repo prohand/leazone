@@ -20,6 +20,8 @@ info:
       - `urn:leazone:not-found` (404), `urn:leazone:conflict` (409)
       - `urn:leazone:csrf` (403)
       - `urn:leazone:upstream` (502) -> a remote server (Technitium import) failed
+      - `urn:leazone:not-primary` (409) -> this node is a cluster secondary: config is read-only here; `primaryUrl` gives the primary UI
+      - `urn:leazone:read-only` (409) -> config temporarily read-only (update in progress, switchover)
 servers:
   - url: /api/v1
 security:
@@ -1103,6 +1105,95 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ImportReport" }
 
+  /cluster:
+    get:
+      summary: Cluster state (enabled=false on a single node)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterView" }
+  /cluster/settings:
+    get:
+      summary: Cluster settings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterSettings" }
+    put:
+      summary: Update cluster settings (admin, step-up, on the primary)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClusterSettings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterSettings" }
+  /cluster/resync:
+    post:
+      summary: Force a full resynchronization (on a secondary itself; from the primary, of its secondaries) (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterView" }
+  /cluster/failback:
+    post:
+      summary: Give the primary role back to the up-to-date secondary (admin, step-up, on the primary)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterView" }
+  /cluster/promote:
+    post:
+      summary: Force this node to become primary (no witness, or other node known down) (admin, step-up)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterView" }
+  /cluster/conflicts:
+    get:
+      summary: Changes made on this node while it was primary that were never replicated (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Conflict" } }
+  /cluster/conflicts/{id}/reapply:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Apply the lost change on the primary (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterView" }
+  /cluster/conflicts/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      summary: Ignore a conflict (admin)
+      responses:
+        "204": { description: Ignored }
+
 components:
   securitySchemes:
     session:
@@ -1667,3 +1758,100 @@ components:
         created: { type: integer }
         skipped: { type: integer }
         errors: { type: integer }
+
+    ClusterSettings:
+      type: object
+      properties:
+        heartbeatMs: { type: integer, minimum: 100, maximum: 10000, default: 1000 }
+        failCount: { type: integer, minimum: 2, maximum: 20, default: 3 }
+        leaseMs: { type: integer, minimum: 2000, maximum: 60000, default: 6000 }
+        failbackMode: { type: string, enum: [auto, manual], default: auto }
+        failbackDelaySec: { type: integer, minimum: 0, maximum: 86400, default: 300 }
+        dhcpMode: { type: string, enum: [load-balancing, active-passive], default: load-balancing }
+
+    ClusterRole:
+      type: string
+      enum: [standalone, joining, secondary, primary, isolated, incompatible, offline]
+
+    ClusterNode:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        addr: { type: string }
+        self: { type: boolean }
+        online: { type: boolean }
+        role: { $ref: "#/components/schemas/ClusterRole" }
+        preferredRole: { type: string, enum: [primary, secondary] }
+        latencyMs: { type: number }
+        lastSeen: { type: [string, "null"], format: date-time }
+        lastSync: { type: [string, "null"], format: date-time }
+        epoch: { type: integer }
+        seq: { type: integer, description: "Config version (journal position)" }
+        configHash: { type: string }
+        version: { type: string, description: "Leazone version" }
+        partnerDown: { type: boolean, description: "Primary serving all DHCP clients (partner confirmed down)" }
+        error: { type: string }
+
+    ClusterView:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        role: { $ref: "#/components/schemas/ClusterRole" }
+        epoch: { type: integer }
+        seq: { type: integer }
+        primaryUrl: { type: string }
+        writable: { type: boolean }
+        readOnlyReason: { type: string }
+        nodes: { type: array, items: { $ref: "#/components/schemas/ClusterNode" } }
+        witness:
+          type: object
+          properties:
+            mode: { type: string, enum: [container, ping, none] }
+            address: { type: string }
+            reachable: { type: boolean }
+            lastOk: { type: [string, "null"], format: date-time }
+            error: { type: string }
+            epoch: { type: integer }
+            primary: { type: string }
+        gaps:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [config, vlan, version, sync] }
+              detail: { type: string }
+        conflicts: { type: integer, description: "Pending conflicts on this node" }
+        history:
+          type: array
+          description: Primary terms, newest first (failovers and returns)
+          items:
+            type: object
+            properties:
+              epoch: { type: integer }
+              startSeq: { type: integer }
+              nodeId: { type: string }
+              name: { type: string }
+              at: { type: string, format: date-time }
+              reason: { type: string }
+        settings: { $ref: "#/components/schemas/ClusterSettings" }
+        vip:
+          type: [object, "null"]
+          properties:
+            address: { type: string }
+            interface: { type: string }
+            heldHere: { type: boolean }
+            error: { type: string }
+
+    Conflict:
+      type: object
+      properties:
+        id: { type: string }
+        epoch: { type: integer }
+        seq: { type: integer }
+        table: { type: string }
+        pk: { type: string }
+        op: { type: string, enum: [upsert, delete] }
+        row: { type: string, description: "Row as JSON" }
+        detectedAt: { type: string, format: date-time }
+        status: { type: string, enum: [pending, reapplied, dismissed] }

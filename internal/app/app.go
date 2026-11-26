@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
 	"github.com/prohand/leazone/internal/caps"
+	"github.com/prohand/leazone/internal/cluster"
+	"github.com/prohand/leazone/internal/cluster/repl"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/control"
 	"github.com/prohand/leazone/internal/ddns"
@@ -34,18 +37,21 @@ import (
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
 	"github.com/prohand/leazone/internal/version"
+	"github.com/prohand/leazone/internal/vip"
 	"github.com/prohand/leazone/web"
 )
 
 // Node is a running Leazone instance.
 type Node struct {
-	cfg   *config.Config
-	log   *slog.Logger
-	db    *store.DB
-	box   *secrets.Box
-	auth  *auth.Service
-	audit *audit.Log
-	ready atomic.Bool
+	cfg    *config.Config
+	log    *slog.Logger
+	db     *store.DB
+	box    *secrets.Box
+	master *secrets.Box // local master key, wraps the data key
+	repl   *repl.Store
+	auth   *auth.Service
+	audit  *audit.Log
+	ready  atomic.Bool
 }
 
 // Run starts the node and blocks until ctx is cancelled.
@@ -79,6 +85,19 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		}
 	}
 	n.audit = audit.New(n.db, nodeID, log)
+
+	// Replication journal: on a cluster node, local config writes are not
+	// journaled until this node is elected primary.
+	if n.repl, err = repl.Open(ctx, n.db); err != nil {
+		return err
+	}
+	replEpoch, _, err := n.repl.Position(ctx)
+	if err != nil {
+		return err
+	}
+	if err := n.repl.SetRecording(ctx, !cfg.Clustered(), replEpoch); err != nil {
+		return err
+	}
 
 	if n.auth, err = auth.NewService(ctx, n.db, n.box, log); err != nil {
 		return err
@@ -122,7 +141,52 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	go hm.Run(ctx)
 
-	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Log: log, UI: web.Dist(), Spec: spec})
+	// High availability.
+	var node *cluster.Node
+	if cfg.Clustered() {
+		vipM, err := vip.New(cfg.VIP, cfg.VIPInterface, log)
+		if err != nil {
+			return err
+		}
+		deps := cluster.Deps{Config: cfg, DB: n.db, Repl: n.repl, Box: n.box, NodeID: nodeID, Log: log, DHCP: dhcpEngine,
+			VIP: vipM, VLANs: hostVLANs(watcher),
+			SetDEK: n.setDEK,
+			Audit: func(ctx context.Context, action, target string, details map[string]any) {
+				n.audit.Record(ctx, audit.Entry{Actor: "cluster", Action: action, Target: target, Details: details})
+			}}
+		if p, ok := dhcpEngine.Pinger.(*dhcpsrv.ICMPPinger); ok && p != nil {
+			deps.Pinger = p
+		}
+		deps.ConfigApplied = func(ctx context.Context) {
+			if err := n.auth.ReloadSettings(ctx); err != nil {
+				log.Warn("reload security settings", "err", err)
+			}
+			if err := tm.Reload(ctx); err != nil {
+				log.Warn("reload certificate", "err", err)
+			}
+			if err := dm.Reload(ctx); err != nil {
+				log.Warn("reload DNS", "err", err)
+			}
+			if err := hm.Reload(ctx); err != nil {
+				log.Warn("reload DHCP", "err", err)
+			}
+			if node != nil {
+				node.Reload(ctx)
+			}
+		}
+		if node, err = cluster.New(deps); err != nil {
+			return fmt.Errorf("cluster: %w", err)
+		}
+		if err := node.Start(ctx); err != nil {
+			return fmt.Errorf("cluster: %w", err)
+		}
+		if vipM != nil {
+			defer vipM.Down()
+		}
+	}
+
+	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
+		Log: log, UI: web.Dist(), Spec: spec})
 
 	ln, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {
@@ -176,8 +240,40 @@ func (n *Node) openStore(ctx context.Context) error {
 	} else if dek, err = mbox.Open(wrapped, "dek"); err != nil {
 		return fmt.Errorf("cannot unlock the data key with %s: %w", filepath.Join(n.cfg.DataDir, "keys", "master.key"), err)
 	}
+	n.master = mbox
 	n.box, err = secrets.NewBox(dek)
 	return err
+}
+
+// setDEK adopts the cluster's data key (stored wrapped by the local master key).
+func (n *Node) setDEK(ctx context.Context, dek []byte) error {
+	if err := n.db.SetMeta(ctx, "dek", n.master.Seal(dek, "dek")); err != nil {
+		return err
+	}
+	n.log.Info("data encryption key adopted from the cluster primary")
+	return n.box.Replace(dek)
+}
+
+// hostVLANs describes the host VLANs for the cluster gap check.
+func hostVLANs(w *netif.Watcher) func() []string {
+	return func() []string {
+		var out []string
+		for _, it := range w.Interfaces() {
+			if it.VLANID == 0 {
+				continue
+			}
+			net := ""
+			for _, a := range it.Addresses {
+				if a.Prefix.Addr().Is4() {
+					net = a.Prefix.Masked().String()
+					break
+				}
+			}
+			out = append(out, fmt.Sprintf("%d (%s)", it.VLANID, net))
+		}
+		sort.Strings(out)
+		return out
+	}
 }
 
 // firstStart creates the admin account on an empty database. The password
@@ -226,6 +322,11 @@ func (n *Node) housekeeping(ctx context.Context) {
 		case <-t.C:
 			if err := n.auth.PurgeSessions(ctx); err != nil {
 				n.log.Warn("session purge", "err", err)
+			}
+			// Keep the journal bounded; a single node has nobody to ship state to.
+			_ = n.repl.Trim(ctx, 20000)
+			if !n.cfg.Clustered() {
+				_ = n.repl.ClearOutbox(ctx)
 			}
 		}
 	}
@@ -293,6 +394,9 @@ func tlsNames(cfg *config.Config) []string {
 	}
 	return names
 }
+
+// CheckWritable is checkWritable for other commands (witness).
+func CheckWritable(dir string) error { return checkWritable(dir) }
 
 // checkWritable fails early with a clear message when the data volume is not
 // writable (wrong owner after changing LEAZONE_UID, read-only mount...).

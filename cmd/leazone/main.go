@@ -20,6 +20,7 @@ import (
 	"github.com/prohand/leazone/internal/logging"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/version"
+	"github.com/prohand/leazone/internal/witness"
 
 	_ "time/tzdata" // the scratch image has no zoneinfo
 )
@@ -30,6 +31,7 @@ Usage : leazone <commande> [options]
 
 Commandes :
   serve                         Lance le nœud (commande par défaut)
+  witness                       Lance le témoin de cluster (3e hôte)
   healthcheck                   Vérifie que le nœud répond (HEALTHCHECK Docker)
   admin reset-mfa <user>        Supprime le MFA d'un compte (secours)
   admin reset-password <user>   Donne un nouveau mot de passe à un compte (secours)
@@ -67,8 +69,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "internal":
 		return internal(args, stderr)
 	case "witness":
-		fmt.Fprintln(stderr, "le mode témoin arrive en phase 4")
-		return 2
+		return runWitness()
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -96,6 +97,36 @@ func serve() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := app.Run(ctx, cfg, log); err != nil {
+		log.Error("fatal", "err", err)
+		return 1
+	}
+	return 0
+}
+
+// runWitness runs the tie-breaker of a two-node cluster (third host).
+func runWitness() int {
+	cfg, ok := loadConfig(os.Stderr)
+	if !ok {
+		return 1
+	}
+	log, closer := logging.Setup(cfg.LogLevel, cfg.LogFormat, cfg.LogDir)
+	defer closer.Close()
+	if cfg.ClusterKey == "" {
+		log.Error("LEAZONE_CLUSTER_KEY_FILE is required for the witness")
+		return 1
+	}
+	if err := app.CheckWritable(cfg.DataDir); err != nil {
+		log.Error("fatal", "err", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := control.Serve(ctx, cfg.ControlSocket, func(context.Context, control.Request) control.Response {
+		return control.Response{OK: true, Message: "ok"}
+	}, log); err != nil {
+		log.Warn("control socket", "err", err)
+	}
+	if err := witness.Run(ctx, cfg.ClusterListen, cfg.DataDir, cfg.ClusterKey, log); err != nil {
 		log.Error("fatal", "err", err)
 		return 1
 	}

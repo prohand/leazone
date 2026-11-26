@@ -155,6 +155,40 @@ func (m *Manager) generateSelfSigned(ctx context.Context, names []string) error 
 	return nil
 }
 
+// Reload re-reads the active certificate from the database (after
+// replication: both nodes serve the same certificate). Certificates given
+// as files in <data>/tls are kept.
+func (m *Manager) Reload(ctx context.Context) error {
+	if m.Info().Source == SourceFile {
+		return nil
+	}
+	var id, source, certPEM, keyEnc string
+	err := m.db.QueryRowContext(ctx, `SELECT id, source, cert_pem, key_enc FROM certificates WHERE active = 1`).
+		Scan(&id, &source, &certPEM, &keyEnc)
+	if err != nil {
+		return nil // keep the current one
+	}
+	if m.Info().Fingerprint != "" {
+		cur := m.Info()
+		tmp := &Manager{}
+		key, err := m.box.Open(keyEnc, "cert:"+id)
+		if err != nil {
+			return err
+		}
+		if err := tmp.set(certPEM, string(key), source); err != nil {
+			return err
+		}
+		if tmp.info.Fingerprint == cur.Fingerprint {
+			return nil
+		}
+		m.mu.Lock()
+		m.cert, m.info = tmp.cert, tmp.info
+		m.mu.Unlock()
+		m.log.Info("certificate updated from the cluster", "subject", tmp.info.Subject)
+	}
+	return nil
+}
+
 // Import validates and activates a PEM certificate chain and private key.
 func (m *Manager) Import(ctx context.Context, certPEM, keyPEM string) (Info, error) {
 	if m.Info().Source == SourceFile {
