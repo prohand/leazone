@@ -42,4 +42,15 @@ func TestUpDown(t *testing.T) {
 	if err := m.Down(); err != nil || has() {
 		t.Fatalf("down: %v", err)
 	}
+	if err := m.Down(); err != nil { // idempotent
+		t.Fatal(err)
+	}
+	// Left by a crashed run: a fresh manager (never Up) still removes it.
+	if err := m.Up(); err != nil || !has() {
+		t.Fatalf("up: %v", err)
+	}
+	m2, _ := New("10.77.0.10/24", "lzvip0", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := m2.Down(); err != nil || has() {
+		t.Fatalf("stale VIP not removed: %v", err)
+	}
 }

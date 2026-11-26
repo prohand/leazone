@@ -226,6 +226,11 @@ func (n *Node) Start(ctx context.Context) error {
 		return err
 	}
 	n.loadSettings(ctx)
+	// A node starts as non-primary: remove a VIP left on the host interface
+	// by a previous run that crashed while primary.
+	if n.d.VIP != nil {
+		_ = n.d.VIP.Down()
+	}
 	if err := n.serve(ctx); err != nil {
 		return err
 	}
