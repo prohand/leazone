@@ -66,7 +66,7 @@ export function usePermissions() {
 
 /** Actions that do not change the replicated configuration (work on every node). */
 export function isLocalAction(a: Action): boolean {
-  return a === "read" || a === "leases.release" || a === "cache.flush"
+  return a === "read" || a === "leases.release" || a === "cache.flush" || a === "blocking.refresh"
 }
 
 /** Only http(s) URLs may be opened from a server value. */

@@ -27,6 +27,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useCurrentUser, useLogout } from "@/hooks/use-session"
+import { useModules } from "@/lib/modules"
 import { visibleGroups } from "@/lib/nav"
 import { roleLabel } from "@/lib/permissions"
 import { useTheme, type Theme } from "@/lib/theme"
@@ -40,7 +41,8 @@ export function AppSidebar() {
   const user = useCurrentUser()
   const location = useLocation()
   const { setOpenMobile, isMobile } = useSidebar()
-  const groups = visibleGroups(user?.role)
+  const modules = useModules()
+  const groups = visibleGroups(user?.role, modules)
   const closeOnMobile = () => isMobile && setOpenMobile(false)
 
   return (

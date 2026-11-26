@@ -1,7 +1,7 @@
 import { Link } from "react-router"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRight, CircleCheck, Circle, DatabaseZap, HeartPulse, Radio, Timer, TriangleAlert, type LucideIcon } from "lucide-react"
-import { dnsStatusQuery, meQuery, systemInfoQuery, vlansQuery } from "@/api/queries"
+import { ArrowRight, CircleCheck, Circle, CirclePause, DatabaseZap, HeartPulse, Radio, ShieldBan, Timer, TriangleAlert, type LucideIcon } from "lucide-react"
+import { blockingStatusQuery, dnsStatusQuery, meQuery, systemInfoQuery, vlansQuery } from "@/api/queries"
 import type { ScopeUsage } from "@/api/types"
 import { clusterRoleLabel } from "@/components/cluster"
 import { UsageBar } from "@/components/dhcp"
@@ -12,7 +12,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useClusterView } from "@/hooks/use-cluster"
 import { useCurrentUser } from "@/hooks/use-session"
 import { fmtInt, formatPercent } from "@/lib/dhcp"
+import { blockedPercent, fmtInt as fmtCount, formatUntil } from "@/lib/blocking"
 import { hitRate, percent } from "@/lib/dns"
+import { useModules } from "@/lib/modules"
 import { can } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 
@@ -90,6 +92,7 @@ export default function DashboardPage() {
   const dns = useQuery(dnsStatusQuery)
   const vlans = useQuery(vlansQuery)
   const isAdmin = can(user?.role, "admin")
+  const modules = useModules()
 
   // All scopes with their VLAN label, fullest first.
   const scopes: (ScopeUsage & { vlan: string })[] = [
@@ -181,6 +184,7 @@ export default function DashboardPage() {
         />
         <HaCard />
       </div>
+      {modules.blocking && <BlockingCard />}
       {scopes.length > 0 && <ScopeFillCard scopes={scopes} />}
       <Card className="mt-6">
         <CardHeader>
@@ -293,6 +297,66 @@ function HaCard() {
               </li>
             </ul>
           )}
+        </CardContent>
+      </Card>
+    </Link>
+  )
+}
+
+/** Ad blocking summary (only when the module is on). */
+function BlockingCard() {
+  const { data: s, isError } = useQuery(blockingStatusQuery)
+  const top = (s?.top ?? []).slice(0, 3)
+  const paused = !!s?.paused
+  return (
+    <Link
+      to="/blocking"
+      data-testid="blocking-card"
+      className="mt-6 block rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
+      <Card className="gap-4 transition-colors hover:bg-muted/40">
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5">
+            <CardTitle>Blocage</CardTitle>
+            <CardDescription>Publicités et traqueurs bloqués par ce nœud.</CardDescription>
+          </div>
+          {s &&
+            (paused ? (
+              <Badge variant="outline" className="border-warning/50 text-warning">
+                <CirclePause /> en pause{formatUntil(s.pausedUntil) ? ` jusqu'à ${formatUntil(s.pausedUntil)}` : ""}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-success/40 text-success">
+                <ShieldBan /> actif
+              </Badge>
+            ))}
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-[auto_1fr] sm:gap-10">
+          <div>
+            <div className="text-3xl font-semibold tracking-tight tabular-nums">{s ? blockedPercent(s) : "—"}</div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {s
+                ? `${fmtCount.format(s.blocked ?? 0)} bloquées sur ${fmtCount.format(s.queries ?? 0)} requêtes`
+                : isError
+                  ? "Indisponible"
+                  : "Chargement…"}
+            </p>
+          </div>
+          <div className="min-w-0 sm:max-w-sm">
+            <p className="mb-1.5 text-xs font-medium text-muted-foreground">Les plus bloqués</p>
+            {top.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Rien de bloqué pour l'instant.</p>
+            ) : (
+              <ol className="space-y-1 text-sm">
+                {top.map((t) => (
+                  <li key={t.domain} className="flex items-center gap-3">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{t.domain}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">{fmtCount.format(t.count ?? 0)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
         </CardContent>
       </Card>
     </Link>

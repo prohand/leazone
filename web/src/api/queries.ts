@@ -34,6 +34,16 @@ export const qk = {
   cluster: ["cluster"] as const,
   clusterSettings: ["cluster", "settings"] as const,
   clusterConflicts: ["cluster", "conflicts"] as const,
+  modules: ["settings", "modules"] as const,
+  blocking: ["blocking"] as const,
+  blockingStatus: ["blocking", "status"] as const,
+  blockingSettings: ["blocking", "settings"] as const,
+  blockLists: ["blocking", "lists"] as const,
+  blockRules: ["blocking", "rules"] as const,
+  blockPolicies: ["blocking", "policies"] as const,
+  dnssec: ["dnssec"] as const,
+  dnssecZones: ["dnssec", "zones"] as const,
+  dnssecZone: (id: string) => ["dnssec", "zones", id] as const,
 }
 
 export type LeaseFilters = {
@@ -169,3 +179,60 @@ export const clusterConflictsQuery = queryOptions({
   queryKey: qk.clusterConflicts,
   queryFn: () => api.get("/cluster/conflicts"),
 })
+
+// ---- Phase 5: optional modules ----
+
+/**
+ * Optional modules state (any role). Shared by the sidebar, ⌘K, routes and
+ * the dashboard; refreshed now and then so a change made by another admin
+ * (or on the other node) shows up without a reload.
+ */
+export const modulesQuery = queryOptions({
+  queryKey: qk.modules,
+  queryFn: () => api.get("/settings/modules"),
+  staleTime: 30_000,
+  refetchInterval: 60_000,
+  // An old backend without modules: treated as "all off".
+  retry: false,
+})
+
+export const blockingStatusQuery = queryOptions({
+  queryKey: qk.blockingStatus,
+  queryFn: () => api.get("/blocking/status"),
+  // Live counters and pause countdown.
+  refetchInterval: 5_000,
+})
+
+export const blockingSettingsQuery = queryOptions({
+  queryKey: qk.blockingSettings,
+  queryFn: () => api.get("/blocking/settings"),
+})
+
+export const blockListsQuery = queryOptions({
+  queryKey: qk.blockLists,
+  queryFn: () => api.get("/blocking/lists"),
+  // Downloads finish in the background (a new list is fetched at once).
+  refetchInterval: 15_000,
+})
+
+/** Both kinds at once: the page splits them (and marks allowed domains in the top 10). */
+export const blockRulesQuery = queryOptions({
+  queryKey: qk.blockRules,
+  queryFn: () => api.get("/blocking/rules"),
+})
+
+export const blockPoliciesQuery = queryOptions({
+  queryKey: qk.blockPolicies,
+  queryFn: () => api.get("/blocking/policies"),
+})
+
+export const dnssecZonesQuery = queryOptions({
+  queryKey: qk.dnssecZones,
+  queryFn: () => api.get("/dnssec/zones"),
+})
+
+export const dnssecZoneQuery = (id: string) =>
+  queryOptions({
+    queryKey: qk.dnssecZone(id),
+    queryFn: () => api.get("/dnssec/zones/{id}", { params: { id } }),
+  })

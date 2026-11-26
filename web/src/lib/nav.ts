@@ -16,7 +16,7 @@ import {
   Users,
 } from "lucide-react"
 import type { Role } from "@/api/types"
-import { modules, type ModuleName } from "./modules"
+import type { ModuleName } from "./modules"
 import { can } from "./permissions"
 
 export type NavItem = {
@@ -45,8 +45,8 @@ export const navGroups: NavGroup[] = [
     items: [
       { title: "Zones DNS", path: "/dns/zones", icon: Globe, keywords: ["enregistrements", "domaine"] },
       { title: "Redirecteurs", path: "/dns/forwarders", icon: Forward, keywords: ["forwarders", "DoH", "DoT"] },
-      { title: "Blocage", path: "/blocking", icon: ShieldBan, module: "blocking", keywords: ["publicité", "pub"] },
-      { title: "DNSSEC", path: "/dnssec", icon: ShieldCheck, module: "dnssec" },
+      { title: "Blocage", path: "/blocking", icon: ShieldBan, module: "blocking", keywords: ["publicité", "pub", "traqueurs", "adblock", "liste noire"] },
+      { title: "DNSSEC", path: "/dnssec", icon: ShieldCheck, module: "dnssec", keywords: ["signature", "DS", "clés", "KSK", "ZSK"] },
     ],
   },
   {
@@ -68,15 +68,18 @@ export const navGroups: NavGroup[] = [
   },
 ]
 
-export function isVisible(item: NavItem, role: Role | undefined) {
+/** Modules that are on (from useModules()). */
+export type EnabledModules = Partial<Record<ModuleName, boolean>>
+
+export function isVisible(item: NavItem, role: Role | undefined, modules: EnabledModules) {
   if (item.module && !modules[item.module]) return false
   if (item.adminOnly && !can(role, "admin")) return false
   return true
 }
 
-export function visibleGroups(role: Role | undefined): NavGroup[] {
+export function visibleGroups(role: Role | undefined, modules: EnabledModules): NavGroup[] {
   return navGroups
-    .map((g) => ({ ...g, items: g.items.filter((i) => isVisible(i, role)) }))
+    .map((g) => ({ ...g, items: g.items.filter((i) => isVisible(i, role, modules)) }))
     .filter((g) => g.items.length > 0)
 }
 

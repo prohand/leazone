@@ -4,8 +4,10 @@ import { useMutation, useQuery } from "@tanstack/react-query"
 import {
   ArrowLeftRight,
   BookmarkPlus,
+  CirclePause,
   Download,
   Eraser,
+  FlaskConical,
   Forward,
   Globe,
   LogOut,
@@ -35,6 +37,8 @@ import {
 } from "@/components/ui/command"
 import { usePermissions } from "@/hooks/use-cluster"
 import { useCurrentUser, useLogout } from "@/hooks/use-session"
+import { usePauseBlocking } from "@/lib/blocking"
+import { useModules } from "@/lib/modules"
 import { visibleGroups } from "@/lib/nav"
 import { useTheme } from "@/lib/theme"
 import { useDnsLookup } from "./dns-lookup"
@@ -83,7 +87,9 @@ function CommandPalette({ open, setOpen }: Ctx) {
   const user = useCurrentUser()
   const logout = useLogout()
   const { setTheme } = useTheme()
-  const groups = visibleGroups(user?.role)
+  const modules = useModules()
+  const groups = visibleGroups(user?.role, modules)
+  const pause = usePauseBlocking()
   const { openLookup } = useDnsLookup()
   // Role AND node writability: config actions disappear on a cluster secondary.
   const { can, allowed, view: cluster } = usePermissions()
@@ -236,6 +242,29 @@ function CommandPalette({ open, setOpen }: Ctx) {
             </CommandItem>
           )}
         </CommandGroup>
+        {modules.blocking && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Blocage">
+              {can("records.write") && (
+                <CommandItem
+                  value="Mettre en pause le blocage 5 min"
+                  keywords={["pause", "publicité", "désactiver", "suspendre"]}
+                  onSelect={() => run(() => pause.mutate(5))}
+                >
+                  <CirclePause /> Mettre en pause le blocage 5 min
+                </CommandItem>
+              )}
+              <CommandItem
+                value="Tester un domaine"
+                keywords={["blocage", "bloqué", "vérifier", "publicité", "pourquoi"]}
+                onSelect={() => run(() => navigate("/blocking?test=1"), true)}
+              >
+                <FlaskConical /> Tester un domaine
+              </CommandItem>
+            </CommandGroup>
+          </>
+        )}
         {cluster?.enabled && user?.role === "admin" && (
           <>
             <CommandSeparator />

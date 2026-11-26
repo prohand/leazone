@@ -2,7 +2,7 @@ import * as React from "react"
 import { Link, useNavigate, useParams } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import type { ColumnDef, SortingFn } from "@tanstack/react-table"
-import { ArrowLeft, Download, Globe, Lock, Pencil, Plus, Settings2, Trash2, Upload } from "lucide-react"
+import { ArrowLeft, Download, Globe, Lock, Pencil, Plus, Settings2, ShieldCheck, Trash2, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { api, isApiError, ProblemType } from "@/api/client"
 import { qk, recordsQuery, zoneQuery } from "@/api/queries"
@@ -18,6 +18,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { WriteGuard } from "@/components/read-only"
 import { usePermissions } from "@/hooks/use-cluster"
 import { humanDuration, recordTypes } from "@/lib/dns"
+import { useZoneDnssec } from "@/lib/dnssec"
+import { downloadText } from "@/lib/download"
 import { errorMessage, toastError } from "@/lib/errors"
 import { RecordDialog } from "./record-dialog"
 import { ZoneDeleteDialog, ZoneImportDialog, ZoneSettingsDialog } from "./zone-dialogs"
@@ -29,17 +31,6 @@ const nameSort: SortingFn<DnsRecord> = (a, b) => {
   const y = b.original.name ?? ""
   if (x === "@" || y === "@") return x === y ? 0 : x === "@" ? -1 : 1
   return x.localeCompare(y, "fr", { numeric: true })
-}
-
-function downloadText(filename: string, text: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }))
-  const a = document.createElement("a")
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 type Dialog = "settings" | "import" | "delete" | null
@@ -57,6 +48,7 @@ export default function ZoneDetailPage() {
   const [editing, setEditing] = React.useState<{ record: DnsRecord | null } | null>(null)
   const [deleting, setDeleting] = React.useState<DnsRecord | null>(null)
   const [exporting, setExporting] = React.useState(false)
+  const dnssec = useZoneDnssec(id)
 
   const remove = useMutation({
     mutationFn: (rid: string) => api.delete("/dns/zones/{id}/records/{rid}", { params: { id, rid } }),
@@ -224,6 +216,13 @@ export default function ZoneDetailPage() {
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <ZoneKindBadge kind={z.kind} />
             {z.auto && <Badge variant="outline">auto</Badge>}
+            {dnssec?.enabled && (
+              <Badge asChild variant="outline" className="border-success/40 text-success">
+                <Link to={`/dnssec/${encodeURIComponent(id)}`} title="Zone signée : voir les clés et le DS" data-testid="zone-dnssec-badge">
+                  <ShieldCheck /> DNSSEC
+                </Link>
+              </Badge>
+            )}
             <span>
               série <span className="font-mono">{z.serial ?? "—"}</span>
             </span>

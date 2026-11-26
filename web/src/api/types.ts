@@ -72,3 +72,20 @@ export type ClusterGap = NonNullable<ClusterView["gaps"]>[number]
 export type ClusterTerm = NonNullable<ClusterView["history"]>[number]
 export type ClusterVip = NonNullable<ClusterView["vip"]>
 export type Conflict = S["Conflict"]
+
+// ---- Phase 5: optional modules (ad blocking, DNSSEC) ----
+export type Modules = S["Modules"]
+export type ModuleName = keyof Modules
+export type BlockingSettings = S["BlockingSettings"]
+export type BlockingStatus = S["BlockingStatus"]
+export type BlockListInput = S["BlockListInput"]
+export type BlockList = S["BlockList"]
+export type BlockListFormat = NonNullable<BlockListInput["format"]>
+export type BlockRule = S["BlockRule"]
+export type BlockRuleKind = NonNullable<BlockRule["kind"]>
+export type BlockPolicyInput = S["BlockPolicyInput"]
+export type BlockPolicy = S["BlockPolicy"]
+export type BlockTargetKind = BlockPolicyInput["targetKind"]
+export type DnssecKey = S["DnssecKey"]
+export type DnssecKeyState = NonNullable<DnssecKey["state"]>
+export type DnssecZone = S["DnssecZone"]

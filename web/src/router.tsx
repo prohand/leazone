@@ -2,6 +2,7 @@ import * as React from "react"
 import { createBrowserRouter, Outlet } from "react-router"
 import { AppLayout } from "@/components/app-layout"
 import { AuthGate } from "@/components/auth-gate"
+import { RequireModule } from "@/components/module-gate"
 import { FullScreenSpinner } from "@/components/spinner"
 import { RequireAdmin } from "@/pages/forbidden"
 
@@ -23,7 +24,9 @@ const ScopesPage = React.lazy(() => import("@/pages/dhcp/scopes"))
 const LeasesPage = React.lazy(() => import("@/pages/dhcp/leases"))
 const ReservationsPage = React.lazy(() => import("@/pages/dhcp/reservations"))
 const ClusterPage = React.lazy(() => import("@/pages/cluster"))
-const ComingSoonPage = React.lazy(() => import("@/pages/coming-soon"))
+const BlockingPage = React.lazy(() => import("@/pages/blocking"))
+const DnssecPage = React.lazy(() => import("@/pages/dnssec"))
+const DnssecZonePage = React.lazy(() => import("@/pages/dnssec/zone"))
 const NotFoundPage = React.lazy(() => import("@/pages/not-found"))
 
 function Root() {
@@ -33,8 +36,6 @@ function Root() {
     </React.Suspense>
   )
 }
-
-const soon = (path: string) => ({ path, element: <ComingSoonPage /> })
 
 export const router = createBrowserRouter([
   {
@@ -56,8 +57,9 @@ export const router = createBrowserRouter([
           { path: "/dns/zones", element: <ZonesPage /> },
           { path: "/dns/zones/:id", element: <ZoneDetailPage /> },
           { path: "/dns/forwarders", element: <ForwardersPage /> },
-          soon("/blocking"),
-          soon("/dnssec"),
+          { path: "/blocking", element: <RequireModule module="blocking"><BlockingPage /></RequireModule> },
+          { path: "/dnssec", element: <RequireModule module="dnssec"><DnssecPage /></RequireModule> },
+          { path: "/dnssec/:id", element: <RequireModule module="dnssec"><DnssecZonePage /></RequireModule> },
           { path: "/dhcp/scopes", element: <ScopesPage /> },
           { path: "/dhcp/leases", element: <LeasesPage /> },
           { path: "/dhcp/reservations", element: <ReservationsPage /> },
