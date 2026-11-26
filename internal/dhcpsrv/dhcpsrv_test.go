@@ -40,9 +40,9 @@ func iface(idx int, name string, cidr string) netif.Interface {
 }
 
 type hooks struct {
-	mu     sync.Mutex
-	bound  map[string]string // mac -> ip
-	ended  int
+	mu    sync.Mutex
+	bound map[string]string // mac -> ip
+	ended int
 }
 
 func (h *hooks) Bound(_ context.Context, _ *dhcpconf.Scope, l Lease) string {
