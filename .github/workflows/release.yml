@@ -1,7 +1,9 @@
 name: Release
 
 # Publishes ghcr.io/prohand/leazone for linux/amd64 and linux/arm64 when a
-# version tag is pushed (git tag v1.2.3 && git push origin v1.2.3).
+# version tag is pushed (git tag v1.2.3 && git push origin v1.2.3), or when
+# run by hand (Actions > Release > Run workflow): the run then also creates
+# the tag on the chosen branch.
 # Tags: 1.2.3, 1.2 and latest. Each image has an SBOM and a provenance
 # attestation, and is signed with cosign (keyless, GitHub OIDC).
 
@@ -24,7 +26,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # tag and GitHub release
       packages: write   # push to ghcr.io
       id-token: write   # cosign keyless signature
       attestations: write
@@ -86,6 +88,26 @@ jobs:
 
       - name: Sign with cosign (keyless)
         run: cosign sign --yes "$IMAGE@${{ steps.build.outputs.digest }}"
+
+      - name: Tag and GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists"
+            exit 0
+          fi
+          # Notes: the section of CHANGELOG.md for this version.
+          awk -v v="## $VERSION" '$0==v{on=1;next} /^## /{if(on)exit} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "Leazone $VERSION" > notes.md
+          {
+            echo
+            echo "Image : \`ghcr.io/prohand/leazone:$VERSION\` (amd64, arm64), signée avec cosign."
+          } >> notes.md
+          # Creates the tag on this commit when it does not exist yet (manual run).
+          gh release create "$tag" --target "$GITHUB_SHA" --title "Leazone $VERSION" --notes-file notes.md
 
       - name: Summary
         run: |
