@@ -171,6 +171,7 @@ export function ForwarderDialog({
   const set = (patch: Partial<Form>) => {
     setForm((f) => ({ ...f, ...patch }))
     test.reset()
+    if (save.isError) save.reset()
   }
 
   const setProtocol = (p: ForwarderProtocol) =>

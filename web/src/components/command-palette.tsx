@@ -74,13 +74,25 @@ function CommandPalette({ open, setOpen }: Ctx) {
     onSuccess: (r) => toast.success(`Cache DNS vidé : ${r?.removed ?? 0} entrée(s) supprimée(s).`),
   })
 
-  const run = (fn: () => void) => {
+  // Set when an action opens another dialog: the palette must not give the
+  // focus back to the page when it closes, or it would steal it from that dialog.
+  const keepFocus = React.useRef(false)
+  const run = (fn: () => void, opensDialog = false) => {
+    keepFocus.current = opensDialog
     setOpen(false)
     fn()
   }
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen} filter={paletteFilter}>
+    <CommandDialog
+      open={open}
+      onOpenChange={setOpen}
+      filter={paletteFilter}
+      onCloseAutoFocus={(e) => {
+        if (keepFocus.current) e.preventDefault()
+        keepFocus.current = false
+      }}
+    >
       <CommandInput placeholder="Chercher une page ou une action…" />
       <CommandList>
         <CommandEmpty>Aucun résultat.</CommandEmpty>
@@ -117,12 +129,12 @@ function CommandPalette({ open, setOpen }: Ctx) {
           <CommandItem
             value="Tester une résolution DNS"
             keywords={["lookup", "dig", "nslookup", "résoudre", "nom"]}
-            onSelect={() => run(() => openLookup())}
+            onSelect={() => run(() => openLookup(), true)}
           >
             <SearchCheck /> Tester une résolution DNS
           </CommandItem>
           {can(role, "config.write") && (
-            <CommandItem value="Nouvelle zone DNS" keywords={["créer", "ajouter", "domaine"]} onSelect={() => run(() => navigate("/dns/zones?new=1"))}>
+            <CommandItem value="Nouvelle zone DNS" keywords={["créer", "ajouter", "domaine"]} onSelect={() => run(() => navigate("/dns/zones?new=1"), true)}>
               <Plus /> Nouvelle zone DNS
             </CommandItem>
           )}
@@ -130,7 +142,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
             <CommandItem
               value="Ajouter un redirecteur"
               keywords={["forwarder", "DoH", "DoT", "nouveau"]}
-              onSelect={() => run(() => navigate("/dns/forwarders?new=1"))}
+              onSelect={() => run(() => navigate("/dns/forwarders?new=1"), true)}
             >
               <Forward /> Ajouter un redirecteur
             </CommandItem>

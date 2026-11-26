@@ -65,7 +65,7 @@ export default function ZoneDetailPage() {
       toast.success("Enregistrement supprimé.")
       void qc.invalidateQueries({ queryKey: qk.records(id) })
       void qc.invalidateQueries({ queryKey: qk.zone(id) })
-      void qc.invalidateQueries({ queryKey: qk.zones })
+      void qc.invalidateQueries({ queryKey: qk.zones, exact: true })
     },
   })
 

@@ -40,8 +40,8 @@ function target(f: Forwarder) {
 function Health({ f }: { f: Forwarder }) {
   const h = f.health
   if (f.enabled === false) return <StatusDot tone="off" label={<span className="text-xs text-muted-foreground">désactivé</span>} />
-  if (!h || (!h.lastCheckAt && h.healthy === undefined))
-    return <StatusDot tone="off" label={<span className="text-xs text-muted-foreground">pas encore utilisé</span>} />
+  if (!h || !h.lastCheckAt)
+    return <StatusDot tone="off" label={<span className="text-xs text-muted-foreground">pas encore testé</span>} />
   const latency = formatLatency(h.lastLatencyMs)
   if (h.healthy)
     return (
@@ -88,13 +88,8 @@ function ForwarderRow({
 }) {
   const tls = f.protocol === "dot" || f.protocol === "doh"
   return (
-    <li
-      className={cn(
-        "flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center",
-        f.enabled === false && "text-muted-foreground",
-      )}
-    >
-      <div className="flex min-w-0 flex-1 items-start gap-3">
+    <li className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
+      <div className={cn("flex min-w-0 flex-1 items-start gap-3", f.enabled === false && "opacity-60")}>
         <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-medium tabular-nums">
           {index + 1}
         </span>
@@ -128,7 +123,7 @@ function ForwarderRow({
           </div>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1 pl-9 sm:pl-0">
+      <div className="flex flex-wrap items-center gap-1 sm:flex-nowrap">
         <Button variant="outline" size="sm" onClick={onTest} disabled={testing}>
           {testing ? <Loader2 className="animate-spin" /> : <FlaskConical />} Tester
         </Button>
@@ -236,8 +231,8 @@ export default function ForwardersPage() {
 
   const testingId = test.isPending ? test.variables?.id : undefined
 
-  const renderList = (items: Forwarder[]) => (
-    <ul className="divide-y rounded-lg border">
+  const renderList = (items: Forwarder[], inCard = false) => (
+    <ul className={inCard ? "divide-y border-t" : "divide-y rounded-lg border"}>
       {items.map((f, i) => (
         <ForwarderRow
           key={f.id}
@@ -318,7 +313,7 @@ export default function ForwardersPage() {
               </p>
             ) : (
               groups.conditional.map(([domain, items]) => (
-                <Card key={domain} className="gap-3 py-4">
+                <Card key={domain} className="gap-3 pt-4 pb-0">
                   <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
                     <div>
                       <CardTitle className="font-mono text-base">{domain}</CardTitle>
@@ -330,7 +325,7 @@ export default function ForwardersPage() {
                       </Button>
                     )}
                   </CardHeader>
-                  <CardContent className="px-4">{renderList(items)}</CardContent>
+                  <CardContent className="px-0">{renderList(items, true)}</CardContent>
                 </Card>
               ))
             )}

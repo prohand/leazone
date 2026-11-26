@@ -43,7 +43,9 @@ func (s *Server) registerDNSRoutes() {
 	s.handle("POST /dns/forwarders/test", need(cfg), s.testForwarderInput)
 	s.handle("PUT /dns/forwarders/{id}", need(cfg), s.updateForwarder)
 	s.handle("DELETE /dns/forwarders/{id}", need(cfg), s.deleteForwarder)
-	s.handle("POST /dns/forwarders/{id}/test", need(cfg), s.testForwarder)
+	// Testing a saved forwarder is harmless: every role may do it. Testing an
+	// arbitrary address stays admin-only (it sends traffic to any IP).
+	s.handle("POST /dns/forwarders/{id}/test", need(auth.PermRead), s.testForwarder)
 }
 
 // reloadDNS applies the configuration to the running engine.

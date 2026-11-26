@@ -879,7 +879,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
-      summary: Test a saved forwarder
+      summary: Test a saved forwarder (any role)
       responses:
         "200":
           description: Test result

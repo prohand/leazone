@@ -114,9 +114,13 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 	})
 }
 
+// radixStyleHash allows the one fixed <style> element Radix Select injects
+// (its rule is also shipped in the CSS bundle). Nothing else inline is allowed.
+const radixStyleHash = "'sha256-441zG27rExd4/il+NvIqyL8zFx5XmyNQtE381kSkUJk='"
+
 // securityHeaders sets CSP and friends on every response.
 func securityHeaders(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; " +
+	const csp = "default-src 'self'; script-src 'self'; style-src 'self' " + radixStyleHash + "; style-src-attr 'unsafe-inline'; " +
 		"img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; " +
 		"form-action 'self'; object-src 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

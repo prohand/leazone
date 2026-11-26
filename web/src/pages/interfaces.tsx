@@ -26,17 +26,14 @@ function sortedAddresses(i: NetInterface) {
 function Listener({ l }: { l: DnsListener }) {
   const ok = l.state === "listening"
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <StatusDot tone={ok ? "ok" : "error"} />
-      <span className="font-mono">{l.address}</span>
-      <span className="text-muted-foreground uppercase">{l.protocol}</span>
-      {ok ? (
-        <span className="text-success">écoute</span>
-      ) : (
-        <span className="max-w-72 truncate text-destructive" title={l.error}>
-          {l.error || "erreur"}
-        </span>
-      )}
+    <div className="text-xs">
+      <div className="flex items-center gap-2">
+        <StatusDot tone={ok ? "ok" : "error"} />
+        <span className="font-mono">{l.address}</span>
+        <span className="text-muted-foreground uppercase">{l.protocol}</span>
+        {ok && <span className="text-success">écoute</span>}
+      </div>
+      {!ok && <p className="max-w-64 pl-4 whitespace-normal text-destructive">{l.error || "erreur"}</p>}
     </div>
   )
 }
@@ -100,14 +97,20 @@ export default function InterfacesPage() {
         cell: ({ row }) => {
           const i = row.original
           return (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="font-medium">{i.name}</span>
-              {i.type === "vlan" && i.vlanId != null && <Badge variant="secondary">VLAN {i.vlanId}</Badge>}
-              {i.parent && <span className="text-xs text-muted-foreground">sur {i.parent}</span>}
-              {i.present === false && (
-                <Badge variant="outline" className="border-warning/50 text-warning">
-                  absente de l'hôte
-                </Badge>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{i.name}</span>
+                {i.type === "vlan" && i.vlanId != null && <Badge variant="secondary">VLAN {i.vlanId}</Badge>}
+              </div>
+              {(i.parent || i.present === false) && (
+                <div className="flex items-center gap-2">
+                  {i.parent && <span className="text-xs text-muted-foreground">sur {i.parent}</span>}
+                  {i.present === false && (
+                    <Badge variant="outline" className="border-warning/50 text-warning">
+                      absente de l'hôte
+                    </Badge>
+                  )}
+                </div>
               )}
             </div>
           )
@@ -195,6 +198,7 @@ export default function InterfacesPage() {
         cell: ({ row }) => {
           const i = row.original
           if (!i.dnsEnabled) return <span className="text-sm text-muted-foreground">—</span>
+          if (i.present === false) return <span className="text-xs text-muted-foreground">interface absente</span>
           const ls = i.dnsListeners ?? []
           if (ls.length === 0)
             return <span className="text-xs text-warning">aucune écoute (pas d'adresse IP)</span>

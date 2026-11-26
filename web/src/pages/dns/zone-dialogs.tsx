@@ -161,7 +161,7 @@ export function ZoneCreateDialog({
     mutationFn: (body: { name: string; ttl?: number; soa?: Soa }) => api.post("/dns/zones", { body }),
     meta: { silent: true },
     onSuccess: (z) => {
-      void qc.invalidateQueries({ queryKey: qk.zones })
+      void qc.invalidateQueries({ queryKey: qk.zones, exact: true })
       toast.success(`Zone ${z.name} créée.`)
       onCreated(z)
     },
@@ -266,7 +266,7 @@ export function ZoneSettingsDialog({
     meta: { silent: true },
     onSuccess: (z) => {
       qc.setQueryData(qk.zone(id), z)
-      void qc.invalidateQueries({ queryKey: qk.zones })
+      void qc.invalidateQueries({ queryKey: qk.zones, exact: true })
       toast.success("Paramètres de la zone enregistrés.")
       onOpenChange(false)
     },
@@ -350,7 +350,7 @@ export function ZoneImportDialog({
     onSuccess: (r) => {
       setResult(r ?? {})
       void qc.invalidateQueries({ queryKey: qk.zone(id) })
-      void qc.invalidateQueries({ queryKey: qk.zones })
+      void qc.invalidateQueries({ queryKey: qk.zones, exact: true })
       const n = r?.imported ?? 0
       toast.success(n === 1 ? "1 enregistrement importé." : `${n} enregistrements importés.`)
     },
@@ -484,8 +484,8 @@ export function ZoneDeleteDialog({
     mutationFn: () => api.delete("/dns/zones/{id}", { params: { id } }),
     meta: { silent: true },
     onSuccess: () => {
-      qc.removeQueries({ queryKey: qk.zone(id) })
-      void qc.invalidateQueries({ queryKey: qk.zones })
+      // Only the list: refetching the deleted zone itself would 404.
+      void qc.invalidateQueries({ queryKey: qk.zones, exact: true })
       toast.success(`Zone ${zone.name} supprimée.`)
       onDeleted()
     },

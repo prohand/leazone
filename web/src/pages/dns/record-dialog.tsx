@@ -118,7 +118,7 @@ export function RecordDialog({
     onSuccess: (r) => {
       void qc.invalidateQueries({ queryKey: qk.records(zoneId) })
       void qc.invalidateQueries({ queryKey: qk.zone(zoneId) })
-      void qc.invalidateQueries({ queryKey: qk.zones })
+      void qc.invalidateQueries({ queryKey: qk.zones, exact: true })
       toast.success(record ? "Enregistrement modifié." : `Enregistrement ${r.fqdn ?? r.name ?? ""} ajouté.`)
       onOpenChange(false)
     },
@@ -132,7 +132,11 @@ export function RecordDialog({
     }
   }, [open])
 
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }))
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => {
+    setForm((f) => ({ ...f, [k]: v }))
+    // A server error is about the old values: hide it once the user edits.
+    if (save.isError) save.reset()
+  }
   const err = (k: string) => local[k] ?? fieldError(save.error, k)
   const fields = fieldsByType[form.type]
   const known = ["name", "type", "ttl", ...fields.map((k) => `data.${k}`)]
@@ -219,10 +223,18 @@ export function RecordDialog({
           </div>
           <p className="-mt-2 text-xs text-muted-foreground">{recordTypeHelp[form.type]}</p>
 
-          <div className={fields.length > 1 ? "grid gap-4 sm:grid-cols-2" : "space-y-4"}>
+          <div
+            className={
+              form.type === "SRV"
+                ? "grid gap-4 sm:grid-cols-3"
+                : form.type === "MX"
+                  ? "grid gap-4 sm:grid-cols-[8rem_1fr]"
+                  : "space-y-4"
+            }
+          >
             {fields.map((k) => {
               const meta = dataLabel(form.type, k)
-              const wide = k === "target" || k === "exchange" || k === "text"
+              const wide = form.type === "SRV" && k === "target"
               return (
                 <Field
                   key={`${form.type}-${k}`}
@@ -230,7 +242,7 @@ export function RecordDialog({
                   htmlFor={`rec-${k}`}
                   help={meta.help}
                   error={err(`data.${k}`)}
-                  className={fields.length > 1 && wide ? "sm:col-span-2" : undefined}
+                  className={wide ? "sm:col-span-3" : undefined}
                 >
                   {k === "text" ? (
                     <Textarea

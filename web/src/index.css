@@ -148,3 +148,16 @@ body[data-scroll-locked] {
   overflow: hidden !important;
   overscroll-behavior: contain;
 }
+
+/*
+ * Radix Select also injects a <style> tag (hidden scrollbar in the list),
+ * blocked by the CSP: same rule here.
+ */
+[data-radix-select-viewport] {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+}
+[data-radix-select-viewport]::-webkit-scrollbar {
+  display: none;
+}
