@@ -44,6 +44,7 @@ var (
 	ErrFormat      = errors.New("ce fichier n'est pas une sauvegarde Leazone")
 	ErrNewerSchema = errors.New("sauvegarde faite par une version plus récente de Leazone : mettez Leazone à jour d'abord")
 	ErrShort       = fmt.Errorf("mot de passe trop court (%d caractères minimum)", MinPassword)
+	ErrNoAdmin     = errors.New("la sauvegarde ne contient aucun administrateur actif : restauration refusée")
 )
 
 // KDF parameters (stored in the file so they can evolve).
@@ -89,9 +90,18 @@ func (s *Service) now() time.Time {
 	return time.Now()
 }
 
+// Bounds of the KDF parameters read from a file: a crafted file must not
+// make the server spend gigabytes or minutes (even for a dry run).
+const (
+	maxKDFTime      = 10
+	maxKDFMemoryKiB = 256 << 10 // 256 MiB
+	maxKDFThreads   = 16
+)
+
 func deriveKey(password string, k KDF) ([]byte, error) {
 	salt, err := base64.StdEncoding.DecodeString(k.Salt)
-	if err != nil || k.Name != "argon2id" || k.Time == 0 || k.MemoryKiB < 8 || k.Threads == 0 || k.MemoryKiB > 4<<20 || k.Time > 20 {
+	if err != nil || k.Name != "argon2id" || k.Time == 0 || k.MemoryKiB < 8 || k.Threads == 0 ||
+		k.MemoryKiB > maxKDFMemoryKiB || k.Time > maxKDFTime || k.Threads > maxKDFThreads {
 		return nil, ErrFormat
 	}
 	return argon2.IDKey([]byte(password), salt, k.Time, k.MemoryKiB, k.Threads, 32), nil
@@ -284,6 +294,15 @@ func (s *Service) Open(ctx context.Context, data []byte, password string) (*File
 
 // Restore replaces the configuration with the backup (dryRun: check only).
 // After a real restore the caller reloads every service.
+//
+// A backup is an old copy of the credentials, so the restore must not bring
+// back access that was taken away since:
+//   - every session and every API token is revoked (tokens revoked since the
+//     backup would otherwise come back; users log in again);
+//   - for users that exist on this node, second factors that this node no
+//     longer has (deleted passkey, disabled or replaced TOTP, recovery codes
+//     regenerated or reset, whose usage records are gone) are dropped. Users
+//     that only exist in the backup (restore on a new install) keep theirs.
 func (s *Service) Restore(ctx context.Context, data []byte, password string, dryRun bool) (*Result, error) {
 	f, dek, err := s.Open(ctx, data, password)
 	if err != nil {
@@ -300,30 +319,142 @@ func (s *Service) Restore(ctx context.Context, data []byte, password string, dry
 			return nil, fmt.Errorf("table inconnue dans la sauvegarde : %s", n)
 		}
 	}
+	// Nobody could administer the restored configuration.
+	if !hasActiveAdmin(f.Tables["users"]) {
+		return nil, ErrNoAdmin
+	}
 	if dryRun {
 		return res, nil
 	}
-	if f.Tables["users"] == nil || len(f.Tables["users"]) == 0 {
-		return nil, errors.New("la sauvegarde ne contient aucun utilisateur : restauration refusée")
-	}
-	res.KeyChanged = !hmac.Equal(dek, s.Box.Key())
-	err = s.Repl.Restore(ctx, f.Tables, func(tx *sql.Tx) error {
-		if !res.KeyChanged {
-			return nil
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES ('dek', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			s.WrapDEK(dek))
-		return err
-	})
+	local, err := localFactors(ctx, s.DB)
 	if err != nil {
 		return nil, err
 	}
-	if res.KeyChanged {
-		if err := s.Box.Replace(dek); err != nil {
+	res.KeyChanged = !hmac.Equal(dek, s.Box.Key())
+	// Seal and Open wait from the end of the restore transaction until the
+	// new key is in place: nothing is encrypted with the old key in between.
+	var swap func(key []byte) error
+	err = s.Repl.Restore(ctx, f.Tables, func(tx *sql.Tx) error {
+		if err := dropRevokedAccess(ctx, tx, local, s.now()); err != nil {
+			return err
+		}
+		if !res.KeyChanged {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES ('dek', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			s.WrapDEK(dek)); err != nil {
+			return err
+		}
+		swap = s.Box.BeginReplace()
+		return nil
+	})
+	if swap != nil {
+		key := dek
+		if err != nil {
+			key = nil // rolled back: keep the current key
+		}
+		if serr := swap(key); serr != nil && err == nil {
+			err = serr
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// hasActiveAdmin reports whether the backup has an enabled admin account.
+func hasActiveAdmin(users []map[string]any) bool {
+	for _, u := range users {
+		if fmt.Sprint(u["role"]) == "admin" && fmt.Sprint(u["disabled"]) == "0" {
+			return true
+		}
+	}
+	return false
+}
+
+// factors lists the second factors present on this node before a restore.
+type factors struct {
+	users    map[string]bool
+	passkeys map[string]bool // webauthn_credentials.id
+	totp     map[string]bool // user_id + secret
+	recovery map[string]bool // recovery_codes.id, unused only
+}
+
+func localFactors(ctx context.Context, db *store.DB) (*factors, error) {
+	f := &factors{users: map[string]bool{}, passkeys: map[string]bool{}, totp: map[string]bool{}, recovery: map[string]bool{}}
+	for _, q := range []struct {
+		sql string
+		set map[string]bool
+	}{
+		{`SELECT id FROM users`, f.users},
+		{`SELECT id FROM webauthn_credentials`, f.passkeys},
+		{`SELECT user_id || ' ' || secret_enc FROM totp`, f.totp},
+		{`SELECT id FROM recovery_codes c WHERE NOT EXISTS (SELECT 1 FROM recovery_usage u WHERE u.code_id = c.id)`, f.recovery},
+	} {
+		rows, err := db.QueryContext(ctx, q.sql)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			q.set[k] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return nil, err
 		}
 	}
-	return res, nil
+	return f, nil
+}
+
+// dropRevokedAccess runs at the end of the restore transaction (see Restore).
+func dropRevokedAccess(ctx context.Context, tx *sql.Tx, local *factors, now time.Time) error {
+	ms := now.UnixMilli()
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE revoked_at IS NULL`, ms); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL`, ms); err != nil {
+		return err
+	}
+	for _, t := range []struct {
+		table, key string
+		keep       map[string]bool
+	}{
+		{"webauthn_credentials", "id", local.passkeys},
+		{"totp", "user_id || ' ' || secret_enc", local.totp},
+		{"recovery_codes", "id", local.recovery},
+	} {
+		rows, err := tx.QueryContext(ctx, `SELECT user_id, `+t.key+` FROM `+t.table)
+		if err != nil {
+			return err
+		}
+		var drop []string
+		for rows.Next() {
+			var user, k string
+			if err := rows.Scan(&user, &k); err != nil {
+				rows.Close()
+				return err
+			}
+			if local.users[user] && !t.keep[k] {
+				drop = append(drop, k)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, k := range drop {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+t.table+` WHERE `+t.key+` = ?`, k); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ---- automatic backups ----

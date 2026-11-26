@@ -29,7 +29,7 @@ func (s *Server) backupErr(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, auth.ErrValidation{"password": err.Error()})
 	case errors.Is(err, backup.ErrPassword):
 		s.fail(w, r, auth.ErrValidation{"password": err.Error()})
-	case errors.Is(err, backup.ErrFormat), errors.Is(err, backup.ErrNewerSchema):
+	case errors.Is(err, backup.ErrFormat), errors.Is(err, backup.ErrNewerSchema), errors.Is(err, backup.ErrNoAdmin):
 		s.fail(w, r, auth.ErrValidation{"content": err.Error()})
 	default:
 		s.fail(w, r, err)
