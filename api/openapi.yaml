@@ -1,0 +1,759 @@
+openapi: 3.1.0
+info:
+  title: Leazone API
+  version: 1.0.0
+  description: |
+    REST JSON API of Leazone (DNS + DHCP with high availability).
+
+    Authentication:
+      - Browser: session cookie `__Host-leazone_session` + header `X-CSRF-Token`
+        (value from `GET /auth/session`) on every non-GET request.
+      - Scripts: `Authorization: Bearer lz_<prefix>_<secret>` (API tokens, no CSRF).
+
+    Errors use RFC 9457 `application/problem+json`. The `type` field is stable:
+      - `urn:leazone:unauthenticated` (401)
+      - `urn:leazone:forbidden` (403)
+      - `urn:leazone:step-up-required` (403) -> re-verify with passkey/TOTP, see /auth/step-up/*
+      - `urn:leazone:mfa-required` (403) -> session is not fully authenticated
+      - `urn:leazone:rate-limited` (429) -> `retryAfter` seconds
+      - `urn:leazone:validation` (422) -> `errors` map field -> message
+      - `urn:leazone:not-found` (404), `urn:leazone:conflict` (409)
+      - `urn:leazone:csrf` (403)
+servers:
+  - url: /api/v1
+security:
+  - session: []
+  - token: []
+
+paths:
+  /system/info:
+    get:
+      summary: Public information used by the login page
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemInfo" }
+
+  /auth/session:
+    get:
+      summary: Current session state (also returns the CSRF token)
+      security: []
+      responses:
+        "200":
+          description: OK (state "anonymous" when not logged in)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+
+  /auth/login:
+    post:
+      summary: Password login (first factor)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Session created. Check `state` for the next step.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+
+  /auth/logout:
+    post:
+      summary: Logout (revoke current session)
+      responses:
+        "204": { description: Logged out }
+
+  /auth/passkey/begin:
+    post:
+      summary: Start a passwordless passkey login (discoverable credential)
+      security: []
+      responses:
+        "200":
+          description: WebAuthn request options
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnBegin" }
+  /auth/passkey/finish:
+    post:
+      summary: Finish a passwordless passkey login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebAuthnFinish" }
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /auth/mfa/passkey/begin:
+    post:
+      summary: Start passkey verification as second factor (state mfa_required)
+      responses:
+        "200":
+          description: WebAuthn request options
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnBegin" }
+  /auth/mfa/passkey/finish:
+    post:
+      summary: Finish passkey second factor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebAuthnFinish" }
+      responses:
+        "200":
+          description: Session upgraded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+  /auth/mfa/totp:
+    post:
+      summary: TOTP second factor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodeRequest" }
+      responses:
+        "200":
+          description: Session upgraded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+  /auth/mfa/recovery:
+    post:
+      summary: Recovery code as second factor (single use)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodeRequest" }
+      responses:
+        "200":
+          description: Session upgraded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+
+  /auth/step-up/passkey/begin:
+    post:
+      summary: Start a step-up (re-verification before a sensitive action)
+      responses:
+        "200":
+          description: WebAuthn request options
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnBegin" }
+  /auth/step-up/passkey/finish:
+    post:
+      summary: Finish passkey step-up
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebAuthnFinish" }
+      responses:
+        "200":
+          description: Session elevated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+  /auth/step-up/totp:
+    post:
+      summary: TOTP step-up
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodeRequest" }
+      responses:
+        "200":
+          description: Session elevated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+
+  /me:
+    get:
+      summary: Current user profile and MFA status
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+  /me/password:
+    post:
+      summary: Change own password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 12 }
+      responses:
+        "204": { description: Changed }
+
+  /me/passkeys:
+    get:
+      summary: List own passkeys
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Passkey" } }
+  /me/passkeys/begin:
+    post:
+      summary: Start passkey registration
+      responses:
+        "200":
+          description: WebAuthn creation options
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebAuthnBegin" }
+  /me/passkeys/finish:
+    post:
+      summary: Finish passkey registration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/WebAuthnFinish"
+                - type: object
+                  required: [name]
+                  properties:
+                    name: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: Registered. `recoveryCodes` is set only when this is the first MFA method.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MfaEnrollResult" }
+  /me/passkeys/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    patch:
+      summary: Rename a passkey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Passkey" }
+    delete:
+      summary: Delete a passkey (step-up required)
+      responses:
+        "204": { description: Deleted }
+
+  /me/totp:
+    get:
+      summary: TOTP status
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+    delete:
+      summary: Disable TOTP (step-up required)
+      responses:
+        "204": { description: Disabled }
+  /me/totp/setup:
+    post:
+      summary: Generate a new TOTP secret (not active until confirmed)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauthUrl: { type: string }
+                  qrPng: { type: string, description: "data:image/png;base64,..." }
+  /me/totp/confirm:
+    post:
+      summary: Confirm the TOTP secret with a code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodeRequest" }
+      responses:
+        "200":
+          description: Enabled. `recoveryCodes` is set only when this is the first MFA method.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MfaEnrollResult" }
+
+  /me/recovery-codes:
+    get:
+      summary: Number of unused recovery codes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  remaining: { type: integer }
+    post:
+      summary: Regenerate the 10 recovery codes (step-up required). Old ones stop working.
+      responses:
+        "200":
+          description: New codes, shown only once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  codes: { type: array, items: { type: string } }
+
+  /me/sessions:
+    get:
+      summary: List own active sessions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Session" } }
+  /me/sessions/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      summary: Revoke one of own sessions
+      responses:
+        "204": { description: Revoked }
+
+  /me/tokens:
+    get:
+      summary: List own API tokens
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ApiToken" } }
+    post:
+      summary: Create an API token (secret returned once)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scope]
+              properties:
+                name: { type: string, maxLength: 64 }
+                scope: { type: string, enum: [read, write] }
+                expiresAt: { type: [string, "null"], format: date-time }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  item: { $ref: "#/components/schemas/ApiToken" }
+  /me/tokens/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      summary: Revoke an API token
+      responses:
+        "204": { description: Revoked }
+
+  /users:
+    get:
+      summary: List users (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/User" } }
+    post:
+      summary: Create a user (admin). If password is empty, a temporary one is generated and returned once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, role]
+              properties:
+                username: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{1,31}$" }
+                role: { $ref: "#/components/schemas/Role" }
+                password: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/User" }
+                  temporaryPassword: { type: [string, "null"] }
+  /users/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    patch:
+      summary: Update role or disable a user (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+                disabled: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+    delete:
+      summary: Delete a user (admin, step-up required)
+      responses:
+        "204": { description: Deleted }
+  /users/{id}/reset-mfa:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Remove all MFA methods of a user (admin, step-up required). User must set up MFA again.
+      responses:
+        "204": { description: Done }
+  /users/{id}/reset-password:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Set a temporary password (admin, step-up required). Revokes the user's sessions.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  temporaryPassword: { type: string }
+
+  /settings/security:
+    get:
+      summary: Security settings (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecuritySettings" }
+    put:
+      summary: Update security settings (admin, step-up required)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecuritySettings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecuritySettings" }
+
+  /settings/tls:
+    get:
+      summary: Current HTTPS certificate (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TlsInfo" }
+    post:
+      summary: Import a certificate + private key in PEM (admin, step-up required)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [certPem, keyPem]
+              properties:
+                certPem: { type: string, description: "Leaf first, then intermediates" }
+                keyPem: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TlsInfo" }
+
+  /audit:
+    get:
+      summary: Audit log (admin), newest first
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string }, description: "Search in actor, action, target" }
+        - { name: action, in: query, schema: { type: string }, description: "Action prefix, e.g. auth." }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
+                  nextCursor: { type: [string, "null"] }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: __Host-leazone_session
+    token:
+      type: http
+      scheme: bearer
+
+  responses:
+    Problem:
+      description: Error (RFC 9457)
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        retryAfter: { type: integer }
+        errors: { type: object, additionalProperties: { type: string } }
+
+    Role:
+      type: string
+      enum: [admin, operator, readonly]
+
+    SystemInfo:
+      type: object
+      properties:
+        product: { type: string, example: Leazone }
+        version: { type: string }
+        rpId: { type: string, description: "WebAuthn RP ID; empty when passkeys are unavailable (IP access)" }
+        passkeysAvailable: { type: boolean }
+        passkeysUnavailableReason: { type: string }
+        selfSignedCertificate: { type: boolean, description: "Show the warning banner" }
+
+    SessionState:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [anonymous, mfa_required, mfa_setup_required, authenticated]
+          description: |
+            anonymous: not logged in.
+            mfa_required: password OK, a second factor is needed (see mfaMethods).
+            mfa_setup_required: the user must enroll a MFA method (see allowedMfaMethods) before using the UI.
+            authenticated: full access according to role.
+        csrfToken: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            username: { type: string }
+            role: { $ref: "#/components/schemas/Role" }
+        mfaMethods:
+          type: array
+          description: Methods the user can use now for the second factor
+          items: { type: string, enum: [passkey, totp, recovery] }
+        allowedMfaMethods:
+          type: array
+          description: Methods the policy allows to enroll
+          items: { type: string, enum: [passkey, totp] }
+        expiresAt: { type: string, format: date-time }
+        elevatedUntil: { type: [string, "null"], format: date-time }
+
+    WebAuthnBegin:
+      type: object
+      properties:
+        ceremonyId: { type: string }
+        options:
+          type: object
+          description: "PublicKeyCredentialCreationOptionsJSON / RequestOptionsJSON wrapped as { publicKey: ... }"
+
+    WebAuthnFinish:
+      type: object
+      required: [ceremonyId, credential]
+      properties:
+        ceremonyId: { type: string }
+        credential:
+          type: object
+          description: "PublicKeyCredential serialized as JSON (RegistrationResponseJSON / AuthenticationResponseJSON)"
+
+    CodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string }
+
+    MfaEnrollResult:
+      type: object
+      properties:
+        session: { $ref: "#/components/schemas/SessionState" }
+        recoveryCodes: { type: [array, "null"], items: { type: string } }
+
+    Me:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        createdAt: { type: string, format: date-time }
+        totpEnabled: { type: boolean }
+        passkeyCount: { type: integer }
+        recoveryCodesRemaining: { type: integer }
+
+    Passkey:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+        backupEligible: { type: boolean, description: "Synced passkey (password manager, iCloud...)" }
+
+    Session:
+      type: object
+      properties:
+        id: { type: string }
+        current: { type: boolean }
+        ip: { type: string }
+        userAgent: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
+    ApiToken:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix: { type: string }
+        scope: { type: string, enum: [read, write] }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: [string, "null"], format: date-time }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        disabled: { type: boolean }
+        mfaEnabled: { type: boolean }
+        passkeyCount: { type: integer }
+        totpEnabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        lastLoginAt: { type: [string, "null"], format: date-time }
+
+    SecuritySettings:
+      type: object
+      properties:
+        mfaRequiredFor: { type: string, enum: [all, admins] }
+        mfaMethods: { type: string, enum: [passkey, passkey_or_totp] }
+        sessionMaxHours: { type: integer, minimum: 1, maximum: 720 }
+        sessionIdleMinutes: { type: integer, minimum: 5, maximum: 1440 }
+        uiAllowedNetworks: { type: array, items: { type: string }, description: "CIDR list, empty = all" }
+        webauthnRpId: { type: string, description: "Empty = host name of the public URL or of the request" }
+
+    TlsInfo:
+      type: object
+      properties:
+        source: { type: string, enum: [selfsigned, import, file] }
+        subject: { type: string }
+        dnsNames: { type: array, items: { type: string } }
+        notBefore: { type: string, format: date-time }
+        notAfter: { type: string, format: date-time }
+        fingerprintSha256: { type: string }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: string }
+        ts: { type: string, format: date-time }
+        actor: { type: string }
+        ip: { type: string }
+        action: { type: string, example: auth.login.success }
+        target: { type: string }
+        result: { type: string, enum: [success, failure] }
+        details: { type: object }
