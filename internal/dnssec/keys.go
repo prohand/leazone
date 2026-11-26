@@ -35,10 +35,12 @@ const (
 
 // Timing of the key lifecycle.
 const (
-	DNSKEYTTL   = 3600
-	ZSKLifetime = 90 * 24 * time.Hour
-	PrePublish  = 2 * time.Hour      // > DNSKEY TTL: caches see the new key before it signs
-	RetireDelay = 2 * 24 * time.Hour // old signatures / DS leave the caches
+	DNSKEYTTL    = 3600
+	ZSKLifetime  = 90 * 24 * time.Hour
+	PrePublish   = 2 * time.Hour       // > DNSKEY TTL: caches see the new key before it signs
+	RetireDelay  = 2 * 24 * time.Hour  // old signatures / DS leave the caches (minimum)
+	RetireMargin = 24 * time.Hour      // added to the longest TTL of the zone for a retired ZSK
+	SigValidity  = 15 * 24 * time.Hour // RRSIG lifetime (signatures expire at most a day later)
 )
 
 // Key is a signing key. Signer is only set by SigningKeys.
@@ -461,6 +463,20 @@ func (s *Store) DSPublished(ctx context.Context, zoneID string) (*ZoneInfo, erro
 	return s.Zone(ctx, zoneID)
 }
 
+// zskRetireDelay is how long a retired ZSK stays published: caches may keep
+// the RRsets it signed for the longest TTL of the zone, but never past the
+// expiration of the signatures.
+func zskRetireDelay(ctx context.Context, q execer, zoneID string) (time.Duration, error) {
+	var maxTTL sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT MAX(t) FROM (SELECT ttl AS t FROM zones WHERE id = ?
+		UNION ALL SELECT ttl FROM records WHERE zone_id = ? AND ttl IS NOT NULL)`, zoneID, zoneID).Scan(&maxTTL)
+	if err != nil {
+		return 0, err
+	}
+	ttl := min(time.Duration(maxTTL.Int64)*time.Second, SigValidity+24*time.Hour)
+	return max(RetireDelay, ttl+RetireMargin), nil
+}
+
 // Maintain moves keys along their lifecycle and starts automatic ZSK
 // rollovers. Only the node that writes the configuration runs it. It
 // reports whether something changed.
@@ -500,8 +516,12 @@ func (s *Store) Maintain(ctx context.Context) (bool, error) {
 					return err
 				}
 				if active != nil {
+					delay, err := zskRetireDelay(ctx, tx, zoneID)
+					if err != nil {
+						return err
+					}
 					if _, err := tx.ExecContext(ctx, `UPDATE dnssec_keys SET state = ?, retire_at = ? WHERE id = ?`, StateRetired,
-						ms(now.Add(RetireDelay)), active.ID); err != nil {
+						ms(now.Add(delay)), active.ID); err != nil {
 						return err
 					}
 				}
