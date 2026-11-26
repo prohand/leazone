@@ -39,6 +39,16 @@ type Config struct {
 	// DHCPPort is the DHCP server port (67); clients are answered on DHCPPort+1.
 	DHCPPort int `yaml:"dhcp_port"`
 
+	// Cluster (HA). Cluster mode is on when a cluster key and peers are set.
+	NodeName      string   `yaml:"node_name"`
+	ClusterListen string   `yaml:"cluster_listen"`
+	ClusterAddr   string   `yaml:"cluster_addr"`  // advertised, e.g. https://192.168.1.2:7443
+	Peers         []string `yaml:"cluster_peers"` // other nodes' cluster_addr
+	Witness       string   `yaml:"witness"`       // https://ip:7443 (container) or ping:IP
+	PreferredRole string   `yaml:"preferred_role"`
+	VIP           string   `yaml:"vip"`           // e.g. 192.168.1.10/24
+	VIPInterface  string   `yaml:"vip_interface"` // e.g. eno1
+
 	// ControlSocket is the local Unix socket used by CLI sub-commands.
 	ControlSocket string `yaml:"control_socket"`
 
@@ -66,6 +76,8 @@ func Defaults() Config {
 		LogFormat:     "text",
 		ControlSocket: "/tmp/leazone.sock",
 		DNSPort:       53,
+		ClusterListen: ":7443",
+		PreferredRole: "secondary",
 		DHCPPort:      67,
 		AdminUser:     "admin",
 	}
@@ -102,6 +114,16 @@ func Load(getenv func(string) string) (*Config, error) {
 	str("LOG_FORMAT", &c.LogFormat)
 	str("CONTROL_SOCKET", &c.ControlSocket)
 	str("ADMIN_USER", &c.AdminUser)
+	str("NODE_NAME", &c.NodeName)
+	str("CLUSTER_LISTEN", &c.ClusterListen)
+	str("CLUSTER_ADDR", &c.ClusterAddr)
+	str("WITNESS", &c.Witness)
+	str("PREFERRED_ROLE", &c.PreferredRole)
+	str("VIP", &c.VIP)
+	str("VIP_INTERFACE", &c.VIPInterface)
+	if v := getenv("LEAZONE_CLUSTER_PEERS"); v != "" {
+		c.Peers = splitList(v)
+	}
 	if v := getenv("LEAZONE_DNS_PORT"); v != "" {
 		p, err := strconv.Atoi(v)
 		if err != nil || p < 1 || p > 65535 {
@@ -187,6 +209,39 @@ func (c *Config) validate() error {
 		}
 		c.parsedProxies = append(c.parsedProxies, pfx)
 	}
+	if c.NodeName == "" {
+		c.NodeName, _ = os.Hostname()
+	}
+	if c.PreferredRole != "primary" && c.PreferredRole != "secondary" {
+		return fmt.Errorf("LEAZONE_PREFERRED_ROLE must be primary or secondary")
+	}
+	if c.Clustered() {
+		if c.ClusterAddr == "" {
+			return fmt.Errorf("LEAZONE_CLUSTER_ADDR is required in HA mode (e.g. https://192.168.1.2:7443)")
+		}
+		for _, u := range append([]string{c.ClusterAddr}, c.Peers...) {
+			if pu, err := url.Parse(u); err != nil || pu.Scheme != "https" || pu.Host == "" {
+				return fmt.Errorf("cluster address %q must look like https://192.168.1.2:7443", u)
+			}
+		}
+		if c.Witness != "" && !strings.HasPrefix(c.Witness, "ping:") && !strings.HasPrefix(c.Witness, "https://") {
+			return fmt.Errorf("LEAZONE_WITNESS must be https://ip:7443 (witness container) or ping:IP")
+		}
+		if strings.HasPrefix(c.Witness, "ping:") {
+			if _, err := netip.ParseAddr(strings.TrimPrefix(c.Witness, "ping:")); err != nil {
+				return fmt.Errorf("LEAZONE_WITNESS ping: needs an IP address")
+			}
+		}
+	}
+	if c.VIP != "" {
+		p, err := netip.ParsePrefix(c.VIP)
+		if err != nil || !p.Addr().Is4() {
+			return fmt.Errorf("LEAZONE_VIP must look like 192.168.1.10/24")
+		}
+		if c.VIPInterface == "" {
+			return fmt.Errorf("LEAZONE_VIP_INTERFACE is required with LEAZONE_VIP")
+		}
+	}
 	switch c.LogFormat {
 	case "text", "json":
 	default:
@@ -194,6 +249,9 @@ func (c *Config) validate() error {
 	}
 	return nil
 }
+
+// Clustered reports whether HA mode is configured.
+func (c *Config) Clustered() bool { return c.ClusterKey != "" && len(c.Peers) > 0 }
 
 // Proxies returns the parsed trusted proxy networks.
 func (c *Config) Proxies() []netip.Prefix { return c.parsedProxies }
