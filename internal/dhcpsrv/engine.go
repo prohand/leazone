@@ -66,7 +66,9 @@ type Engine struct {
 	outbox []Lease
 
 	mu      sync.Mutex
+	hlc     int64 // highest lease clock seen (local or from the peer)
 	scopes  map[string]*scopeRT
+	ordered []*scopeRT              // scopes sorted by ID (deterministic selection)
 	ifaces  map[int]netif.Interface // by index
 	dhcpOn  map[string]bool         // interface name -> DHCP enabled
 	leases  map[string]map[uint32]*Lease
@@ -87,6 +89,11 @@ func NewEngine(ctx context.Context, db *store.DB, log *slog.Logger) (*Engine, er
 	var err error
 	if e.leases, err = e.db.load(ctx); err != nil {
 		return nil, err
+	}
+	for _, m := range e.leases {
+		for _, l := range m {
+			e.hlc = max(e.hlc, l.HLC)
+		}
 	}
 	return e, nil
 }
@@ -117,6 +124,11 @@ func (e *Engine) SetConfig(scopes []*dhcpconf.Scope, res []*dhcpconf.Reservation
 			s.byCID[r.ClientID] = r
 		}
 	}
+	ordered := make([]*scopeRT, 0, len(rt))
+	for _, s := range rt {
+		ordered = append(ordered, s)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for id, s := range rt {
@@ -124,7 +136,7 @@ func (e *Engine) SetConfig(scopes []*dhcpconf.Scope, res []*dhcpconf.Reservation
 			s.cursor = old.cursor
 		}
 	}
-	e.scopes = rt
+	e.scopes, e.ordered = rt, ordered
 }
 
 // SetInterfaces replaces the interface snapshot and the DHCP-enabled set.
@@ -187,9 +199,17 @@ func (e *Engine) store(ctx context.Context, l *Lease) {
 	if e.leases[l.ScopeID] == nil {
 		e.leases[l.ScopeID] = map[uint32]*Lease{}
 	}
+	u := dhcpconf.U32(l.IP)
 	l.Owner = e.NodeID
-	l.HLC = e.Now().UnixMilli()
-	e.leases[l.ScopeID][dhcpconf.U32(l.IP)] = l
+	// Hybrid logical clock: never behind a change already seen (the peer's
+	// clock may be ahead of ours), so the peer always accepts this change.
+	var prev int64
+	if cur := e.leases[l.ScopeID][u]; cur != nil {
+		prev = cur.HLC
+	}
+	e.hlc = max(e.Now().UnixMilli(), e.hlc+1, prev+1)
+	l.HLC = e.hlc
+	e.leases[l.ScopeID][u] = l
 	e.version.Add(1)
 	if err := e.db.put(ctx, l); err != nil {
 		e.log.Error("lease persist failed", "ip", l.IP, "err", err)
@@ -232,39 +252,42 @@ func (e *Engine) ApplyRemote(ctx context.Context, list []Lease) {
 		old, new Lease
 	}
 	var changes []change
-	e.mu.Lock()
 	now := e.Now()
-	for _, r := range list {
-		sc := e.scopes[r.ScopeID]
-		if sc == nil {
-			continue
+	func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, r := range list {
+			sc := e.scopes[r.ScopeID]
+			if sc == nil || !r.IP.Is4() {
+				continue
+			}
+			e.hlc = max(e.hlc, r.HLC)
+			u := dhcpconf.U32(r.IP)
+			cur := e.leaseAt(r.ScopeID, u)
+			if cur != nil && (cur.HLC > r.HLC || (cur.HLC == r.HLC && cur.Owner >= r.Owner)) {
+				continue
+			}
+			var old Lease
+			if cur != nil {
+				old = *cur
+			}
+			nl := r
+			if cur != nil && cur.sameClient(r.MAC, r.ClientID) && r.State == StateBound {
+				nl.DNSName = cur.DNSName // DNS names are derived locally
+			} else {
+				nl.DNSName = ""
+			}
+			if e.leases[r.ScopeID] == nil {
+				e.leases[r.ScopeID] = map[uint32]*Lease{}
+			}
+			e.leases[r.ScopeID][u] = &nl
+			e.version.Add(1)
+			if err := e.db.put(ctx, &nl); err != nil {
+				e.log.Error("lease persist failed", "ip", nl.IP, "err", err)
+			}
+			changes = append(changes, change{sc.Scope, old, nl})
 		}
-		u := dhcpconf.U32(r.IP)
-		cur := e.leaseAt(r.ScopeID, u)
-		if cur != nil && (cur.HLC > r.HLC || (cur.HLC == r.HLC && cur.Owner >= r.Owner)) {
-			continue
-		}
-		var old Lease
-		if cur != nil {
-			old = *cur
-		}
-		nl := r
-		if cur != nil && cur.sameClient(r.MAC, r.ClientID) && r.State == StateBound {
-			nl.DNSName = cur.DNSName // DNS names are derived locally
-		} else {
-			nl.DNSName = ""
-		}
-		if e.leases[r.ScopeID] == nil {
-			e.leases[r.ScopeID] = map[uint32]*Lease{}
-		}
-		e.leases[r.ScopeID][u] = &nl
-		e.version.Add(1)
-		if err := e.db.put(ctx, &nl); err != nil {
-			e.log.Error("lease persist failed", "ip", nl.IP, "err", err)
-		}
-		changes = append(changes, change{sc.Scope, old, nl})
-	}
-	e.mu.Unlock()
+	}()
 	if e.Hooks == nil {
 		return
 	}
@@ -294,11 +317,7 @@ func (e *Engine) setDNSName(ctx context.Context, l Lease, name string) {
 
 // usable reports whether ip may be given to the client (e.mu held).
 func (e *Engine) usable(s *scopeRT, ip uint32, mac, cid string, now time.Time) bool {
-	a := dhcpconf.FromU32(ip)
-	if ip < s.start || ip > s.end || s.Excluded(a) || a == s.gateway {
-		return false
-	}
-	if r := s.reserved[ip]; r != nil && !reservationMatches(r, mac, cid) {
+	if !s.allocatable(ip, mac, cid) {
 		return false
 	}
 	if e.pending[s.ID][ip] {
@@ -308,6 +327,18 @@ func (e *Engine) usable(s *scopeRT, ip uint32, mac, cid string, now time.Time) b
 		return false
 	}
 	return true
+}
+
+// allocatable reports whether the configuration lets the client have ip:
+// inside the range, not excluded, not the gateway, not reserved for another
+// client.
+func (s *scopeRT) allocatable(ip uint32, mac, cid string) bool {
+	a := dhcpconf.FromU32(ip)
+	if ip < s.start || ip > s.end || s.Excluded(a) || a == s.gateway {
+		return false
+	}
+	r := s.reserved[ip]
+	return r == nil || reservationMatches(r, mac, cid)
 }
 
 func reservationMatches(r *dhcpconf.Reservation, mac, cid string) bool {
@@ -427,18 +458,24 @@ func (e *Engine) Leases() []Lease {
 
 // Release frees a lease from the UI. The client gets a NAK at renewal.
 func (e *Engine) Release(ctx context.Context, scopeID string, ip netip.Addr) (Lease, error) {
-	e.mu.Lock()
-	l := e.leaseAt(scopeID, dhcpconf.U32(ip))
-	if l == nil {
-		e.mu.Unlock()
+	if !ip.Is4() {
+		return Lease{}, store.ErrNotFound // leases are IPv4 only
+	}
+	sc, was, nl, ok := func() (*scopeRT, Lease, Lease, bool) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		l := e.leaseAt(scopeID, dhcpconf.U32(ip))
+		if l == nil {
+			return nil, Lease{}, Lease{}, false
+		}
+		was, nl := *l, *l
+		nl.State, nl.Ends, nl.DNSName = StateReleased, e.Now(), ""
+		e.store(ctx, &nl)
+		return e.scopes[scopeID], was, nl, true
+	}()
+	if !ok {
 		return Lease{}, store.ErrNotFound
 	}
-	sc := e.scopes[scopeID]
-	was := *l
-	nl := *l
-	nl.State, nl.Ends, nl.DNSName = StateReleased, e.Now(), ""
-	e.store(ctx, &nl)
-	e.mu.Unlock()
 	if sc != nil && e.Hooks != nil && was.State == StateBound {
 		e.Hooks.Ended(ctx, sc.Scope, was)
 	}
@@ -477,6 +514,13 @@ func (e *Engine) Sweep(ctx context.Context) {
 		}
 	}
 	e.mu.Unlock()
+	// Forget the rate limit of "ignored" events once its window is over.
+	e.ignored.Range(func(k, v any) bool {
+		if now.Sub(v.(time.Time)) >= ignoredEvery {
+			e.ignored.Delete(k)
+		}
+		return true
+	})
 	if e.Hooks != nil {
 		for _, d := range done {
 			e.Hooks.Ended(ctx, d.sc, d.l)
