@@ -619,6 +619,25 @@ func (s *Store) Reapply(ctx context.Context, id string) error {
 	})
 }
 
+// ApplyLocal applies a change as a local write (journaled on the primary).
+func (s *Store) ApplyLocal(ctx context.Context, c proto.Change) error {
+	t := s.byName[c.Table]
+	if t == nil {
+		return fmt.Errorf("table inconnue %s", c.Table)
+	}
+	return s.db.Tx(ctx, func(tx *sql.Tx) error {
+		if c.Op == "delete" {
+			_, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE %s = ?`, t.name, t.pk), c.PK)
+			return err
+		}
+		row, err := decodeRow(c.Row)
+		if err != nil {
+			return err
+		}
+		return s.upsert(ctx, tx, t, row)
+	})
+}
+
 // Dismiss marks a conflict as ignored.
 func (s *Store) Dismiss(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE conflicts SET status = 'dismissed' WHERE id = ? AND status = 'pending'`, id)

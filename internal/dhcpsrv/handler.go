@@ -182,11 +182,19 @@ func (e *Engine) Handle(ctx context.Context, p Packet) *Reply {
 	}
 	e.mu.Unlock()
 
+	if !e.answers(p, mt, src) {
+		return nil
+	}
 	switch mt {
 	case dhcpv4.MessageTypeDiscover:
 		return e.discover(ctx, p, s, src, mac, cid)
 	case dhcpv4.MessageTypeRequest:
-		return e.request(ctx, p, s, src, mac, cid)
+		r := e.request(ctx, p, s, src, mac, cid)
+		if r != nil && r.Msg.MessageType() == dhcpv4.MessageTypeAck && e.Sync != nil {
+			// The peer must know the lease before the client uses it.
+			e.Sync(ctx)
+		}
+		return r
 	case dhcpv4.MessageTypeDecline:
 		e.decline(ctx, p, s, mac, cid)
 	case dhcpv4.MessageTypeRelease:
@@ -195,6 +203,28 @@ func (e *Engine) Handle(ctx context.Context, p Packet) *Reply {
 		return e.reply(p, s, src, dhcpv4.MessageTypeAck, netip.Addr{}, 0)
 	}
 	return nil
+}
+
+// answers applies the HA rules: in load balancing each client is served
+// by the node owning its RFC 3074 bucket. A client that picked us (server
+// identifier) or renews by unicast to our address is always answered.
+func (e *Engine) answers(p Packet, mt dhcpv4.MessageType, src netip.Addr) bool {
+	m := p.Msg
+	switch mt {
+	case dhcpv4.MessageTypeRelease, dhcpv4.MessageTypeDecline:
+		return true
+	case dhcpv4.MessageTypeRequest:
+		if sid := ipOf(m.ServerIdentifier()); sid.IsValid() && !sid.IsUnspecified() {
+			return true // SELECTING: handled (ignored if another server was chosen)
+		}
+		if ci := ipOf(m.ClientIPAddr); ci.IsValid() && !ci.IsUnspecified() && p.Dst == src {
+			return true // RENEWING: unicast to us
+		}
+	}
+	e.mu.Lock()
+	serves := e.Serves
+	e.mu.Unlock()
+	return serves(ClientHash(m))
 }
 
 func (e *Engine) leaseFields(p Packet, l *Lease) {

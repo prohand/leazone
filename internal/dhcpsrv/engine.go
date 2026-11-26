@@ -49,6 +49,15 @@ type Engine struct {
 	// Owns reports whether this node may hand out a new address (HA: each
 	// node only allocates its own share of the pool). Default: everything.
 	Owns func(scopeID string, ip uint32) bool
+	// Serves reports whether this node answers a client (HA load
+	// balancing: RFC 3074 hash bucket). Default: every client.
+	Serves func(bucket byte) bool
+	// Sync, when set, sends pending lease changes to the peer and returns
+	// when they are acknowledged (or after its own timeout). It is called
+	// before a DHCPACK leaves, so a lease is known by both nodes first.
+	Sync func(ctx context.Context)
+
+	outbox []Lease
 
 	mu      sync.Mutex
 	scopes  map[string]*scopeRT
@@ -68,7 +77,7 @@ const declineHold = time.Hour
 func NewEngine(ctx context.Context, db *store.DB, log *slog.Logger) (*Engine, error) {
 	e := &Engine{log: log, db: leaseDB{db: db}, Now: time.Now, scopes: map[string]*scopeRT{},
 		ifaces: map[int]netif.Interface{}, dhcpOn: map[string]bool{}, pending: map[string]map[uint32]bool{},
-		Owns: func(string, uint32) bool { return true }}
+		Owns: func(string, uint32) bool { return true }, Serves: func(byte) bool { return true }}
 	var err error
 	if e.leases, err = e.db.load(ctx); err != nil {
 		return nil, err
@@ -177,6 +186,101 @@ func (e *Engine) store(ctx context.Context, l *Lease) {
 	e.leases[l.ScopeID][dhcpconf.U32(l.IP)] = l
 	if err := e.db.put(ctx, l); err != nil {
 		e.log.Error("lease persist failed", "ip", l.IP, "err", err)
+	}
+	if len(e.outbox) < 100000 {
+		e.outbox = append(e.outbox, *l)
+	}
+}
+
+// TakeOutbox returns and clears the lease changes not yet sent to the peer.
+func (e *Engine) TakeOutbox() []Lease {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := e.outbox
+	e.outbox = nil
+	return out
+}
+
+// Requeue puts back changes that could not be sent.
+func (e *Engine) Requeue(list []Lease) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.outbox)+len(list) < 100000 {
+		e.outbox = append(list, e.outbox...)
+	}
+}
+
+// SetPolicy sets the HA allocation and answering rules.
+func (e *Engine) SetPolicy(owns func(string, uint32) bool, serves func(byte) bool) {
+	e.mu.Lock()
+	e.Owns, e.Serves = owns, serves
+	e.mu.Unlock()
+}
+
+// ApplyRemote merges leases received from the peer: the most recent change
+// (hybrid logical clock, then node name) wins. DNS registration follows.
+func (e *Engine) ApplyRemote(ctx context.Context, list []Lease) {
+	type change struct {
+		sc       *dhcpconf.Scope
+		old, new Lease
+	}
+	var changes []change
+	e.mu.Lock()
+	now := e.Now()
+	for _, r := range list {
+		sc := e.scopes[r.ScopeID]
+		if sc == nil {
+			continue
+		}
+		u := dhcpconf.U32(r.IP)
+		cur := e.leaseAt(r.ScopeID, u)
+		if cur != nil && (cur.HLC > r.HLC || (cur.HLC == r.HLC && cur.Owner >= r.Owner)) {
+			continue
+		}
+		var old Lease
+		if cur != nil {
+			old = *cur
+		}
+		nl := r
+		if cur != nil && cur.sameClient(r.MAC, r.ClientID) && r.State == StateBound {
+			nl.DNSName = cur.DNSName // DNS names are derived locally
+		} else {
+			nl.DNSName = ""
+		}
+		if e.leases[r.ScopeID] == nil {
+			e.leases[r.ScopeID] = map[uint32]*Lease{}
+		}
+		e.leases[r.ScopeID][u] = &nl
+		if err := e.db.put(ctx, &nl); err != nil {
+			e.log.Error("lease persist failed", "ip", nl.IP, "err", err)
+		}
+		changes = append(changes, change{sc.Scope, old, nl})
+	}
+	e.mu.Unlock()
+	if e.Hooks == nil {
+		return
+	}
+	for _, c := range changes {
+		wasBound := c.old.State == StateBound && c.old.Active(now)
+		isBound := c.new.State == StateBound && c.new.Active(now)
+		switch {
+		case wasBound && (!isBound || !c.old.sameClient(c.new.MAC, c.new.ClientID)):
+			e.Hooks.Ended(ctx, c.sc, c.old)
+			if isBound {
+				e.setDNSName(ctx, c.new, e.Hooks.Bound(ctx, c.sc, c.new))
+			}
+		case isBound && (!wasBound || c.old.Hostname != c.new.Hostname || c.new.DNSName == ""):
+			e.setDNSName(ctx, c.new, e.Hooks.Bound(ctx, c.sc, c.new))
+		}
+	}
+}
+
+func (e *Engine) setDNSName(ctx context.Context, l Lease, name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cur := e.leaseAt(l.ScopeID, dhcpconf.U32(l.IP)); cur != nil && cur.sameClient(l.MAC, l.ClientID) && cur.DNSName != name {
+		cur.DNSName = name
+		_ = e.db.put(ctx, cur)
 	}
 }
 
