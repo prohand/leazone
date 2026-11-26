@@ -67,6 +67,18 @@ func Hostname(s string) string {
 	return out
 }
 
+// reservationIPError tells why a cannot be reserved in sc ("" if it can).
+func reservationIPError(sc *Scope, a netip.Addr) string {
+	p := sc.Prefix()
+	switch {
+	case !p.Contains(a) || a == p.Masked().Addr() || a == Broadcast(p):
+		return "l'adresse doit être dans le réseau " + sc.Network
+	case a.String() == sc.Gateway:
+		return "c'est l'adresse de la passerelle"
+	}
+	return ""
+}
+
 func (s *Store) validateReservation(ctx context.Context, in ReservationInput, exceptID string) (Reservation, error) {
 	errs := Validation{}
 	r := Reservation{ScopeID: in.ScopeID, Description: strings.TrimSpace(in.Description)}
@@ -86,14 +98,11 @@ func (s *Store) validateReservation(ctx context.Context, in ReservationInput, ex
 		errs["mac"] = "adresse MAC ou identifiant client obligatoire"
 	}
 	a, err := parseV4(in.IP)
-	p := sc.Prefix()
 	switch {
 	case err != nil:
 		errs["ip"] = err.Error()
-	case !p.Contains(a) || a == p.Masked().Addr() || a == Broadcast(p):
-		errs["ip"] = "l'adresse doit être dans le réseau " + sc.Network
-	case a.String() == sc.Gateway:
-		errs["ip"] = "c'est l'adresse de la passerelle"
+	case reservationIPError(sc, a) != "":
+		errs["ip"] = reservationIPError(sc, a)
 	default:
 		r.IP = a.String()
 	}

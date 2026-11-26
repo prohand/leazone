@@ -75,3 +75,37 @@ func TestScopeValidationAndIsolation(t *testing.T) {
 		t.Fatal("unknown vlan deleted")
 	}
 }
+
+// TestUpdateScopeChecksReservations: a scope change must not turn a
+// reservation into the gateway, network or broadcast address.
+func TestUpdateScopeChecksReservations(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	in := ScopeInput{Name: "lan", Network: "192.168.20.0/24", RangeStart: "192.168.20.100", RangeEnd: "192.168.20.120",
+		Gateway: "192.168.20.1", DDNSDomain: "lan.lan"}
+	sc, err := s.CreateScope(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ip := range []string{"192.168.20.10", "192.168.20.127"} {
+		mac := []string{"aa:bb:cc:00:11:01", "aa:bb:cc:00:11:02"}[i]
+		if _, err := s.CreateReservation(ctx, ReservationInput{ScopeID: sc.ID, MAC: mac, IP: ip}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gw := in
+	gw.Gateway = "192.168.20.10"
+	if _, err := s.UpdateScope(ctx, sc.ID, gw); !errors.As(err, new(ErrConflict)) {
+		t.Fatalf("reservation on the new gateway accepted: %v", err)
+	}
+	small := in
+	small.Network = "192.168.20.0/25" // .127 becomes the broadcast address
+	if _, err := s.UpdateScope(ctx, sc.ID, small); !errors.As(err, new(ErrConflict)) {
+		t.Fatalf("reservation on the new broadcast address accepted: %v", err)
+	}
+	ok := in
+	ok.Gateway = "192.168.20.254"
+	if _, err := s.UpdateScope(ctx, sc.ID, ok); err != nil {
+		t.Fatal(err)
+	}
+}
