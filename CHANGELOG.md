@@ -1,5 +1,51 @@
 # Changements
 
+## 1.0.1
+
+Version de correction : plus de 40 bugs trouvés par une revue du code, chacun avec un test de régression.
+
+### À savoir avant la mise à jour
+- Une restauration révoque toutes les sessions et tous les jetons d'API (il faut se reconnecter).
+- Le socket de contrôle passe de `/tmp/leazone.sock` à `<data_dir>/run/leazone.sock`.
+- Ajouter une passkey ou un TOTP, ou créer un jeton d'API, demande une revérification quand le compte a déjà un
+  facteur. Changer de mot de passe ou réinitialiser la MFA révoque les jetons d'API.
+- DHCP : un client ne garde qu'un bail par étendue.
+
+### DHCP
+- Une libération de bail avec une adresse IPv6 bloquait tout le moteur DHCP.
+- Un renouvellement est refusé si l'adresse a été réservée pour un autre client, exclue ou sortie de la plage.
+- Choix de l'étendue fiable avec un relais ; en actif/passif, le nœud passif ne répond plus.
+- DECLINE accepté seulement du client qui a le bail ; un bail libéré depuis l'interface reçoit un NAK.
+- La fin d'un ancien bail n'efface plus l'enregistrement DNS du nouveau.
+- Horloge des baux monotone entre les deux nœuds ; contrôle des réservations quand une étendue change.
+- Fuite mémoire et boucle à 100 % CPU (suivi des interfaces) corrigées.
+
+### DNS
+- Le cache de validation DNSSEC pouvait marquer « sûre » une réponse différente.
+- Validation des jokers et des preuves NSEC/NSEC3 renforcée (RFC 6840).
+- Bit CD et types inconnus pris en compte dans la clé du cache.
+- Sous-zones déléguées et CNAME vers l'extérieur : passage par les redirecteurs, le blocage et la validation.
+- Blocage : la liste noire manuelle passe avant les exceptions des listes abonnées.
+- Pagination des journaux DNS avec un filtre réseau ; délai de retrait des anciennes clés ZSK.
+
+### Haute disponibilité
+- L'IP virtuelle restait sur l'hôte après un crash du conteneur.
+- Le témoin compare aussi le mandat (epoch) : plus d'élection d'un nœud à qui il manque des changements validés.
+- Un nœud coupé de son pair n'attribue plus de nouvelles adresses (plus d'IP en double).
+- Baux conservés pendant une panne du pair, échange complet retenté jusqu'à réussite.
+- Écritures en cours terminées avant un changement de rôle ; marge du bail du témoin élargie.
+- Répartition DHCP correcte après la réinstallation d'un nœud.
+- `migrate down` ne casse plus la base ; URL de pair avec « / » final acceptée ; erreur claire sans clé de cluster.
+
+### Sécurité et exploitation
+- Sauvegarde/restauration depuis l'interface web : erreur 500 corrigée.
+- Un certificat expiré n'empêche plus le démarrage ; le certificat auto-signé se renouvelle en fonctionnement.
+- Limite d'essais du second facteur séparée du mot de passe ; adresses IPv6 regroupées par /64.
+- Changement de rôle ou de politique MFA : les sessions concernées sont révoquées.
+- Restauration : jetons révoqués et codes de secours utilisés ne reviennent plus ; paramètres de chiffrement
+  bornés ; refus d'une sauvegarde sans admin actif.
+- Audit écrit même si le navigateur se déconnecte ; dernier admin protégé contre deux désactivations simultanées.
+
 ## 1.0.0
 
 Première version publiée : `ghcr.io/prohand/leazone:1.0.0` (amd64 et arm64, SBOM, signée avec cosign).
