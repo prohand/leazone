@@ -1,0 +1,14 @@
+DROP TABLE certificates;
+DROP TABLE audit_log;
+DROP TABLE login_guard;
+DROP TABLE api_tokens;
+DROP TABLE sessions;
+DROP TABLE recovery_usage;
+DROP TABLE recovery_codes;
+DROP TABLE totp_usage;
+DROP TABLE totp;
+DROP TABLE webauthn_usage;
+DROP TABLE webauthn_credentials;
+DROP TABLE users;
+DROP TABLE settings;
+DROP TABLE meta;
