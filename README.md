@@ -2,9 +2,10 @@
 
 Serveur **DNS + DHCP** léger, avec haute disponibilité, interface web moderne, conçu pour Docker.
 
-> **État : phase 2 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
-> codes de secours, sessions, rôles, jetons d'API, audit), l'image Docker, et le **DNS** (zones, redirecteurs
-> UDP/TCP/DoT/DoH, cache, écoute par interface). DHCP (phase 3), HA (phase 4), blocage et DNSSEC (phase 5) arrivent ensuite.
+> **État : phase 3 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
+> codes de secours, sessions, rôles, jetons d'API, audit), l'image Docker, le **DNS** (zones, redirecteurs
+> UDP/TCP/DoT/DoH, cache, écoute par interface), le **DHCP multi-VLAN** (direct et relais, enregistrement DNS
+> automatique) et l'**import depuis Technitium**. HA (phase 4), blocage et DNSSEC (phase 5) arrivent ensuite.
 > Le plan complet est dans [docs/PLAN.md](docs/PLAN.md).
 
 ---
@@ -175,6 +176,82 @@ TTL minimum / maximum, TTL négatif maximum et taille dans *Paramètres > DNS*. 
 
 ---
 
+## DHCP multi-VLAN
+
+### Deux façons de servir un VLAN (utilisables en même temps)
+
+| Mode | Quand | Réglage de l'étendue |
+|---|---|---|
+| **Direct** | L'hôte a une patte dans le VLAN (sous-interface sur un port trunk, ex : `eno1.20`) | *Interface* = `eno1.20`, et DHCP activé sur cette interface dans *Interfaces* |
+| **Relais** | Le routeur ou le switch relaie les requêtes (`ip helper-address`, DHCP relay) | *Relais* activé. L'étendue est choisie selon l'adresse du relais (giaddr) |
+
+Exemples de relais vers Leazone (IP `192.168.1.2`) :
+
+```text
+! Cisco IOS
+interface Vlan40
+ ip address 10.40.0.1 255.255.255.0
+ ip helper-address 192.168.1.2
+```
+
+```text
+# MikroTik RouterOS
+/ip dhcp-relay add name=relay-vlan40 interface=vlan40 dhcp-server=192.168.1.2 local-address=10.40.0.1 disabled=no
+```
+
+En HA (phase 4), mettez les **deux** nœuds en `helper-address`.
+
+### Isolation stricte
+
+- Une requête reçue en direct ne sert **que** l'étendue liée à l'interface d'arrivée.
+- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (ou ses *agents relais supplémentaires*).
+- Aucune étendue trouvée → pas de réponse. Une demande d'adresse d'un autre réseau → refus (NAK).
+- Deux étendues ne peuvent pas avoir des réseaux qui se chevauchent.
+
+### Pour chaque étendue
+
+Plage, exclusions, durée du bail, passerelle, DNS, domaine, NTP, options personnalisées (code + type + valeur),
+réservations par MAC ou identifiant client, ping avant attribution (option, nécessite `NET_RAW`),
+seuil d'alerte de remplissage (80 % par défaut).
+
+### DNS automatique
+
+Quand un client obtient un bail avec un nom d'hôte, Leazone crée :
+- un **A** dans le domaine DNS de l'étendue (ex : `tablette.invites.lan`, zone créée si besoin) ;
+- un **PTR** dans la zone inverse du réseau (créée automatiquement avec l'étendue).
+
+Ils sont supprimés à la fin du bail. Un enregistrement **manuel** n'est jamais remplacé, et un nom déjà pris par
+un autre client actif n'est pas volé. Le nom d'une réservation passe avant celui envoyé par le client.
+
+### Pages utiles
+
+- **VLAN** : une carte par VLAN avec le remplissage de chaque étendue, les baux actifs et le mode (direct/relais).
+- **Baux** : temps réel, filtres par VLAN/étendue/état, option 82 (circuit-id, remote-id) des clients relayés,
+  boutons *Libérer* et *Convertir en réservation*.
+
+---
+
+## Importer depuis Technitium
+
+*Paramètres > Import* (admin) lit votre ancien serveur Technitium par son API HTTP :
+
+1. Dans Technitium : *Administration > Sessions > Create Token* (ou utilisez un compte et son mot de passe).
+2. Dans Leazone : URL (ex : `http://10.0.0.5:5380`), jeton, puis **Prévisualiser** : rien n'est écrit.
+3. Vérifiez la liste, puis **Importer**.
+
+| Importé | Détail |
+|---|---|
+| Zones primaires | Tous les enregistrements A, AAAA, CNAME, MX, TXT, SRV, PTR, NS. Les types propres à Technitium (APP, FWD, ALIAS…) sont ignorés et signalés |
+| Zones « Forwarder » | Deviennent des redirecteurs conditionnels (UDP, TCP, DoT, DoH ; QUIC n'est pas géré) |
+| Redirecteurs globaux | Seulement si Leazone n'en a pas encore |
+| Étendues DHCP | Plage, masque, bail, passerelle, DNS, domaine, NTP, exclusions, options, ping, réservations. Mode direct si l'hôte a une interface dans le réseau, sinon relais |
+
+Rien d'existant n'est écrasé : un objet du même nom est ignoré. Les baux en cours ne sont pas importés
+(les clients renouvellent leur adresse auprès de Leazone). Le jeton ou le mot de passe ne sert que pour cette requête
+et n'est pas enregistré.
+
+---
+
 ## Comptes et sécurité
 
 - **Rôles** : `admin` (tout), `operator` (baux, réservations, enregistrements DNS), `readonly` (lecture seule).
@@ -215,6 +292,7 @@ Tout se règle par variables d'environnement (prioritaires) ou dans `/config/lea
 | `LEAZONE_TRUSTED_PROXIES` | vide | IP/réseaux des reverse proxies de confiance |
 | `LEAZONE_HTTP_LISTEN` | `:8443` | Adresse de l'interface web / API |
 | `LEAZONE_DNS_PORT` | `53` | Port du serveur DNS (à changer seulement pour des tests) |
+| `LEAZONE_DHCP_PORT` | `67` | Port du serveur DHCP (les clients sont joints sur ce port + 1) |
 | `LEAZONE_ADMIN_USER` | `admin` | Nom du premier compte |
 | `LEAZONE_ADMIN_PASSWORD_FILE` | vide | Fichier (secret Docker) du mot de passe initial |
 | `LEAZONE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -288,6 +366,14 @@ Leazone réessaie tout seul toutes les 20 secondes : pas besoin de le redémarre
 - Le conteneur doit être en `network_mode: host` (sinon il ne voit que ses propres interfaces).
 - Le module noyau `8021q` doit être chargé : `sudo modprobe 8021q`.
 - Sans IP sur le VLAN, Leazone le voit mais ne peut pas y écouter : ajoutez une adresse dans netplan.
+
+**Le DHCP ne répond pas**
+- *Étendues* affiche un bandeau rouge si le port 67 est pris (`dnsmasq`, `isc-dhcp-server`, `kea`…) :
+  `sudo ss -lunp | grep ':67 '`, puis arrêtez ce service.
+- Mode direct : l'étendue doit avoir son *Interface*, **et** le DHCP doit être activé sur cette interface (*Interfaces*).
+- Mode relais : *Relais* activé sur l'étendue, et l'adresse du relais (giaddr) dans le réseau de l'étendue
+  (sinon ajoutez-la dans *agents relais supplémentaires*). Le pare-feu de l'hôte doit laisser passer UDP 67.
+- Le conteneur doit être en `network_mode: host` pour recevoir les broadcasts.
 
 **Le DNS ne répond pas aux clients d'un autre réseau**
 Les noms locaux répondent à tous. Pour les noms externes, ajoutez le réseau des clients dans

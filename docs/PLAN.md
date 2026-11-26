@@ -493,6 +493,17 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 
 ---
 
+## 11 bis. Écarts assumés pendant la réalisation
+
+| Sujet | Plan | Réalisé | Pourquoi |
+|---|---|---|---|
+| Routes DNS | `/zones`, `/forwarders` | `/dns/zones`, `/dns/forwarders` | Regroupement plus lisible |
+| Sockets DHCP | Une socket par interface | Une socket `0.0.0.0:67` + `IP_PKTINFO` (interface d'arrivée) | Un VLAN ajouté à chaud ne demande aucune nouvelle socket ; même approche que dnsmasq |
+| Réponses DHCP sans IP client | Unicast vers la MAC | Broadcast sur l'interface | Fonctionne avec tous les clients sans écrire la table ARP (pas de `NET_ADMIN`) |
+| Baux « temps réel » | SSE | Rafraîchissement toutes les 5 s | Plus simple ; SSE reporté au tableau de bord (phase 6) |
+| Import Technitium | Phase 6 | Phase 3 | Demandé plus tôt |
+| Tables DHCP | Tables séparées pour exclusions/options | Colonnes JSON | Toujours lues avec l'étendue |
+
 ## 12. Décisions
 
 | # | Sujet | Décision |
