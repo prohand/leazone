@@ -106,6 +106,82 @@ func TestCacheKeyUnknownTypes(t *testing.T) {
 	}
 }
 
+// wildcardForger answers wildcard queries with the genuine signed answer
+// but replaces the denial proof by signed NSEC/NSEC3 records of the same
+// zone that do not cover the queried name.
+type wildcardForger struct {
+	auth   *Engine
+	target string
+	kept   atomic.Int32
+}
+
+func (h *wildcardForger) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	resp, _ := h.auth.handle(context.Background(), r, netip.MustParseAddr("127.0.0.1"))
+	if r.Question[0].Name == h.target {
+		var ns []dns.RR
+	donors:
+		for _, donor := range []string{"zz.maison.lan", "0.maison.lan", "a.b.nope.maison.lan", "nope.maison.lan"} {
+			for _, s := range group(askDO(h.auth, donor, dns.TypeA).Ns) {
+				covers := false
+				for _, rr := range s.rrs {
+					switch n := rr.(type) {
+					case *dns.NSEC:
+						covers = covers || nsecCovers(n, h.target)
+					case *dns.NSEC3:
+						covers = covers || n.Cover(h.target)
+					default:
+						covers = true // keep only denial records
+					}
+				}
+				if covers {
+					continue
+				}
+				h.kept.Add(1)
+				ns = append(ns, s.rrs...)
+				for _, sig := range s.sigs {
+					ns = append(ns, sig)
+				}
+				break donors // one is enough (and keeps the reply small)
+			}
+		}
+		resp.Ns = ns
+	}
+	_ = w.WriteMsg(resp)
+}
+
+func TestDNSSECWildcardProofMustCover(t *testing.T) {
+	for _, mode := range []string{"nsec", "nsec3"} {
+		t.Run(mode, func(t *testing.T) {
+			auth, _, ksk := signedPair(t, dns.ECDSAP256SHA256, mode)
+			h := &wildcardForger{auth: auth, target: "app.dev.maison.lan."}
+			val := validatingEngine(t, h, ksk, dnsconf.DefaultSettings())
+			m := askDO(val, "app.dev.maison.lan", dns.TypeA)
+			if h.kept.Load() == 0 {
+				t.Fatal("no unrelated denial record to forge with")
+			}
+			if m.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("wildcard answer with an unrelated proof accepted: %v", m)
+			}
+		})
+	}
+}
+
+func TestDNSSECDelegationNSECNoData(t *testing.T) {
+	// The NSEC(3) of a delegation point (NS, no SOA) only proves the absence
+	// of a DS; it must not deny other types at the child apex (RFC 6840 §4.1).
+	for _, mode := range []string{"nsec", "nsec3"} {
+		t.Run(mode, func(t *testing.T) {
+			_, val, _ := signedPair(t, dns.ECDSAP256SHA256, mode)
+			if m := askDO(val, "sub.maison.lan", dns.TypeA); m.AuthenticatedData || m.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("delegation NSEC accepted as NODATA: %v", m)
+			}
+			if m := askDO(val, "sub.maison.lan", dns.TypeDS); !m.AuthenticatedData || m.Rcode != dns.RcodeSuccess {
+				t.Fatalf("DS denial at the delegation: %v", m)
+			}
+		})
+	}
+}
+
 func TestMemoKey(t *testing.T) {
 	m := new(dns.Msg)
 	m.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300}, Ns: "ns.example.", Mbox: "a.example."}}
