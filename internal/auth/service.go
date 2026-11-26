@@ -96,7 +96,10 @@ var (
 	ErrUserDisabled = errors.New("compte désactivé")
 )
 
-const userCols = `id, username, role, password_hash, webauthn_handle, disabled, created_at, updated_at, last_login_at, password_changed_at`
+const userCols = `id, username, role, password_hash, webauthn_handle, disabled, created_at, updated_at,
+	(SELECT last_login_at FROM user_activity WHERE user_id = users.id), password_changed_at`
+
+const userInsertCols = `id, username, role, password_hash, webauthn_handle, disabled, created_at, updated_at, password_changed_at`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
@@ -143,7 +146,7 @@ func (s *Service) CreateUser(ctx context.Context, username string, role Role, pa
 	now := s.Now()
 	u := &User{ID: ids.New(), Username: username, Role: role, PasswordHash: hash, Handle: randomBytes(32),
 		CreatedAt: now, UpdatedAt: now, PasswordChangedAt: now}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO users(`+userCols+`) VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, ?)`,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO users(`+userInsertCols+`) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
 		u.ID, u.Username, u.Role, u.PasswordHash, u.Handle, now.UnixMilli(), now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -277,6 +280,7 @@ func (s *Service) DeleteUser(ctx context.Context, id string) error {
 			`DELETE FROM webauthn_usage WHERE credential_id IN (SELECT credential_id FROM webauthn_credentials WHERE user_id = ?)`,
 			`DELETE FROM recovery_usage WHERE code_id IN (SELECT id FROM recovery_codes WHERE user_id = ?)`,
 			`DELETE FROM totp_usage WHERE user_id = ?`,
+			`DELETE FROM user_activity WHERE user_id = ?`,
 			`DELETE FROM users WHERE id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, id); err != nil {
@@ -362,7 +366,8 @@ func (s *Service) Authenticate(ctx context.Context, username, password, ip strin
 
 // TouchLogin records a successful full login.
 func (s *Service) TouchLogin(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, s.Now().UnixMilli(), userID)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO user_activity(user_id, last_login_at) VALUES (?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET last_login_at = excluded.last_login_at`, userID, s.Now().UnixMilli())
 	return err
 }
 

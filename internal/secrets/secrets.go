@@ -17,12 +17,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const prefix = "v1:"
 
-// Box encrypts and decrypts values with AES-256-GCM.
+// Box encrypts and decrypts values with AES-256-GCM. Its key can be
+// replaced at runtime (a node joining a cluster adopts the cluster's key).
 type Box struct {
+	mu   sync.RWMutex
 	aead cipher.AEAD
 	key  []byte
 }
@@ -43,9 +46,30 @@ func NewBox(key []byte) (*Box, error) {
 	return &Box{aead: aead, key: append([]byte(nil), key...)}, nil
 }
 
+// Replace swaps the key.
+func (b *Box) Replace(key []byte) error {
+	nb, err := NewBox(key)
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.aead, b.key = nb.aead, nb.key
+	b.mu.Unlock()
+	return nil
+}
+
+// Key returns a copy of the key (to wrap it for replication).
+func (b *Box) Key() []byte {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return append([]byte(nil), b.key...)
+}
+
 // Seal encrypts plaintext. aad binds the ciphertext to its context (for
 // example the table and row id) so it cannot be moved to another row.
 func (b *Box) Seal(plaintext []byte, aad string) string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	nonce := make([]byte, b.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		panic(err)
@@ -56,6 +80,8 @@ func (b *Box) Seal(plaintext []byte, aad string) string {
 
 // Open decrypts a value produced by Seal with the same aad.
 func (b *Box) Open(sealed, aad string) ([]byte, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	if !strings.HasPrefix(sealed, prefix) {
 		return nil, errors.New("secrets: unknown format")
 	}
@@ -78,6 +104,8 @@ func (b *Box) Open(sealed, aad string) ([]byte, error) {
 // recovery codes, cookies...). Derived keys are identical on every node that
 // shares the same DEK.
 func (b *Box) SubKey(purpose string) []byte {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	k, err := hkdf.Key(sha256.New, b.key, nil, "leazone:"+purpose, 32)
 	if err != nil {
 		panic(err)

@@ -104,11 +104,11 @@ func (s *Store) PutDHCPRecord(ctx context.Context, zoneID, name, typ string, ttl
 			zoneID, name, typ); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO records(id, zone_id, name, type, ttl, data, source, dhcp_owner, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, 'dhcp', ?, ?, ?)`, ids.New(), zoneID, name, typ, ttl, string(raw), owner, now, now); err != nil {
-			return err
-		}
-		return s.touchZone(ctx, tx, zoneID)
+		_, err := tx.ExecContext(ctx, `INSERT INTO records(id, zone_id, name, type, ttl, data, source, dhcp_owner, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, 'dhcp', ?, ?, ?)`, ids.New(), zoneID, name, typ, ttl, string(raw), owner, now, now)
+		// DHCP records are derived on each node from the leases: they do not
+		// change the zone (no serial bump, not replicated as config).
+		return err
 	})
 }
 
@@ -116,30 +116,11 @@ func (s *Store) PutDHCPRecord(ctx context.Context, zoneID, name, typ string, ttl
 func (s *Store) DeleteDHCPOwner(ctx context.Context, owner string) (int, error) {
 	var n int64
 	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT zone_id FROM records WHERE source = 'dhcp' AND dhcp_owner = ?`, owner)
-		if err != nil {
-			return err
-		}
-		var zones []string
-		for rows.Next() {
-			var z string
-			if err := rows.Scan(&z); err != nil {
-				rows.Close()
-				return err
-			}
-			zones = append(zones, z)
-		}
-		rows.Close()
 		res, err := tx.ExecContext(ctx, `DELETE FROM records WHERE source = 'dhcp' AND dhcp_owner = ?`, owner)
 		if err != nil {
 			return err
 		}
 		n, _ = res.RowsAffected()
-		for _, z := range zones {
-			if err := s.touchZone(ctx, tx, z); err != nil {
-				return err
-			}
-		}
 		return nil
 	})
 	return int(n), err

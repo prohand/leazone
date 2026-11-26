@@ -83,7 +83,8 @@ func (l *Log) record(ctx context.Context, e Entry) error {
 	}
 	return l.db.Tx(ctx, func(tx *sql.Tx) error {
 		var prev string
-		err := tx.QueryRowContext(ctx, `SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1`).Scan(&prev)
+		// One chain per node: entries replicated from the other node have their own chain.
+		err := tx.QueryRowContext(ctx, `SELECT hash FROM audit_log WHERE node_id = ? ORDER BY seq DESC LIMIT 1`, e.NodeID).Scan(&prev)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -177,7 +178,7 @@ func (l *Log) Verify(ctx context.Context) (brokenID string, err error) {
 		return "", err
 	}
 	defer rows.Close()
-	prev := ""
+	prev := map[string]string{} // per node
 	for rows.Next() {
 		var e Entry
 		var ts int64
@@ -186,10 +187,10 @@ func (l *Log) Verify(ctx context.Context) (brokenID string, err error) {
 			return "", err
 		}
 		e.TS = time.UnixMilli(ts)
-		if prevHash != prev || chainHash(prev, e, details) != h {
+		if prevHash != prev[e.NodeID] || chainHash(prev[e.NodeID], e, details) != h {
 			return e.ID, nil
 		}
-		prev = h
+		prev[e.NodeID] = h
 	}
 	return "", rows.Err()
 }

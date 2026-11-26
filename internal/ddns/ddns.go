@@ -55,9 +55,11 @@ func (u *Updater) Bound(ctx context.Context, sc *dhcpconf.Scope, l dhcpsrv.Lease
 	if !sc.DDNSEnabled || host == "" || sc.DDNSDomain == "" {
 		return ""
 	}
-	zone, err := u.DNS.EnsureZone(ctx, sc.DDNSDomain)
+	// The zone is created with the scope (on the primary): never create
+	// config from here, this also runs on secondaries.
+	zone, err := u.DNS.ZoneByName(ctx, sc.DDNSDomain)
 	if err != nil {
-		u.Log.Warn("DDNS zone", "zone", sc.DDNSDomain, "err", err)
+		u.Log.Warn("DDNS zone missing", "zone", sc.DDNSDomain, "err", err)
 		return ""
 	}
 	owners, err := u.DNS.Owners(ctx, zone.ID, host)
