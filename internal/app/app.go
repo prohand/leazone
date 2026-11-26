@@ -1,0 +1,274 @@
+// Package app wires all components together and runs a node.
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	apispec "github.com/prohand/leazone/api"
+	"github.com/prohand/leazone/internal/api"
+	"github.com/prohand/leazone/internal/audit"
+	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/caps"
+	"github.com/prohand/leazone/internal/config"
+	"github.com/prohand/leazone/internal/control"
+	"github.com/prohand/leazone/internal/ids"
+	"github.com/prohand/leazone/internal/secrets"
+	"github.com/prohand/leazone/internal/store"
+	"github.com/prohand/leazone/internal/tlsmgr"
+	"github.com/prohand/leazone/internal/version"
+	"github.com/prohand/leazone/web"
+)
+
+// Node is a running Leazone instance.
+type Node struct {
+	cfg   *config.Config
+	log   *slog.Logger
+	db    *store.DB
+	box   *secrets.Box
+	auth  *auth.Service
+	audit *audit.Log
+	ready atomic.Bool
+}
+
+// Run starts the node and blocks until ctx is cancelled.
+func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	log.Info("starting Leazone", "version", version.Version, "commit", version.Commit, "schema", store.LatestSchema())
+
+	if err := checkWritable(cfg.DataDir); err != nil {
+		return err
+	}
+	st, err := caps.Raise()
+	if err != nil {
+		log.Warn("capabilities", "err", err)
+	} else {
+		log.Info("capabilities", "effective", st.String())
+	}
+
+	n := &Node{cfg: cfg, log: log}
+	if err := n.openStore(ctx); err != nil {
+		return err
+	}
+	defer n.db.Close()
+
+	nodeID, err := n.db.Meta(ctx, "node_id")
+	if err != nil {
+		return err
+	}
+	if nodeID == "" {
+		nodeID = ids.New()
+		if err := n.db.SetMeta(ctx, "node_id", nodeID); err != nil {
+			return err
+		}
+	}
+	n.audit = audit.New(n.db, nodeID, log)
+
+	if n.auth, err = auth.NewService(ctx, n.db, n.box, log); err != nil {
+		return err
+	}
+	if err := n.firstStart(ctx); err != nil {
+		return err
+	}
+
+	tm, err := tlsmgr.New(ctx, n.db, n.box, log, cfg.DataDir, tlsNames(cfg))
+	if err != nil {
+		return err
+	}
+	spec, err := apispec.JSON()
+	if err != nil {
+		return fmt.Errorf("openapi spec: %w", err)
+	}
+	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, Log: log, UI: web.Dist(), Spec: spec})
+
+	ln, err := net.Listen("tcp", cfg.HTTPListen)
+	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("le port de l'interface web %s est déjà utilisé sur cet hôte : changez LEAZONE_HTTP_LISTEN (ex : :9443) ou arrêtez le service qui l'occupe", cfg.HTTPListen)
+		}
+		if errors.Is(err, syscall.EACCES) {
+			return fmt.Errorf("pas le droit d'écouter sur %s : ajoutez la capability NET_BIND_SERVICE ou utilisez un port >= 1024", cfg.HTTPListen)
+		}
+		return err
+	}
+	if err := control.Serve(ctx, cfg.ControlSocket, n.control, log); err != nil {
+		log.Warn("control socket unavailable: CLI commands (healthcheck, admin) will not work", "err", err)
+	}
+
+	go n.housekeeping(ctx)
+	n.ready.Store(true)
+	log.Info("web interface ready", "listen", cfg.HTTPListen, "publicUrl", cfg.PublicURL)
+	err = srv.ListenAndServe(ctx, ln)
+	log.Info("stopped")
+	return err
+}
+
+func (n *Node) openStore(ctx context.Context) error {
+	var err error
+	n.db, err = store.Open(filepath.Join(n.cfg.DataDir, "leazone.db"))
+	if err != nil {
+		return err
+	}
+	if err := n.db.Migrate(ctx, filepath.Join(n.cfg.DataDir, "backups"), n.log); err != nil {
+		return err
+	}
+	master, err := secrets.LoadOrCreateMasterKey(filepath.Join(n.cfg.DataDir, "keys", "master.key"))
+	if err != nil {
+		return err
+	}
+	mbox, err := secrets.NewBox(master)
+	if err != nil {
+		return err
+	}
+	wrapped, err := n.db.Meta(ctx, "dek")
+	if err != nil {
+		return err
+	}
+	var dek []byte
+	if wrapped == "" {
+		dek = secrets.NewDEK()
+		if err := n.db.SetMeta(ctx, "dek", mbox.Seal(dek, "dek")); err != nil {
+			return err
+		}
+	} else if dek, err = mbox.Open(wrapped, "dek"); err != nil {
+		return fmt.Errorf("cannot unlock the data key with %s: %w", filepath.Join(n.cfg.DataDir, "keys", "master.key"), err)
+	}
+	n.box, err = secrets.NewBox(dek)
+	return err
+}
+
+// firstStart creates the admin account on an empty database. The password
+// comes from LEAZONE_ADMIN_PASSWORD_FILE or is generated and printed once.
+func (n *Node) firstStart(ctx context.Context) error {
+	count, err := n.auth.UserCount(ctx)
+	if err != nil || count > 0 {
+		return err
+	}
+	pw, generated := n.cfg.AdminPassword, false
+	if pw == "" {
+		pw, generated = ids.Password(20), true
+	}
+	u, err := n.auth.CreateUser(ctx, n.cfg.AdminUser, auth.RoleAdmin, pw)
+	if err != nil {
+		var verr auth.ErrValidation
+		if errors.As(err, &verr) {
+			return fmt.Errorf("initial admin account: %v", map[string]string(verr))
+		}
+		return err
+	}
+	n.audit.Record(ctx, audit.Entry{Actor: "system", Action: "user.create", Target: u.Username,
+		Details: map[string]any{"role": "admin", "firstStart": true}})
+	if generated {
+		// Printed on stdout only (docker logs), never written to the log file.
+		fmt.Fprintf(os.Stdout, "\n"+
+			"╔══════════════════════════════════════════════════════════════╗\n"+
+			"║  Premier démarrage de Leazone                                ║\n"+
+			"║  Compte : %-51s║\n"+
+			"║  Mot de passe : %-45s║\n"+
+			"║  Il ne sera plus affiché. Le MFA sera demandé à la connexion.║\n"+
+			"╚══════════════════════════════════════════════════════════════╝\n\n", u.Username, pw)
+	} else {
+		n.log.Info("initial admin account created from secret file", "user", u.Username)
+	}
+	return nil
+}
+
+func (n *Node) housekeeping(ctx context.Context) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := n.auth.PurgeSessions(ctx); err != nil {
+				n.log.Warn("session purge", "err", err)
+			}
+		}
+	}
+}
+
+// control answers CLI sub-commands on the local socket.
+func (n *Node) control(ctx context.Context, req control.Request) control.Response {
+	switch req.Cmd {
+	case "health":
+		if !n.ready.Load() {
+			return control.Response{Message: "starting"}
+		}
+		if err := n.db.PingContext(ctx); err != nil {
+			return control.Response{Message: "database: " + err.Error()}
+		}
+		return control.Response{OK: true, Message: "ok"}
+	case "reset-mfa":
+		u, err := n.auth.GetUserByName(ctx, req.Args["user"])
+		if err != nil {
+			return control.Response{Message: "utilisateur introuvable : " + req.Args["user"]}
+		}
+		if err := n.auth.ResetMFA(ctx, u.ID); err != nil {
+			return control.Response{Message: err.Error()}
+		}
+		_ = n.auth.RevokeUserSessions(ctx, u.ID, "")
+		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "user.mfa_reset", Target: u.Username})
+		return control.Response{OK: true, Message: "MFA réinitialisé pour " + u.Username + ". Il devra le reconfigurer à la prochaine connexion."}
+	case "reset-password":
+		u, err := n.auth.GetUserByName(ctx, req.Args["user"])
+		if err != nil {
+			return control.Response{Message: "utilisateur introuvable : " + req.Args["user"]}
+		}
+		pw := ids.Password(20)
+		if err := n.auth.SetPassword(ctx, u.ID, pw, ""); err != nil {
+			return control.Response{Message: err.Error()}
+		}
+		// Unlock the account in case it was locked by failed attempts.
+		_ = n.auth.GuardReset(ctx, auth.UserKey(u.Username))
+		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "user.password_reset", Target: u.Username})
+		return control.Response{OK: true, Message: "Nouveau mot de passe pour " + u.Username + " : " + pw}
+	case "reset-ui-allowlist":
+		sec := n.auth.Security()
+		sec.UIAllowedNetworks = nil
+		if _, err := n.auth.SetSecurity(ctx, sec); err != nil {
+			return control.Response{Message: err.Error()}
+		}
+		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "settings.update", Target: "security",
+			Details: map[string]any{"uiAllowedNetworks": "cleared"}})
+		return control.Response{OK: true, Message: "Liste d'IP autorisées vidée : l'interface est de nouveau accessible depuis tous les réseaux."}
+	}
+	return control.Response{Message: "commande inconnue : " + req.Cmd}
+}
+
+func tlsNames(cfg *config.Config) []string {
+	var names []string
+	if cfg.PublicURL != "" {
+		if u, err := url.Parse(cfg.PublicURL); err == nil {
+			names = append(names, u.Hostname())
+		}
+	}
+	if h, err := os.Hostname(); err == nil {
+		names = append(names, h)
+	}
+	return names
+}
+
+// checkWritable fails early with a clear message when the data volume is not
+// writable (wrong owner after changing LEAZONE_UID, read-only mount...).
+func checkWritable(dir string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("cannot create %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, ".write-test-*")
+	if err != nil {
+		return fmt.Errorf("le dossier %s n'est pas accessible en écriture pour l'UID %d : sur l'hôte, lancez "+
+			"'chown -R %d:%d <volume>' ou corrigez LEAZONE_UID/LEAZONE_GID (%w)", dir, os.Getuid(), os.Getuid(), os.Getgid(), err)
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}
