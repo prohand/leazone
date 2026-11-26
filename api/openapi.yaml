@@ -1194,6 +1194,342 @@ paths:
       responses:
         "204": { description: Ignored }
 
+  /settings/modules:
+    get:
+      summary: Optional modules state (any role)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Modules" }
+    put:
+      summary: Turn modules on/off without restart (admin, step-up, replicated)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Modules" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Modules" }
+
+  /blocking/status:
+    get:
+      summary: Blocking state and statistics (this node)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockingStatus" }
+  /blocking/settings:
+    get:
+      summary: Blocking settings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockingSettings" }
+    put:
+      summary: Update blocking settings (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlockingSettings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockingSettings" }
+  /blocking/pause:
+    post:
+      summary: Pause blocking for N minutes (0 = resume now) (records.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutes]
+              properties:
+                minutes: { type: integer, minimum: 0, maximum: 1440 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockingStatus" }
+  /blocking/refresh:
+    post:
+      summary: Download all enabled lists now (on this node; the other node refreshes on its own schedule) (records.write)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/BlockList" } }
+  /blocking/check:
+    post:
+      summary: Tell whether a name is blocked, and why (any role)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                client: { type: string, description: "Client IP (policy check), default: no policy" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocked: { type: boolean }
+                  reason: { type: string, description: "e.g. liste « OISD », règle manuelle, liste blanche" }
+                  matched: { type: string, description: "Domain of the list entry that matched" }
+                  policyActive: { type: boolean, description: "Blocking applies to this client" }
+  /blocking/lists:
+    get:
+      summary: Subscribed lists
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/BlockList" } }
+    post:
+      summary: Subscribe to a list (config.write). It is downloaded at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlockListInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockList" }
+  /blocking/lists/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Update a list (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlockListInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockList" }
+    delete:
+      summary: Remove a list (config.write)
+      responses:
+        "204": { description: Deleted }
+  /blocking/rules:
+    get:
+      summary: Manual blacklist and whitelist
+      parameters:
+        - { name: kind, in: query, schema: { type: string, enum: [allow, deny] } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/BlockRule" } }
+    post:
+      summary: Add a domain to the blacklist or whitelist (records.write). The whitelist wins.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, kind]
+              properties:
+                domain: { type: string, description: "Blocks/allows the domain and its sub-domains" }
+                kind: { type: string, enum: [allow, deny] }
+                comment: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockRule" }
+  /blocking/rules/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      summary: Remove a manual rule (records.write)
+      responses:
+        "204": { description: Deleted }
+  /blocking/policies:
+    get:
+      summary: Where blocking applies (interface, VLAN, client network)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/BlockPolicy" } }
+    post:
+      summary: Add a policy (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlockPolicyInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockPolicy" }
+  /blocking/policies/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Update a policy (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlockPolicyInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockPolicy" }
+    delete:
+      summary: Remove a policy (config.write)
+      responses:
+        "204": { description: Deleted }
+
+  /dnssec/zones:
+    get:
+      summary: DNSSEC state of every primary zone
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/DnssecZone" } }
+  /dnssec/zones/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: DNSSEC details of a zone (keys without private parts, DS records)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnssecZone" }
+  /dnssec/zones/{id}/enable:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Sign the zone (config.write). Keys are created once and replicated (encrypted) to the other node.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                algorithm: { type: integer, enum: [13, 15], default: 13, description: "13 = ECDSA P-256, 15 = Ed25519" }
+                nsecMode: { type: string, enum: [nsec, nsec3], default: nsec3 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnssecZone" }
+  /dnssec/zones/{id}/disable:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Stop signing (config.write, step-up). Remove the DS at the registrar first!
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnssecZone" }
+  /dnssec/zones/{id}/rollover:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Start a key rollover now (config.write). ZSK rollovers are also automatic; a KSK rollover needs the new DS at the registrar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { type: string, enum: [zsk, ksk] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnssecZone" }
+  /dnssec/zones/{id}/ds-published:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Confirm the new DS is published at the registrar (config.write); ends a KSK rollover
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnssecZone" }
+  /dnssec/zones/{id}/export:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Export the private keys in BIND format (admin, step-up)
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema: { type: string }
+
 components:
   securitySchemes:
     session:
@@ -1855,3 +2191,106 @@ components:
         row: { type: string, description: "Row as JSON" }
         detectedAt: { type: string, format: date-time }
         status: { type: string, enum: [pending, reapplied, dismissed] }
+
+    Modules:
+      type: object
+      properties:
+        blocking: { type: boolean, default: false }
+        dnssec: { type: boolean, default: false, description: "Zone signing" }
+        dnssecValidation: { type: boolean, default: false, description: "Validate answers from forwarders (AD bit, SERVFAIL when bogus)" }
+
+    BlockingSettings:
+      type: object
+      properties:
+        responseMode: { type: string, enum: [nxdomain, null-ip], default: nxdomain, description: "null-ip = 0.0.0.0 / ::" }
+        refreshHours: { type: integer, minimum: 1, maximum: 168, default: 24 }
+        defaultEnabled: { type: boolean, default: true, description: "Applies where no policy matches" }
+
+    BlockingStatus:
+      type: object
+      properties:
+        enabled: { type: boolean, description: "Module on" }
+        paused: { type: boolean }
+        pausedUntil: { type: [string, "null"], format: date-time }
+        domains: { type: integer, description: "Blocked domains loaded (lists + manual)" }
+        lists: { type: integer }
+        queries: { type: integer, description: "Queries checked since start (this node)" }
+        blocked: { type: integer }
+        percent: { type: number }
+        top:
+          type: array
+          items:
+            type: object
+            properties:
+              domain: { type: string }
+              count: { type: integer }
+
+    BlockListInput:
+      type: object
+      required: [name, url]
+      properties:
+        name: { type: string }
+        url: { type: string, description: "http(s) URL" }
+        format: { type: string, enum: [auto, hosts, domains, adblock], default: auto }
+        enabled: { type: boolean, default: true }
+
+    BlockList:
+      allOf:
+        - $ref: "#/components/schemas/BlockListInput"
+        - type: object
+          properties:
+            id: { type: string }
+            fetchedAt: { type: [string, "null"], format: date-time }
+            entries: { type: integer }
+            error: { type: string }
+
+    BlockRule:
+      type: object
+      properties:
+        id: { type: string }
+        domain: { type: string }
+        kind: { type: string, enum: [allow, deny] }
+        comment: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    BlockPolicyInput:
+      type: object
+      required: [targetKind, target, enabled]
+      properties:
+        targetKind: { type: string, enum: [interface, vlan, network] }
+        target: { type: string, description: "eno1.20, 20, or 192.168.20.0/24" }
+        enabled: { type: boolean, description: "true: blocking on for this target, false: off" }
+        comment: { type: string }
+
+    BlockPolicy:
+      allOf:
+        - $ref: "#/components/schemas/BlockPolicyInput"
+        - type: object
+          properties:
+            id: { type: string }
+
+    DnssecKey:
+      type: object
+      properties:
+        id: { type: string }
+        role: { type: string, enum: [ksk, zsk] }
+        algorithm: { type: integer }
+        keyTag: { type: integer }
+        state: { type: string, enum: [published, active, retired, ds-pending], description: "published = announced, not signing yet" }
+        createdAt: { type: string, format: date-time }
+        activeAt: { type: [string, "null"], format: date-time }
+        retireAt: { type: [string, "null"], format: date-time }
+        dnskey: { type: string, description: "DNSKEY record" }
+
+    DnssecZone:
+      type: object
+      properties:
+        zoneId: { type: string }
+        name: { type: string }
+        enabled: { type: boolean }
+        algorithm: { type: integer }
+        nsecMode: { type: string, enum: [nsec, nsec3] }
+        keys: { type: array, items: { $ref: "#/components/schemas/DnssecKey" } }
+        ds: { type: array, items: { type: string }, description: "DS records to give to the registrar (SHA-256)" }
+        dsPending: { type: boolean, description: "A KSK rollover waits for the new DS at the registrar" }
+        nextZskRollover: { type: [string, "null"], format: date-time }
