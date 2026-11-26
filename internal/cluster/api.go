@@ -60,10 +60,22 @@ func (n *Node) Writable() error {
 	return nil
 }
 
+// BeginWrite checks that a config change is allowed here (Writable) and
+// keeps the node primary, journaling, until done is called after the
+// commit. Losing the role waits for writes in progress.
+func (n *Node) BeginWrite() (done func(), err error) {
+	n.writeMu.RLock()
+	if err := n.Writable(); err != nil {
+		n.writeMu.RUnlock()
+		return nil, err
+	}
+	return n.writeMu.RUnlock, nil
+}
+
 // AfterWrite waits until the change just written is safe: applied by the
 // secondary (2 s max), or else recorded as committed by the witness.
 func (n *Node) AfterWrite(ctx context.Context) {
-	_, seq := n.position(ctx)
+	lastEpoch, seq := n.position(ctx)
 	n.mu.Lock()
 	var follower *peer
 	for _, p := range n.peers {
@@ -91,7 +103,7 @@ func (n *Node) AfterWrite(ctx context.Context) {
 	}
 	if n.witnessM == "container" {
 		resp, err := n.witnessCall(ctx, "renew", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName, Epoch: epoch,
-			Seq: seq, LeaseMs: int64(n.Settings().LeaseMs)})
+			Seq: seq, LastEpoch: &lastEpoch, LeaseMs: int64(n.Settings().LeaseMs)})
 		if err == nil && resp.Granted {
 			return
 		}
@@ -325,7 +337,17 @@ func (n *Node) Reapply(ctx context.Context, id string) error {
 		return store.ErrNotFound
 	}
 	if n.IsPrimary() {
-		return n.d.Repl.Reapply(ctx, id)
+		done, err := n.BeginWrite()
+		if err != nil {
+			return err
+		}
+		err = n.d.Repl.Reapply(ctx, id)
+		done()
+		if err != nil {
+			return err
+		}
+		n.d.ConfigApplied(ctx) // reload DNS/DHCP with the re-applied change
+		return nil
 	}
 	n.mu.Lock()
 	primary := n.livePrimary()
@@ -347,10 +369,13 @@ func (n *Node) hReapply(r *http.Request) (any, int) {
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&c); err != nil {
 		return map[string]string{"error": "bad request"}, http.StatusBadRequest
 	}
-	if !n.IsPrimary() {
-		return map[string]string{"error": "not primary"}, http.StatusConflict
+	done, err := n.BeginWrite()
+	if err != nil {
+		return map[string]string{"error": err.Error()}, http.StatusConflict
 	}
-	if err := n.d.Repl.ApplyLocal(r.Context(), c); err != nil {
+	err = n.d.Repl.ApplyLocal(r.Context(), c)
+	done()
+	if err != nil {
 		return map[string]string{"error": err.Error()}, http.StatusInternalServerError
 	}
 	n.d.ConfigApplied(r.Context())

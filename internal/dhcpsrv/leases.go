@@ -86,7 +86,7 @@ func (d *leaseDB) load(ctx context.Context) (map[string]map[uint32]*Lease, error
 			return nil, err
 		}
 		a, err := netip.ParseAddr(ip)
-		if err != nil {
+		if err != nil || !a.Is4() {
 			continue
 		}
 		l.IP, l.Starts, l.Ends = a, time.UnixMilli(st), time.UnixMilli(en)

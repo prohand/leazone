@@ -164,7 +164,7 @@ func (db *DB) Migrate(ctx context.Context, backupDir string, log *slog.Logger) e
 		log.Info("database backed up before migration", "file", dst)
 	}
 	for _, m := range migs[cur:] {
-		if err := db.apply(ctx, m.Up, func(tx *sql.Tx) error {
+		if err := db.apply(ctx, nil, m.Up, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)`,
 				m.Version, m.Name, time.Now().UnixMilli())
 			return err
@@ -199,7 +199,11 @@ func (db *DB) MigrateDown(ctx context.Context, target int, backupDir string, log
 	log.Info("database backed up before downgrade", "file", dst)
 	for v := cur; v > target; v-- {
 		m := migs[v-1]
-		if err := db.apply(ctx, m.Down, func(tx *sql.Tx) error {
+		// Replication triggers (repl_*, generated at startup from the live
+		// schema by cluster/repl) name columns and tables that a down
+		// script may drop: remove them first. The binary that runs on the
+		// older schema recreates the ones it needs.
+		if err := db.apply(ctx, dropReplTriggers, m.Down, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = ?`, v)
 			return err
 		}); err != nil {
@@ -210,12 +214,17 @@ func (db *DB) MigrateDown(ctx context.Context, target int, backupDir string, log
 	return nil
 }
 
-func (db *DB) apply(ctx context.Context, script string, record func(*sql.Tx) error) error {
+func (db *DB) apply(ctx context.Context, pre func(context.Context, *sql.Tx) error, script string, record func(*sql.Tx) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if pre != nil {
+		if err := pre(ctx, tx); err != nil {
+			return err
+		}
+	}
 	for _, stmt := range splitSQL(script) {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("%w\n--- statement ---\n%s", err, stmt)
@@ -225,6 +234,33 @@ func (db *DB) apply(ctx context.Context, script string, record func(*sql.Tx) err
 		return err
 	}
 	return tx.Commit()
+}
+
+// dropReplTriggers drops every replication trigger (named repl_*).
+func dropReplTriggers(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'repl\_%' ESCAPE '\'`)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
+		}
+		names = append(names, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, n := range names {
+		if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS "`+strings.ReplaceAll(n, `"`, `""`)+`"`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // splitSQL splits a script on ";" at end of line, ignoring "--" comments.

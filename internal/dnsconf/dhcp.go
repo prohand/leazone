@@ -112,6 +112,50 @@ func (s *Store) PutDHCPRecord(ctx context.Context, zoneID, name, typ string, ttl
 	})
 }
 
+// DeleteDHCPOwnerAt removes the DHCP records of an owner only when they
+// were registered for ip: when the owner's A record points to another address
+// (the client moved to a new lease), the records belong to that newer lease
+// and are kept. It returns how many records were removed.
+func (s *Store) DeleteDHCPOwnerAt(ctx context.Context, owner string, ip netip.Addr) (int, error) {
+	var n int64
+	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT data FROM records WHERE source = 'dhcp' AND dhcp_owner = ? AND type = 'A'`, owner)
+		if err != nil {
+			return err
+		}
+		other := false
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				rows.Close()
+				return err
+			}
+			var d RecordData
+			if json.Unmarshal([]byte(raw), &d) == nil && d.IP != "" {
+				if a, err := netip.ParseAddr(d.IP); err == nil && a != ip {
+					other = true
+				}
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if other {
+			return nil
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM records WHERE source = 'dhcp' AND dhcp_owner = ?`, owner)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
+	return int(n), err
+}
+
 // DeleteDHCPOwner removes every DHCP record of an owner. It returns how many.
 func (s *Store) DeleteDHCPOwner(ctx context.Context, owner string) (int, error) {
 	var n int64

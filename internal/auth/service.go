@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"regexp"
 	"strings"
 	"sync"
@@ -27,6 +28,9 @@ type Service struct {
 
 	mu  sync.RWMutex
 	sec SecuritySettings
+
+	guardMu  sync.Mutex
+	inflight map[string]int // login_guard key -> attempts being verified
 }
 
 // NewService loads the security settings and returns the service.
@@ -72,7 +76,34 @@ func (s *Service) SetSecurity(ctx context.Context, sec SecuritySettings) (Securi
 	s.mu.Lock()
 	s.sec = sec
 	s.mu.Unlock()
-	return sec, nil
+	return sec, s.revokeUnprotectedSessions(ctx, sec)
+}
+
+// revokeUnprotectedSessions ends the open sessions of users that the policy
+// subjects to MFA but who have no second factor it accepts (after a policy
+// change): at their next login they will have to enroll one.
+func (s *Service) revokeUnprotectedSessions(ctx context.Context, sec SecuritySettings) error {
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		if !sec.MFARequired(u.Role) {
+			continue
+		}
+		m, err := s.MFA(ctx, u.ID)
+		if err != nil {
+			return err
+		}
+		if m.PasskeyCount > 0 || (m.TOTPEnabled && sec.TOTPAllowed()) {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND auth_level = ? AND revoked_at IS NULL`,
+			s.Now().UnixMilli(), u.ID, LevelFull); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // User is an account.
@@ -224,70 +255,82 @@ func (s *Service) MFA(ctx context.Context, userID string) (MFAStatus, error) {
 	return m, err
 }
 
-// activeAdmins counts enabled admins, optionally ignoring one user.
-func (s *Service) activeAdmins(ctx context.Context, except string) (int, error) {
+// activeAdmins counts enabled admins, optionally ignoring one user. It runs
+// in the transaction that changes the user (BEGIN IMMEDIATE): two admins
+// cannot demote or delete each other at the same time.
+func activeAdmins(ctx context.Context, tx *sql.Tx, except string) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?`, except).Scan(&n)
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?`, except).Scan(&n)
 	return n, err
 }
 
-// UpdateUser changes role and/or disabled flag. The last active admin is protected.
+// UpdateUser changes role and/or disabled flag. The last active admin is
+// protected. A role change or a deactivation ends the user's sessions: the
+// MFA policy depends on the role and is only applied at login.
 func (s *Service) UpdateUser(ctx context.Context, id string, role *Role, disabled *bool) (*User, error) {
-	u, err := s.GetUser(ctx, id)
-	if err != nil {
+	if _, err := s.GetUser(ctx, id); err != nil {
 		return nil, err
 	}
 	if role != nil && !role.Valid() {
 		return nil, ErrValidation{"role": "rôle inconnu"}
 	}
-	newRole, newDisabled := u.Role, u.Disabled
-	if role != nil {
-		newRole = *role
-	}
-	if disabled != nil {
-		newDisabled = *disabled
-	}
-	if u.Role == RoleAdmin && !u.Disabled && (newRole != RoleAdmin || newDisabled) {
-		n, err := s.activeAdmins(ctx, u.ID)
+	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+		u, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, id))
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if n == 0 {
-			return nil, ErrLastAdmin
+		newRole, newDisabled := u.Role, u.Disabled
+		if role != nil {
+			newRole = *role
 		}
-	}
-	d := 0
-	if newDisabled {
-		d = 1
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE users SET role = ?, disabled = ?, updated_at = ? WHERE id = ?`,
-		newRole, d, s.Now().UnixMilli(), id); err != nil {
+		if disabled != nil {
+			newDisabled = *disabled
+		}
+		if u.Role == RoleAdmin && !u.Disabled && (newRole != RoleAdmin || newDisabled) {
+			n, err := activeAdmins(ctx, tx, u.ID)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return ErrLastAdmin
+			}
+		}
+		d := 0
+		if newDisabled {
+			d = 1
+		}
+		now := s.Now().UnixMilli()
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role = ?, disabled = ?, updated_at = ? WHERE id = ?`,
+			newRole, d, now, id); err != nil {
+			return err
+		}
+		if newDisabled || newRole != u.Role {
+			_, err = tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id)
+		}
+		return err
+	})
+	if err != nil {
 		return nil, err
-	}
-	if newDisabled {
-		if err := s.RevokeUserSessions(ctx, id, ""); err != nil {
-			return nil, err
-		}
 	}
 	return s.GetUser(ctx, id)
 }
 
 // DeleteUser removes an account and everything attached to it.
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
-	u, err := s.GetUser(ctx, id)
-	if err != nil {
-		return err
-	}
-	if u.Role == RoleAdmin && !u.Disabled {
-		n, err := s.activeAdmins(ctx, u.ID)
+	return s.db.Tx(ctx, func(tx *sql.Tx) error {
+		u, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, id))
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			return ErrLastAdmin
+		if u.Role == RoleAdmin && !u.Disabled {
+			n, err := activeAdmins(ctx, tx, u.ID)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return ErrLastAdmin
+			}
 		}
-	}
-	return s.db.Tx(ctx, func(tx *sql.Tx) error {
 		for _, q := range []string{
 			`DELETE FROM webauthn_usage WHERE credential_id IN (SELECT credential_id FROM webauthn_credentials WHERE user_id = ?)`,
 			`DELETE FROM recovery_usage WHERE code_id IN (SELECT id FROM recovery_codes WHERE user_id = ?)`,
@@ -304,7 +347,7 @@ func (s *Service) DeleteUser(ctx context.Context, id string) error {
 }
 
 // SetPassword replaces the password (policy enforced) and revokes the user's
-// other sessions (exceptSession = public id of the session to keep).
+// API tokens and other sessions (exceptSession = public id of the session to keep).
 func (s *Service) SetPassword(ctx context.Context, userID, password, exceptSession string) error {
 	u, err := s.GetUser(ctx, userID)
 	if err != nil {
@@ -322,13 +365,27 @@ func (s *Service) SetPassword(ctx context.Context, userID, password, exceptSessi
 		hash, now, now, userID); err != nil {
 		return err
 	}
+	// A new password means the old one may be known: its sessions and API
+	// tokens (possibly created by an intruder) must not outlive it.
+	if err := s.RevokeUserTokens(ctx, userID); err != nil {
+		return err
+	}
 	return s.RevokeUserSessions(ctx, userID, exceptSession)
 }
 
-// ResetMFA removes passkeys, TOTP and recovery codes. The user will have to
-// enroll again at next login (if the policy requires MFA).
+// ResetMFA removes passkeys, TOTP and recovery codes and revokes the user's
+// API tokens. The user will have to enroll again at next login (if the
+// policy requires MFA). Callers revoke the sessions.
 func (s *Service) ResetMFA(ctx context.Context, userID string) error {
 	return s.db.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+			s.Now().UnixMilli(), userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM login_guard WHERE key = (SELECT 'mfa:' || username FROM users WHERE id = ?)`,
+			userID); err != nil {
+			return err
+		}
 		for _, q := range []string{
 			`DELETE FROM webauthn_usage WHERE credential_id IN (SELECT credential_id FROM webauthn_credentials WHERE user_id = ?)`,
 			`DELETE FROM webauthn_credentials WHERE user_id = ?`,
@@ -347,11 +404,15 @@ func (s *Service) ResetMFA(ctx context.Context, userID string) error {
 
 // Authenticate verifies username + password with brute-force protection.
 // It always spends one Argon2 computation, even for unknown users.
+// A good password only clears the password counter: second factor attempts
+// have their own counter (MFAKey), cleared after a complete login.
 func (s *Service) Authenticate(ctx context.Context, username, password, ip string) (*User, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
-	if err := s.GuardCheck(ctx, ipKey(ip), userKey(username)); err != nil {
+	release, err := s.GuardEnter(ctx, ipKey(ip), userKey(username))
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	u, err := s.GetUserByName(ctx, username)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
@@ -383,11 +444,26 @@ func (s *Service) TouchLogin(ctx context.Context, userID string) error {
 	return err
 }
 
-func ipKey(ip string) string     { return "ip:" + ip }
-func userKey(name string) string { return "user:" + strings.ToLower(name) }
+// ipKey is the per-client counter. IPv6 clients are counted per /64: one
+// host usually owns a whole /64 and could otherwise rotate addresses.
+func ipKey(ip string) string {
+	if a, err := netip.ParseAddr(ip); err == nil && a.Unmap().Is6() {
+		p, _ := a.WithZone("").Prefix(64)
+		return "ip:" + p.String()
+	}
+	return "ip:" + ip
+}
 
-// UserKey is exported for MFA checks that share the per-account counter.
+func userKey(name string) string { return "user:" + strings.ToLower(name) }
+func mfaKey(name string) string  { return "mfa:" + strings.ToLower(name) }
+
+// UserKey is the per-account password counter (unlocked by the CLI password reset).
 func UserKey(name string) string { return userKey(name) }
+
+// MFAKey is the per-account counter of second factor codes (TOTP, recovery
+// codes). It is separate from the password counter, which a good password
+// clears, and is only cleared once a code is accepted.
+func MFAKey(name string) string { return mfaKey(name) }
 
 // IPKey is exported for MFA checks that share the per-IP counter.
 func IPKey(ip string) string { return ipKey(ip) }

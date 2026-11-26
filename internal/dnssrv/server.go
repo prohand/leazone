@@ -251,8 +251,11 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 	}
 	st := e.st.Load()
 
-	// 1. Local zones answer everyone.
-	if res := st.zones.answer(q.Name, q.Qtype); res.authorized {
+	// 1. Local zones answer everyone. A delegation inside a local zone is
+	// only a referral for clients that may not recurse (or when no forwarder
+	// serves it): the others get it resolved like any recursive query.
+	res := st.zones.answer(q.Name, q.Qtype)
+	if res.authorized && !(res.referral && e.mayRecurse(st, client) && len(st.fwd.pick(q.Name)) > 0) {
 		e.local.Add(1)
 		m.Authoritative = res.msg.Authoritative
 		m.Rcode = res.msg.Rcode
@@ -263,10 +266,13 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 		if res.cnameOut == "" || !e.mayRecurse(st, client) {
 			return finish(SourceLocal)
 		}
-		// A local CNAME points outside: resolve the target upstream.
-		up, _, err := e.forward(ctx, st, dns.Question{Name: res.cnameOut, Qtype: q.Qtype, Qclass: q.Qclass}, do, r.CheckingDisabled)
-		if err == nil && !do {
-			up.Answer = stripDNSSEC(up.Answer, q.Qtype)
+		// A local CNAME points outside: resolve the target like a recursive
+		// query (ad blocking, DNSSEC validation).
+		target := dns.Question{Name: res.cnameOut, Qtype: q.Qtype, Qclass: q.Qclass}
+		up, _, src, x, err := e.recurse(ctx, st, m, q, target, r.CheckingDisabled, do, client, local, false)
+		ede = x
+		if err == nil && up == nil {
+			return finish(src) // blocked or bogus
 		}
 		if err == nil {
 			m.Answer = append(m.Answer, up.Answer...)
@@ -283,53 +289,17 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 		m.RecursionAvailable = false
 		return finish(SourceRefused)
 	}
-	// 3. Ad blocking.
-	if e.blocker != nil {
-		if blocked, null := e.blocker.Filter(q.Name, client, local, true); blocked {
-			e.blocked.Add(1)
-			ede = blockedReply(m, q, null)
-			return finish(SourceBlocked)
-		}
-	}
 
-	// 4. Cache or forwarders, with DNSSEC validation when enabled.
-	v := e.validator.Load()
-	cd := r.CheckingDisabled
-	if v != nil {
-		cd = true // get the signed data even if the forwarder finds it bogus
-	}
-	up, src, err := e.forward(ctx, st, q, do || v != nil, cd)
+	// 3. Ad blocking, cache or forwarders, DNSSEC validation.
+	up, secure, src, x, err := e.recurse(ctx, st, m, q, q, r.CheckingDisabled, do, client, local, true)
+	ede = x
 	if err != nil {
 		e.failed.Add(1)
 		m.Rcode = dns.RcodeServerFailure
 		return finish(SourceError)
 	}
-	secure := false
-	if v != nil && !r.CheckingDisabled {
-		status, why := v.checkCached(ctx, q, up)
-		if status == vBogus {
-			e.bogus.Add(1)
-			e.log.Info("DNSSEC: bogus answer", "name", q.Name, "type", dns.TypeToString[q.Qtype], "reason", why)
-			m.Rcode = dns.RcodeServerFailure
-			ede = &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeDNSBogus, ExtraText: why}
-			return finish(SourceError)
-		}
-		secure = status == vSecure
-	}
-	if e.blocker != nil {
-		// CNAME cloaking: a tracker hidden behind a CNAME is blocked too.
-		for _, rr := range up.Answer {
-			if c, ok := rr.(*dns.CNAME); ok {
-				if blocked, null := e.blocker.Filter(c.Target, client, local, false); blocked {
-					e.blocked.Add(1)
-					ede = blockedReply(m, q, null)
-					return finish(SourceBlocked)
-				}
-			}
-		}
-	}
-	if !do {
-		up.Answer, up.Ns = stripDNSSEC(up.Answer, q.Qtype), stripDNSSEC(up.Ns, q.Qtype)
+	if up == nil {
+		return finish(src)
 	}
 	if src == SourceForwarder {
 		e.forwarded.Add(1)
@@ -346,10 +316,63 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 	return finish(src)
 }
 
+// recurse resolves q for a client allowed to recurse: ad blocking, cache or
+// forwarders, DNSSEC validation (unless the client set CD) and CNAME
+// cloaking. orig is the client's question (q itself, or the local name
+// whose CNAME leads to q); count tells the blocker to count the query.
+// It returns the upstream answer, without DNSSEC records when !do, and
+// whether it was validated. A nil answer with a nil error means m was
+// turned into the final answer (blocked name, bogus data) with ede.
+func (e *Engine) recurse(ctx context.Context, st *state, m *dns.Msg, orig, q dns.Question, clientCD, do bool,
+	client, local netip.Addr, count bool) (up *dns.Msg, secure bool, src string, ede *dns.EDNS0_EDE, err error) {
+	if e.blocker != nil {
+		if blocked, null := e.blocker.Filter(q.Name, client, local, count); blocked {
+			e.blocked.Add(1)
+			return nil, false, SourceBlocked, blockedReply(m, orig, null), nil
+		}
+	}
+	v := e.validator.Load()
+	cd := clientCD
+	if v != nil {
+		cd = true // get the signed data even if the forwarder finds it bogus
+	}
+	up, src, err = e.forward(ctx, st, q, do || v != nil, cd)
+	if err != nil {
+		return nil, false, SourceError, nil, err
+	}
+	if v != nil && !clientCD {
+		status, why := v.checkCached(ctx, q, up)
+		if status == vBogus {
+			e.bogus.Add(1)
+			e.log.Info("DNSSEC: bogus answer", "name", q.Name, "type", dns.TypeToString[q.Qtype], "reason", why)
+			m.Answer, m.Ns, m.Extra = nil, nil, nil
+			m.Rcode = dns.RcodeServerFailure
+			m.Authoritative, m.AuthenticatedData = false, false
+			return nil, false, SourceError, &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeDNSBogus, ExtraText: why}, nil
+		}
+		secure = status == vSecure
+	}
+	if e.blocker != nil {
+		// CNAME cloaking: a tracker hidden behind a CNAME is blocked too.
+		for _, rr := range up.Answer {
+			if c, ok := rr.(*dns.CNAME); ok {
+				if blocked, null := e.blocker.Filter(c.Target, client, local, false); blocked {
+					e.blocked.Add(1)
+					return nil, false, SourceBlocked, blockedReply(m, orig, null), nil
+				}
+			}
+		}
+	}
+	if !do {
+		up.Answer, up.Ns = stripDNSSEC(up.Answer, q.Qtype), stripDNSSEC(up.Ns, q.Qtype)
+	}
+	return up, secure, src, nil, nil
+}
+
 // blockedReply turns m into the answer for a blocked name.
 func blockedReply(m *dns.Msg, q dns.Question, nullIP bool) *dns.EDNS0_EDE {
 	m.Answer, m.Ns, m.Extra = nil, nil, nil
-	m.AuthenticatedData = false
+	m.Authoritative, m.AuthenticatedData = false, false
 	if !nullIP {
 		m.Rcode = dns.RcodeNameError
 	} else {
@@ -380,10 +403,10 @@ func (e *Engine) mayRecurse(st *state, client netip.Addr) bool {
 // concurrent queries.
 func (e *Engine) forward(ctx context.Context, st *state, q dns.Question, do, cd bool) (*dns.Msg, string, error) {
 	q.Name = dns.Fqdn(q.Name)
-	if m := e.cache.get(q, do); m != nil {
+	if m := e.cache.get(q, do, cd); m != nil {
 		return m, SourceCache, nil
 	}
-	key := cacheKey(q, do)
+	key := cacheKey(q, do, cd)
 	v, err, _ := e.sf.Do(key, func() (any, error) {
 		qm := new(dns.Msg)
 		qm.SetQuestion(q.Name, q.Qtype)
@@ -395,7 +418,7 @@ func (e *Engine) forward(ctx context.Context, st *state, q dns.Question, do, cd 
 		if err != nil {
 			return nil, err
 		}
-		e.cache.set(q, do, r)
+		e.cache.set(q, do, cd, r)
 		return r, nil
 	})
 	if err != nil {

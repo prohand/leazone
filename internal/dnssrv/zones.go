@@ -123,6 +123,7 @@ type authResult struct {
 	msg        *dns.Msg
 	cnameOut   string // CNAME target outside local zones that still needs resolving
 	authorized bool
+	referral   bool // msg is a referral to a delegated sub-zone
 }
 
 // answer resolves qname/qtype inside the local zones. It follows CNAMEs
@@ -145,7 +146,7 @@ func (zs *zoneSet) answer(qname string, qtype uint16) authResult {
 		if ref := z.referral(name, qtype); ref != nil {
 			if hop == 0 {
 				ref.Authoritative = false
-				return authResult{msg: ref, authorized: true}
+				return authResult{msg: ref, authorized: true, referral: true}
 			}
 			return authResult{msg: m, cnameOut: name, authorized: true}
 		}

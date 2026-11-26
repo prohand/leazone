@@ -20,7 +20,7 @@ import (
 // signatures). Signatures are cached across reloads.
 
 const (
-	sigValidity = 15 * 24 * time.Hour
+	sigValidity = dnssec.SigValidity
 	nsec3Iter   = 0 // RFC 9276: no extra iterations, no salt
 )
 

@@ -1,6 +1,10 @@
 // Package tlsmgr provides the HTTPS certificate of the UI/API: a certificate
 // dropped in <data>/tls/, one imported from the UI, or a self-signed one
-// generated on first start (installation only).
+// generated on first start (installation only) and renewed automatically.
+//
+// An expired certificate never prevents the service from starting: a
+// self-signed one is regenerated, a file or imported one is served with a
+// warning (DNS and DHCP must run even if the web UI certificate lapsed).
 package tlsmgr
 
 import (
@@ -57,6 +61,7 @@ type Manager struct {
 	box     *secrets.Box
 	log     *slog.Logger
 	dataDir string
+	names   []string // names of the self-signed certificate
 
 	mu   sync.RWMutex
 	cert *tls.Certificate
@@ -65,7 +70,7 @@ type Manager struct {
 
 // New loads the certificate, generating a self-signed one if needed.
 func New(ctx context.Context, db *store.DB, box *secrets.Box, log *slog.Logger, dataDir string, names []string) (*Manager, error) {
-	m := &Manager{db: db, box: box, log: log, dataDir: dataDir}
+	m := &Manager{db: db, box: box, log: log, dataDir: dataDir, names: names}
 	certFile := filepath.Join(dataDir, "tls", "cert.pem")
 	keyFile := filepath.Join(dataDir, "tls", "key.pem")
 	if _, err := os.Stat(certFile); err == nil {
@@ -77,7 +82,7 @@ func New(ctx context.Context, db *store.DB, box *secrets.Box, log *slog.Logger, 
 		if err != nil {
 			return nil, fmt.Errorf("%s found but %s unreadable: %w", certFile, keyFile, err)
 		}
-		if err := m.set(string(c), string(k), SourceFile); err != nil {
+		if err := m.load(string(c), string(k), SourceFile); err != nil {
 			return nil, fmt.Errorf("%s: %w", certFile, err)
 		}
 		log.Info("using certificate from file", "file", certFile, "notAfter", m.info.NotAfter)
@@ -93,18 +98,70 @@ func New(ctx context.Context, db *store.DB, box *secrets.Box, log *slog.Logger, 
 		if err != nil {
 			return nil, fmt.Errorf("certificate key: %w", err)
 		}
-		if err := m.set(certPEM, string(key), source); err != nil {
+		if err := m.load(certPEM, string(key), source); err != nil {
 			return nil, err
 		}
-		// Renew an expiring self-signed certificate automatically.
-		if source == SourceSelfSigned && time.Until(m.info.NotAfter) < 30*24*time.Hour {
-			return m, m.generateSelfSigned(ctx, names)
-		}
-		return m, nil
+		// Renew an expired or expiring self-signed certificate automatically.
+		return m, m.RenewIfNeeded(ctx)
 	case errors.Is(err, sql.ErrNoRows):
 		return m, m.generateSelfSigned(ctx, names)
 	default:
 		return nil, err
+	}
+}
+
+// renewBefore is how long before expiry a self-signed certificate is renewed.
+const renewBefore = 30 * 24 * time.Hour
+
+// RenewIfNeeded regenerates the self-signed certificate when it expires in
+// less than 30 days (or already expired). File and imported certificates are
+// left alone (only a warning is logged when they expire soon).
+func (m *Manager) RenewIfNeeded(ctx context.Context) error {
+	info := m.Info()
+	left := time.Until(info.NotAfter)
+	if info.Source != SourceSelfSigned {
+		if left < renewBefore {
+			m.log.Warn("HTTPS certificate expires soon or has expired: import a new one",
+				"source", info.Source, "notAfter", info.NotAfter.Format(time.DateOnly))
+		}
+		return nil
+	}
+	if left >= renewBefore {
+		return nil
+	}
+	m.log.Info("renewing the self-signed certificate", "notAfter", info.NotAfter.Format(time.DateOnly))
+	return m.generateSelfSigned(ctx, m.names)
+}
+
+// Run checks the certificate twice a day until ctx is done and renews the
+// self-signed one before it expires. beginWrite (optional) tells whether this
+// node may change the replicated configuration: in a cluster only the
+// primary renews, the other node picks the new certificate up with Reload.
+func (m *Manager) Run(ctx context.Context, beginWrite func() (done func(), err error)) {
+	t := time.NewTicker(12 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		m.renewTick(ctx, beginWrite)
+	}
+}
+
+// renewTick renews the certificate when needed, only where config may be
+// written (cluster primary), holding that right until the change is stored.
+func (m *Manager) renewTick(ctx context.Context, beginWrite func() (func(), error)) {
+	if beginWrite != nil {
+		done, err := beginWrite()
+		if err != nil {
+			return
+		}
+		defer done()
+	}
+	if err := m.RenewIfNeeded(ctx); err != nil {
+		m.log.Warn("certificate renewal failed", "err", err)
 	}
 }
 
@@ -175,7 +232,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := tmp.set(certPEM, string(key), source); err != nil {
+		if err := tmp.load(certPEM, string(key), source); err != nil {
 			return err
 		}
 		if tmp.info.Fingerprint == cur.Fingerprint {
@@ -228,8 +285,19 @@ func (m *Manager) store(ctx context.Context, certPEM, keyPEM, source string) err
 	return nil
 }
 
-// set parses and checks a certificate/key pair, then makes it active in memory.
+// set parses and checks a new certificate/key pair (an expired one is
+// refused), then makes it active in memory.
 func (m *Manager) set(certPEM, keyPEM, source string) error {
+	return m.activate(certPEM, keyPEM, source, false)
+}
+
+// load is set for a certificate already in use (file, database): an expired
+// certificate is served with a warning rather than stopping the service.
+func (m *Manager) load(certPEM, keyPEM, source string) error {
+	return m.activate(certPEM, keyPEM, source, true)
+}
+
+func (m *Manager) activate(certPEM, keyPEM, source string, allowExpired bool) error {
 	pair, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
 	if err != nil {
 		return fmt.Errorf("certificat ou clé invalide : %w", err)
@@ -239,7 +307,13 @@ func (m *Manager) set(certPEM, keyPEM, source string) error {
 		return err
 	}
 	if time.Now().After(leaf.NotAfter) {
-		return fmt.Errorf("certificat expiré le %s", leaf.NotAfter.Format(time.DateOnly))
+		if !allowExpired {
+			return fmt.Errorf("certificat expiré le %s", leaf.NotAfter.Format(time.DateOnly))
+		}
+		if m.log != nil && source != SourceSelfSigned {
+			m.log.Warn("HTTPS certificate has expired: browsers will refuse it, import a new one",
+				"source", source, "notAfter", leaf.NotAfter.Format(time.DateOnly))
+		}
 	}
 	if err := checkKeyStrength(leaf.PublicKey); err != nil {
 		return err

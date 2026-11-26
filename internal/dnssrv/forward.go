@@ -26,10 +26,16 @@ const (
 	ednsSize     = 1232
 )
 
-// upstream is a live forwarder with its connection pool and health.
+// upstream is a live forwarder. Its configuration never changes once
+// built; a reload with the same connection settings makes a new upstream
+// that shares the link (connection pool and health) of the previous one.
 type upstream struct {
 	cfg dnsconf.Forwarder
+	*link
+}
 
+// link is the live part of an upstream: connections and health.
+type link struct {
 	tlsConf *tls.Config
 	doh     *http.Client
 	pool    chan *dns.Conn // idle DoT connections
@@ -52,7 +58,7 @@ type Health struct {
 }
 
 func newUpstream(f dnsconf.Forwarder, roots *x509.CertPool) *upstream {
-	u := &upstream{cfg: f}
+	u := &upstream{cfg: f, link: &link{}}
 	if f.Protocol == dnsconf.ProtoDoT || f.Protocol == dnsconf.ProtoDoH {
 		name := f.TLSServerName
 		if name == "" {
@@ -84,7 +90,7 @@ func newUpstream(f dnsconf.Forwarder, roots *x509.CertPool) *upstream {
 	return u
 }
 
-func (u *upstream) close() {
+func (u *link) close() {
 	if u.pool != nil {
 		for {
 			select {
@@ -107,13 +113,13 @@ func (u *upstream) label() string {
 	return strings.ToUpper(u.cfg.Protocol) + " " + net.JoinHostPort(u.cfg.Address, strconv.Itoa(u.cfg.Port))
 }
 
-func (u *upstream) available(now time.Time) bool {
+func (u *link) available(now time.Time) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return !now.Before(u.downUntil)
 }
 
-func (u *upstream) record(err error, latency time.Duration) {
+func (u *link) record(err error, latency time.Duration) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.lastCheck = time.Now()
@@ -290,11 +296,11 @@ func buildForwarders(list []*dnsconf.Forwarder, old *forwarders, roots *x509.Cer
 	f := &forwarders{conditional: map[string][]*upstream{}, all: map[string]*upstream{}}
 	for _, c := range list {
 		var u *upstream
-		// Keep the live state (pool, health) of an unchanged forwarder.
+		// Keep the live state (pool, health) of an unchanged forwarder; the
+		// previous upstream may still be in use, so it is not modified.
 		if old != nil {
 			if prev := old.all[c.ID]; prev != nil && sameUpstream(prev.cfg, *c) {
-				u = prev
-				u.cfg = *c
+				u = &upstream{cfg: *c, link: prev.link}
 			}
 		}
 		if u == nil {
@@ -313,7 +319,7 @@ func buildForwarders(list []*dnsconf.Forwarder, old *forwarders, roots *x509.Cer
 	}
 	if old != nil {
 		for id, u := range old.all {
-			if f.all[id] != u {
+			if n := f.all[id]; n == nil || n.link != u.link {
 				u.close()
 			}
 		}

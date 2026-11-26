@@ -173,6 +173,9 @@ func suffixes(name string, f func(string) bool) bool {
 	return false
 }
 
+// decide applies the rules in this order: manual whitelist (always wins),
+// manual blacklist, list exceptions (AdBlock "@@": they override the list
+// filters), list filters. Each step looks at the name and its parents.
 func (s *snapshot) decide(name string) Decision {
 	name = strings.TrimSuffix(strings.ToLower(name), ".")
 	var d Decision
@@ -186,8 +189,8 @@ func (s *snapshot) decide(name string) Decision {
 		return d
 	}
 	if suffixes(name, func(n string) bool {
-		if i, ok := s.allow.get(n); ok {
-			d = Decision{Reason: "exception de la liste « " + s.listName(i) + " »", Matched: n}
+		if s.manualDeny[n] {
+			d = Decision{Blocked: true, Reason: "liste noire", Matched: n}
 			return true
 		}
 		return false
@@ -195,8 +198,8 @@ func (s *snapshot) decide(name string) Decision {
 		return d
 	}
 	if suffixes(name, func(n string) bool {
-		if s.manualDeny[n] {
-			d = Decision{Blocked: true, Reason: "liste noire", Matched: n}
+		if i, ok := s.allow.get(n); ok {
+			d = Decision{Reason: "exception de la liste « " + s.listName(i) + " »", Matched: n}
 			return true
 		}
 		return false

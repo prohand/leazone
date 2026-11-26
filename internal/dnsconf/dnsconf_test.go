@@ -165,3 +165,26 @@ func TestForwarderValidationAndOrder(t *testing.T) {
 		t.Fatalf("order: %v %v %v", list[0].ID, list[1].ID, list[2].Domain)
 	}
 }
+
+// A lease that ends must not remove the records the same client registered
+// since for a newer address.
+func TestDeleteDHCPOwnerAtKeepsNewerLease(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	z, err := s.EnsureZone(ctx, "lan.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "scope|01:aa"
+	if err := s.PutDHCPRecord(ctx, z.ID, "pc", "A", 300, RecordData{IP: "10.0.0.200"}, owner); err != nil {
+		t.Fatal(err)
+	}
+	// The old lease (.100) ends: the records of .200 stay.
+	if n, err := s.DeleteDHCPOwnerAt(ctx, owner, netip.MustParseAddr("10.0.0.100")); err != nil || n != 0 {
+		t.Fatalf("old lease removed %d records (%v), want 0", n, err)
+	}
+	// The current lease ends: its records go.
+	if n, err := s.DeleteDHCPOwnerAt(ctx, owner, netip.MustParseAddr("10.0.0.200")); err != nil || n != 1 {
+		t.Fatalf("current lease removed %d records (%v), want 1", n, err)
+	}
+}

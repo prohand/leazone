@@ -20,6 +20,10 @@ type Event struct {
 	Detail    string
 }
 
+// ignoredEvery is the minimum interval between two "ignored" events of a
+// client (entries older than that are purged by Sweep).
+const ignoredEvery = time.Minute
+
 // Version changes each time a lease changes (live views).
 func (e *Engine) Version() uint64 { return e.version.Load() }
 
@@ -79,7 +83,7 @@ func (e *Engine) emit(p Packet, r *Reply) {
 		ev.Detail = "le client a détecté un conflit d'adresse"
 	case s == nil && (mt == dhcpv4.MessageTypeDiscover || mt == dhcpv4.MessageTypeRequest):
 		// Explain why a client gets nothing, at most once a minute per MAC.
-		if last, ok := e.ignored.Load(ev.MAC); ok && ev.Time.Sub(last.(time.Time)) < time.Minute {
+		if last, ok := e.ignored.Load(ev.MAC); ok && ev.Time.Sub(last.(time.Time)) < ignoredEvery {
 			return
 		}
 		e.ignored.Store(ev.MAC, ev.Time)

@@ -109,6 +109,38 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+func TestManualRulesBeforeListExceptions(t *testing.T) {
+	// A list exception (@@||example.com^) must not cancel the manual
+	// blacklist; the manual whitelist still wins over everything.
+	e := NewEngine()
+	e.Load(Config{
+		Enabled:  true,
+		Settings: DefaultSettings(),
+		Lists: []NamedList{
+			{Name: "Pubs", Parsed: Parsed{Deny: []string{"tracker.example.com"}, Allow: []string{"example.com"}}},
+		},
+		Rules: []*Rule{
+			{Domain: "ads.example.com", Kind: "deny"},
+			{Domain: "ok.ads.example.com", Kind: "allow"},
+		},
+	})
+	for _, c := range []struct {
+		name    string
+		blocked bool
+		reason  string
+	}{
+		{"ads.example.com", true, "liste noire"},
+		{"x.ads.example.com", true, "liste noire"},
+		{"ok.ads.example.com", false, "liste blanche"},
+		{"tracker.example.com", false, "exception de la liste « Pubs »"}, // AdBlock: exceptions beat list filters
+		{"www.example.com", false, "exception de la liste « Pubs »"},
+	} {
+		if d, _ := e.Explain(c.name, netip.Addr{}); d.Blocked != c.blocked || d.Reason != c.reason {
+			t.Errorf("%s: %+v", c.name, d)
+		}
+	}
+}
+
 func TestPauseAndDisabled(t *testing.T) {
 	e := testEngine()
 	now := time.Now()

@@ -522,10 +522,15 @@ func (s *Store) ApplySnapshot(ctx context.Context, snap *proto.Snapshot) error {
 	})
 }
 
-// SaveConflicts moves local journal entries of epoch that the primary does
-// not have (seq >= fromSeq) into the conflicts table.
-func (s *Store) SaveConflicts(ctx context.Context, epoch, fromSeq uint64) (int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT seq, epoch, tbl, pk, op, COALESCE(row, '') FROM changelog WHERE epoch = ? AND seq >= ? ORDER BY seq`, epoch, fromSeq)
+// SaveConflicts copies the local journal entries that are not part of the
+// primary's history (described by its epochs and its last seq) into the
+// conflicts table. Every entry is checked, whatever its epoch: a former
+// primary may hold divergent entries of several epochs. Saving is
+// idempotent (an entry already saved, same epoch and seq, is skipped), so a
+// snapshot attempt that fails afterwards can be retried. It returns the
+// number of new conflicts.
+func (s *Store) SaveConflicts(ctx context.Context, primaryEpochs []proto.EpochStart, primarySeq uint64) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT seq, epoch, tbl, pk, op, COALESCE(row, '') FROM changelog ORDER BY seq`)
 	if err != nil {
 		return 0, err
 	}
@@ -536,20 +541,49 @@ func (s *Store) SaveConflicts(ctx context.Context, epoch, fromSeq uint64) (int, 
 			rows.Close()
 			return 0, err
 		}
-		list = append(list, c)
+		if c.Table != "epochs" && !InHistory(primaryEpochs, primarySeq, c.Seq, c.Epoch) {
+			list = append(list, c)
+		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
 	now := time.Now().UnixMilli()
+	saved := 0
 	for _, c := range list {
-		if c.Table == "epochs" {
-			continue
+		res, err := s.db.ExecContext(ctx, `INSERT INTO conflicts(id, epoch, seq, tbl, pk, op, row, detected_at)
+			SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM conflicts WHERE epoch = ? AND seq = ?)`,
+			ids.New(), c.Epoch, c.Seq, c.Table, c.PK, c.Op, nullIfEmpty(c.Row), now, c.Epoch, c.Seq)
+		if err != nil {
+			return saved, err
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO conflicts(id, epoch, seq, tbl, pk, op, row, detected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			ids.New(), c.Epoch, c.Seq, c.Table, c.PK, c.Op, nullIfEmpty(c.Row), now); err != nil {
-			return 0, err
+		if n, _ := res.RowsAffected(); n > 0 {
+			saved++
 		}
 	}
-	return len(list), nil
+	return saved, nil
+}
+
+// InHistory reports whether the journal entry (seq, epoch) belongs to the
+// history described by epochs (each epoch starts at StartSeq) ending at
+// last: the epoch in force at seq must be the entry's. Entries before the
+// first epoch are the single-node history (epoch 0).
+func InHistory(epochs []proto.EpochStart, last, seq, epoch uint64) bool {
+	if seq > last {
+		return false
+	}
+	found := false
+	var at, start uint64
+	for _, e := range epochs {
+		if e.StartSeq <= seq && (!found || e.StartSeq > start || (e.StartSeq == start && e.Epoch > at)) {
+			at, start, found = e.Epoch, e.StartSeq, true
+		}
+	}
+	if !found {
+		return epoch == 0
+	}
+	return at == epoch
 }
 
 // Conflict is a change lost by a former primary.
@@ -724,6 +758,14 @@ func (s *Store) AckOutbox(ctx context.Context, upTo int64) error {
 // ClearOutbox drops pending rows (the peer will get a full state exchange).
 func (s *Store) ClearOutbox(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM state_outbox`)
+	return err
+}
+
+// TrimOutbox keeps at most keep pending state rows (the newest): while the
+// peer is down the outbox grows; the full exchange at its return covers
+// the rows dropped.
+func (s *Store) TrimOutbox(ctx context.Context, keep int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM state_outbox WHERE id <= (SELECT MAX(id) FROM state_outbox) - ?`, keep)
 	return err
 }
 

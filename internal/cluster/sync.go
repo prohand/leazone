@@ -28,6 +28,16 @@ func (n *Node) post(ctx context.Context, url string, in, out any) error {
 }
 
 func (n *Node) do(ctx context.Context, method, url string, in, out any) error {
+	return n.doWith(ctx, n.client, method, url, in, out)
+}
+
+// doLong is do without the client's overall 10 s timeout, for the snapshot
+// and the full exchange: ctx bounds them (60 s).
+func (n *Node) doLong(ctx context.Context, method, url string, in, out any) error {
+	return n.doWith(ctx, &http.Client{Transport: n.client.Transport}, method, url, in, out)
+}
+
+func (n *Node) doWith(ctx context.Context, c *http.Client, method, url string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -41,7 +51,7 @@ func (n *Node) do(ctx context.Context, method, url string, in, out any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := n.client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		return err
 	}
@@ -163,13 +173,18 @@ func (n *Node) hChanges(r *http.Request) (any, int) {
 		return map[string]string{"error": "not primary"}, http.StatusConflict
 	}
 	p := n.peerByID(from)
-	if p != nil {
-		p.acked, p.ackedAt = after, time.Now()
-	}
 	frozen := p != nil && !p.compat.config
 	n.mu.Unlock()
 	epoch, seq := n.position(ctx)
 	resp := proto.ChangesResponse{Epoch: epoch, Seq: seq, Frozen: frozen, DEK: dekFingerprint(n.d.Box.Key())}
+	// The follower's position counts as acknowledged (failback, AfterWrite)
+	// only when its history is ours up to that point: a divergent follower
+	// with a high seq has not got our changes.
+	if p != nil && after <= seq && n.d.Repl.Has(ctx, after, fepoch) {
+		n.mu.Lock()
+		p.acked, p.ackedAt = after, time.Now()
+		n.mu.Unlock()
+	}
 	if frozen {
 		return resp, http.StatusOK // mixed versions: no config sync until aligned
 	}
@@ -265,7 +280,7 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 		if !n.stillFollowing(p.addr) {
 			return nil
 		}
-		return n.snapshotLocked(ctx, p, epoch, 0, "resynchronisation demandée")
+		return n.snapshotLocked(ctx, p, false, "resynchronisation demandée")
 	}
 	var resp proto.ChangesResponse
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -294,11 +309,8 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 		resp.Snapshot, resp.Reason, resp.Changes = true, "clé de données changée (restauration)", nil
 	}
 	if resp.Snapshot {
-		var from uint64
-		if len(resp.Changes) == 1 {
-			from = resp.Changes[0].Seq
-		}
-		return n.snapshotLocked(ctx, p, epoch, from, resp.Reason)
+		// One marker change: our history diverged from the primary's.
+		return n.snapshotLocked(ctx, p, len(resp.Changes) == 1, resp.Reason)
 	}
 	if len(resp.Changes) == 0 {
 		n.markApplied()
@@ -307,7 +319,7 @@ func (n *Node) pull(ctx context.Context, p pullTarget, force bool) error {
 	if err := n.d.Repl.Apply(ctx, resp.Changes); err != nil {
 		// Something does not fit (manual edit, bug): start over cleanly.
 		n.log().Error("applying changes failed, taking a snapshot", "err", err)
-		return n.snapshotLocked(ctx, p, epoch, 0, "erreur d'application")
+		return n.snapshotLocked(ctx, p, false, "erreur d'application")
 	}
 	n.markApplied()
 	n.d.ConfigApplied(ctx)
@@ -331,19 +343,13 @@ func (n *Node) markApplied() {
 }
 
 // snapshotLocked replaces the config with the primary's (n.syncMu held).
-func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, myEpoch, divergeFrom uint64, reason string) error {
-	if divergeFrom > 0 && myEpoch > 0 {
-		if k, err := n.d.Repl.SaveConflicts(ctx, myEpoch, divergeFrom); err == nil && k > 0 {
-			n.log().Warn("changes made here were not replicated before the failover: kept as conflicts", "count", k)
-			if n.d.Audit != nil {
-				n.d.Audit(ctx, "cluster.conflicts", n.d.Config.NodeName, map[string]any{"count": k})
-			}
-		}
-	}
+// When our history diverged, the local changes the primary does not have
+// are kept as conflicts first.
+func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, diverged bool, reason string) error {
 	var snap proto.Snapshot
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if err := n.do(cctx, http.MethodGet, p.addr+"/cluster/v1/snapshot", nil, &snap); err != nil {
+	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/snapshot", nil, &snap); err != nil {
 		return err
 	}
 	kek, err := pki.KEK(n.d.Config.ClusterKey)
@@ -358,6 +364,20 @@ func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, myEpoch, diverg
 	if !bytes.Equal(dek, n.d.Box.Key()) {
 		if err := n.d.SetDEK(ctx, dek); err != nil {
 			return err
+		}
+	}
+	if diverged {
+		// After the download (a failed one is retried) and before the
+		// journal is replaced; SaveConflicts is idempotent.
+		k, err := n.d.Repl.SaveConflicts(ctx, snap.Epochs, snap.Seq)
+		if err != nil {
+			return fmt.Errorf("conflits : %w", err)
+		}
+		if k > 0 {
+			n.log().Warn("changes made here were not replicated before the failover: kept as conflicts", "count", k)
+			if n.d.Audit != nil {
+				n.d.Audit(ctx, "cluster.conflicts", n.d.Config.NodeName, map[string]any{"count": k})
+			}
 		}
 	}
 	if err := n.d.Repl.ApplySnapshot(ctx, &snap); err != nil {
@@ -402,8 +422,8 @@ func toUpdate(l dhcpsrv.Lease) proto.LeaseUpdate {
 
 func fromUpdate(u proto.LeaseUpdate) (dhcpsrv.Lease, bool) {
 	ip, err := netip.ParseAddr(u.IP)
-	if err != nil {
-		return dhcpsrv.Lease{}, false
+	if err != nil || !ip.Is4() {
+		return dhcpsrv.Lease{}, false // DHCPv4 leases only
 	}
 	return dhcpsrv.Lease{ScopeID: u.ScopeID, IP: ip, MAC: u.MAC, ClientID: u.ClientID, Hostname: u.Hostname, State: u.State,
 		Starts: u.Starts, Ends: u.Ends, CircuitID: u.CircuitID, RemoteID: u.RemoteID, GIAddr: u.GIAddr, Owner: u.Owner, HLC: u.HLC}, true
@@ -457,13 +477,15 @@ func (n *Node) syncLeasesNow(ctx context.Context) {
 func (n *Node) shipLeases(ctx context.Context) {
 	n.stateMu.Lock()
 	defer n.stateMu.Unlock()
+	peers := n.alivePeers()
+	if len(peers) == 0 {
+		// Peer down: keep the outbox (capped by the engine); the full
+		// exchange at its return also covers what was dropped.
+		return
+	}
 	list := n.d.DHCP.TakeOutbox()
 	if len(list) == 0 {
 		return
-	}
-	peers := n.alivePeers()
-	if len(peers) == 0 {
-		return // peer down: the full exchange at its return covers it
 	}
 	ups := make([]proto.LeaseUpdate, 0, len(list))
 	for _, l := range list {
@@ -511,27 +533,29 @@ func (n *Node) shipLoop(ctx context.Context) {
 }
 
 // fullExchange pulls all leases and state of a peer that just came back.
-func (n *Node) fullExchange(ctx context.Context, p *peer) {
+// It fails unless both were received and applied.
+func (n *Node) fullExchange(ctx context.Context, p *peer) error {
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var ups []proto.LeaseUpdate
-	if err := n.do(cctx, http.MethodGet, p.addr+"/cluster/v1/leases", nil, &ups); err == nil {
-		list := make([]dhcpsrv.Lease, 0, len(ups))
-		for _, u := range ups {
-			if l, ok := fromUpdate(u); ok {
-				list = append(list, l)
-			}
-		}
-		n.d.DHCP.ApplyRemote(cctx, list)
-	} else {
-		n.log().Warn("lease exchange", "err", err)
+	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/leases", nil, &ups); err != nil {
+		return fmt.Errorf("baux : %w", err)
 	}
+	list := make([]dhcpsrv.Lease, 0, len(ups))
+	for _, u := range ups {
+		if l, ok := fromUpdate(u); ok {
+			list = append(list, l)
+		}
+	}
+	n.d.DHCP.ApplyRemote(cctx, list)
 	var rows []proto.StateRow
-	if err := n.do(cctx, http.MethodGet, p.addr+"/cluster/v1/state", nil, &rows); err == nil {
-		if err := n.d.Repl.ApplyState(cctx, rows); err != nil {
-			n.log().Warn("state exchange", "err", err)
-		}
+	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/state", nil, &rows); err != nil {
+		return fmt.Errorf("état : %w", err)
 	}
+	if err := n.d.Repl.ApplyState(cctx, rows); err != nil {
+		return fmt.Errorf("état : %w", err)
+	}
+	return nil
 }
 
 // ---- planned switchover ----
@@ -545,7 +569,14 @@ func (n *Node) hHandoff(r *http.Request) (any, int) {
 	if seq != h.Seq {
 		return map[string]string{"error": "pas à jour"}, http.StatusConflict
 	}
-	n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
+	n.promoteMu.Lock()
+	defer n.promoteMu.Unlock()
+	n.mu.Lock()
+	already := n.role == proto.RolePrimary && n.epoch >= h.Epoch
+	n.mu.Unlock()
+	if !already { // else the election just made this node primary
+		n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
+	}
 	return map[string]bool{"ok": true}, http.StatusOK
 }
 

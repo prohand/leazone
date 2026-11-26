@@ -2,6 +2,7 @@ package dnssrv
 
 import (
 	"container/list"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,10 +47,17 @@ func (c *cache) configure(max int, minTTL, maxTTL, negMax uint32) {
 	}
 }
 
-func cacheKey(q dns.Question, do bool) string {
-	k := strings.ToLower(q.Name) + "|" + dns.TypeToString[q.Qtype] + "|" + dns.ClassToString[q.Qclass]
+// cacheKey identifies an upstream answer. The CD bit is part of it: an
+// answer fetched with CD=1 was not validated upstream and must not be served
+// to clients that rely on the upstream validation.
+func cacheKey(q dns.Question, do, cd bool) string {
+	// Numeric type and class: the mnemonic is "" for unknown types.
+	k := strings.ToLower(q.Name) + "|" + strconv.Itoa(int(q.Qtype)) + "|" + strconv.Itoa(int(q.Qclass))
 	if do {
 		k += "|do"
+	}
+	if cd {
+		k += "|cd"
 	}
 	return k
 }
@@ -99,7 +107,7 @@ func (c *cache) ttlOf(m *dns.Msg) (uint32, bool) {
 	return neg, neg > 0
 }
 
-func (c *cache) set(q dns.Question, do bool, m *dns.Msg) {
+func (c *cache) set(q dns.Question, do, cd bool, m *dns.Msg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.max <= 0 {
@@ -110,7 +118,7 @@ func (c *cache) set(q dns.Question, do bool, m *dns.Msg) {
 		return
 	}
 	now := c.now()
-	key := cacheKey(q, do)
+	key := cacheKey(q, do, cd)
 	e := &cacheEntry{key: key, qname: strings.ToLower(q.Name), msg: m.Copy(), stored: now, expires: now.Add(time.Duration(ttl) * time.Second)}
 	if el, ok := c.items[key]; ok {
 		el.Value = e
@@ -124,10 +132,10 @@ func (c *cache) set(q dns.Question, do bool, m *dns.Msg) {
 }
 
 // get returns a copy of the cached answer with decremented TTLs.
-func (c *cache) get(q dns.Question, do bool) *dns.Msg {
+func (c *cache) get(q dns.Question, do, cd bool) *dns.Msg {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	el, ok := c.items[cacheKey(q, do)]
+	el, ok := c.items[cacheKey(q, do, cd)]
 	if !ok {
 		c.misses.Add(1)
 		return nil

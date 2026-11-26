@@ -58,6 +58,29 @@ func (b *Box) Replace(key []byte) error {
 	return nil
 }
 
+// BeginReplace blocks Seal, Open and the derived keys until the returned
+// function is called with the new key (nil keeps the current one). Use it
+// to swap the key right when the data encrypted with the new key is
+// committed, so no value is sealed with the old key in between.
+func (b *Box) BeginReplace() func(key []byte) error {
+	b.mu.Lock()
+	var once sync.Once
+	return func(key []byte) error {
+		var err error
+		once.Do(func() {
+			defer b.mu.Unlock()
+			if key == nil {
+				return
+			}
+			var nb *Box
+			if nb, err = NewBox(key); err == nil {
+				b.aead, b.key = nb.aead, nb.key
+			}
+		})
+		return err
+	}
+}
+
 // Key returns a copy of the key (to wrap it for replication).
 func (b *Box) Key() []byte {
 	b.mu.RLock()

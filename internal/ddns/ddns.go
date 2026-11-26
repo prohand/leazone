@@ -108,9 +108,10 @@ func (u *Updater) reverse(ctx context.Context, ip netip.Addr) (*dnsconf.Zone, st
 	return nil, "", false
 }
 
-// Ended removes the records of a lease that ended.
+// Ended removes the records of a lease that ended. Records the same client
+// registered since for another address (a newer lease) are kept.
 func (u *Updater) Ended(ctx context.Context, sc *dhcpconf.Scope, l dhcpsrv.Lease) {
-	n, err := u.DNS.DeleteDHCPOwner(ctx, Owner(sc.ID, l))
+	n, err := u.DNS.DeleteDHCPOwnerAt(ctx, Owner(sc.ID, l), l.IP)
 	if err != nil {
 		u.Log.Warn("DDNS removal", "err", err)
 		return

@@ -2,7 +2,11 @@ package dnssrv
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -430,7 +434,11 @@ func (v *validator) nsecProof(name string, qtype uint16, nx bool, nsecs []*dns.N
 			if hasType(n.TypeBitMap, qtype) || hasType(n.TypeBitMap, dns.TypeCNAME) {
 				return false
 			}
-			res.cut = qtype == dns.TypeDS && hasType(n.TypeBitMap, dns.TypeNS) && !hasType(n.TypeBitMap, dns.TypeSOA)
+			cut := hasType(n.TypeBitMap, dns.TypeNS) && !hasType(n.TypeBitMap, dns.TypeSOA)
+			if cut && qtype != dns.TypeDS {
+				return false // a parent-side NSEC says nothing of the child (RFC 6840 §4.1)
+			}
+			res.cut = cut
 			return true
 		}
 		if nsecCovers(n, name) {
@@ -490,7 +498,11 @@ func (v *validator) nsec3Proof(name string, qtype uint16, nx bool, ns []*dns.NSE
 			if hasType(m.TypeBitMap, qtype) || hasType(m.TypeBitMap, dns.TypeCNAME) {
 				return false
 			}
-			res.cut = qtype == dns.TypeDS && hasType(m.TypeBitMap, dns.TypeNS) && !hasType(m.TypeBitMap, dns.TypeSOA)
+			cut := hasType(m.TypeBitMap, dns.TypeNS) && !hasType(m.TypeBitMap, dns.TypeSOA)
+			if cut && qtype != dns.TypeDS {
+				return false // a parent-side NSEC3 says nothing of the child (RFC 6840 §4.1)
+			}
+			res.cut = cut
 			return true
 		}
 	}
@@ -571,14 +583,8 @@ func (v *validator) check(ctx context.Context, qname string, qtype uint16, m *dn
 			return vBogus, "signature invalide pour " + s.owner + " " + dns.TypeToString[s.t]
 		}
 		// Wildcard expansion: the exact name must be proven absent.
-		if int(s.sigs[0].Labels) < dns.CountLabel(s.owner) {
-			ok := false
-			for _, a := range group(m.Ns) {
-				if (a.t == dns.TypeNSEC || a.t == dns.TypeNSEC3) && v.verifySet(a, signer, keys) {
-					ok = true
-				}
-			}
-			if !ok {
+		if labels := int(s.sigs[0].Labels); labels < dns.CountLabel(s.owner) {
+			if !v.wildcardProof(s.owner, labels, signer, keys, m.Ns) {
 				return vBogus, "réponse par joker sans preuve : " + s.owner
 			}
 		}
@@ -613,10 +619,58 @@ func (v *validator) check(ctx context.Context, qname string, qtype uint16, m *dn
 	return vSecure, ""
 }
 
-// checkCached is check with a short memory per question (the forwarded
-// answer comes from the cache, so it is the same until it expires).
+// memoKey identifies a question and the answer given for it. The verdict
+// is bound to the content: another answer to the same question (the cache
+// entry expired or was evicted, a forged reply) is validated again.
+func memoKey(q dns.Question, m *dns.Msg) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%d\n", m.Rcode)
+	for _, sec := range [][]dns.RR{m.Answer, m.Ns} {
+		for _, rr := range sec {
+			c := dns.Copy(rr)
+			c.Header().Ttl = 0 // TTLs decrease while the answer is cached
+			io.WriteString(h, c.String()+"\n")
+		}
+		h.Write([]byte{0})
+	}
+	return strings.ToLower(q.Name) + "/" + strconv.Itoa(int(q.Qtype)) + "/" + hex.EncodeToString(h.Sum(nil))
+}
+
+// wildcardProof tells whether the authority section proves that owner, an
+// answer synthesized from a wildcard with the given label count (from the
+// RRSIG), does not exist itself: a signed NSEC covering owner, or a signed
+// NSEC3 covering the next closer name (RFC 4035 §5.3.4, RFC 5155 §8.8).
+func (v *validator) wildcardProof(owner string, labels int, signer string, keys []*dns.DNSKEY, ns []dns.RR) bool {
+	idx := dns.Split(owner)
+	if labels < 0 || labels >= len(idx) {
+		return false
+	}
+	// The closest encloser has `labels` labels; the next closer one more.
+	nextCloser := owner[idx[len(idx)-labels-1]:]
+	for _, a := range group(ns) {
+		if (a.t != dns.TypeNSEC && a.t != dns.TypeNSEC3) || !v.verifySet(a, signer, keys) {
+			continue
+		}
+		for _, rr := range a.rrs {
+			switch r := rr.(type) {
+			case *dns.NSEC:
+				if nsecCovers(r, owner) {
+					return true
+				}
+			case *dns.NSEC3:
+				if r.Iterations <= maxNSEC3Iterations && r.Cover(nextCloser) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// checkCached is check with a short memory per question and answer (the
+// forwarded answer usually comes from the cache, so it is checked once).
 func (v *validator) checkCached(ctx context.Context, q dns.Question, m *dns.Msg) (vstatus, string) {
-	key := strings.ToLower(q.Name) + "/" + dns.TypeToString[q.Qtype]
+	key := memoKey(q, m)
 	now := v.now()
 	v.mu.Lock()
 	e, ok := v.memo[key]

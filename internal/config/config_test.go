@@ -44,3 +44,26 @@ func TestPublicURLMustBeHTTPS(t *testing.T) {
 		t.Fatal("http public URL accepted")
 	}
 }
+
+func TestClusterURLsAndKey(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "key"), []byte("\n"), 0o600)
+	e := map[string]string{"LEAZONE_CONFIG_DIR": dir, "LEAZONE_CLUSTER_ADDR": "https://10.0.0.1:7443/",
+		"LEAZONE_CLUSTER_PEERS": "https://10.0.0.2:7443/", "LEAZONE_WITNESS": "https://10.0.0.3:7443//",
+		"LEAZONE_CLUSTER_KEY_FILE": filepath.Join(dir, "key")}
+	// Peers configured but an empty key file: refused instead of starting alone.
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "cluster key") {
+		t.Fatalf("empty cluster key accepted: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "key"), []byte("k\n"), 0o600)
+	c, err := Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ClusterAddr != "https://10.0.0.1:7443" || c.Peers[0] != "https://10.0.0.2:7443" || c.Witness != "https://10.0.0.3:7443" {
+		t.Fatalf("not normalized: %q %q %q", c.ClusterAddr, c.Peers, c.Witness)
+	}
+	if c.ControlSocket != filepath.Join("/data", "run", "leazone.sock") {
+		t.Fatalf("control socket %q", c.ControlSocket)
+	}
+}

@@ -425,12 +425,14 @@ func (l *Log) DNS(ctx context.Context, f DNSFilter) ([]DNSEntry, *int64, error) 
 	defer rows.Close()
 	out := []DNSEntry{}
 	var next *int64
+	read, lastID := 0, int64(0)
 	for rows.Next() {
 		var e DNSEntry
 		var ts, lat int64
 		if err := rows.Scan(&e.ID, &ts, &e.Client, &e.Name, &e.Type, &e.Rcode, &e.Source, &lat, &e.Answer); err != nil {
 			return nil, nil, err
 		}
+		read, lastID = read+1, e.ID
 		if f.Client.IsValid() && !f.Client.IsSingleIP() {
 			if a, err := netip.ParseAddr(e.Client); err != nil || !f.Client.Contains(a) {
 				continue
@@ -444,7 +446,16 @@ func (l *Log) DNS(ctx context.Context, f DNSFilter) ([]DNSEntry, *int64, error) 
 		e.Time, e.LatencyMs = time.UnixMilli(ts).UTC(), float64(lat)/1000
 		out = append(out, e)
 	}
-	return out, next, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	// The scan stopped at its limit before the page was full (network
+	// filter): older entries may still match, the next page resumes after
+	// the last row read. The page may then be short, even empty.
+	if next == nil && read == scanLimit {
+		next = &lastID
+	}
+	return out, next, nil
 }
 
 // DHCPFilter selects DHCP entries.

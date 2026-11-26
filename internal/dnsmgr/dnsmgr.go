@@ -34,9 +34,12 @@ type Manager struct {
 
 	// DNSSEC (optional): key store, modules state and whether this node
 	// writes the configuration (only that node runs key maintenance).
-	DNSSEC   *dnssec.Store
-	DB       *store.DB
-	Writable func() bool
+	DNSSEC *dnssec.Store
+	DB     *store.DB
+	// BeginWrite, when set, tells whether this node may change the config
+	// (cluster primary) and holds that right until done is called, so a
+	// role change waits for the key rollover to be recorded.
+	BeginWrite func() (done func(), err error)
 
 	mu sync.Mutex // serializes reloads
 
@@ -178,8 +181,15 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 func (m *Manager) maintain(ctx context.Context) (bool, error) {
-	if m.DNSSEC == nil || m.DB == nil || (m.Writable != nil && !m.Writable()) {
+	if m.DNSSEC == nil || m.DB == nil {
 		return false, nil
+	}
+	if m.BeginWrite != nil {
+		done, err := m.BeginWrite()
+		if err != nil {
+			return false, nil
+		}
+		defer done()
 	}
 	mods, err := modules.Get(ctx, m.DB)
 	if err != nil || !mods.DNSSEC {

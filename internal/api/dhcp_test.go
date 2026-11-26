@@ -143,6 +143,44 @@ func TestDHCPScopeLeaseDDNSAndVLANView(t *testing.T) {
 	}
 	// Releasing removes the DNS name.
 	waitLookup(t, c, "tablette.invites.lan", "A", "")
+
+	// An IPv6 address is not a lease: 404, and the DHCP engine keeps working.
+	if s := op.do("DELETE", "/api/v1/dhcp/leases/"+sc.ID+"/::1", nil, nil); s != 404 {
+		t.Fatalf("release of an IPv6 address: %d", s)
+	}
+	// A client moving to its new reservation: releasing its old lease keeps
+	// the DNS records of the new one.
+	hw := net.HardwareAddr{2, 0, 0, 0, 0, 2}
+	old := lease(t, h, hw, "Phone")
+	if s := op.do("POST", "/api/v1/dhcp/reservations", map[string]any{"scopeId": sc.ID, "mac": hw.String(), "ip": "10.20.0.50"}, nil); s != 201 {
+		t.Fatalf("reservation: %d", s)
+	}
+	if nw := lease(t, h, hw, "Phone"); nw.String() != "10.20.0.50" {
+		t.Fatalf("moved lease: %v", nw)
+	}
+	if s := op.do("DELETE", "/api/v1/dhcp/leases/"+sc.ID+"/"+old.String(), nil, nil); s != 204 {
+		t.Fatalf("release of the old lease: %d", s)
+	}
+	var zl struct{ Items []struct{ ID, Name string } }
+	c.do("GET", "/api/v1/dns/zones", nil, &zl)
+	var recs struct {
+		Items []struct {
+			Name, Type, Source string
+			Data               struct{ IP string }
+		}
+	}
+	for _, z := range zl.Items {
+		if z.Name == "invites.lan" {
+			c.do("GET", "/api/v1/dns/zones/"+z.ID+"/records", nil, &recs)
+		}
+	}
+	found := false
+	for _, r := range recs.Items {
+		found = found || (r.Name == "phone" && r.Type == "A" && r.Data.IP == "10.20.0.50")
+	}
+	if !found {
+		t.Fatalf("DNS record of the new lease removed: %+v", recs)
+	}
 }
 
 // fakeTechnitium serves the subset of the Technitium API used by the import.

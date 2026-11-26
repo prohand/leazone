@@ -131,7 +131,7 @@ func runWitness() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := control.Serve(ctx, cfg.ControlSocket, func(context.Context, control.Request) control.Response {
+	if err := app.ServeControl(ctx, cfg.ControlSocket, func(context.Context, control.Request) control.Response {
 		return control.Response{OK: true, Message: "ok"}
 	}, log); err != nil {
 		log.Warn("control socket", "err", err)

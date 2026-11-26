@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/prohand/leazone/internal/cluster/proto"
 	"github.com/prohand/leazone/internal/store"
 )
 
@@ -149,9 +150,13 @@ func TestSnapshotAndDivergence(t *testing.T) {
 		t.Fatal("divergent entry reported as known")
 	}
 	ep, _ := b.Epochs(ctx)
-	start := ep[0].StartSeq // first seq of epoch 2 on B
-	if n, err := a.SaveConflicts(ctx, ea, start); err != nil || n != 1 {
+	_, sbLast, _ := b.Position(ctx)
+	if n, err := a.SaveConflicts(ctx, ep, sbLast); err != nil || n != 1 {
 		t.Fatalf("conflicts: %d %v", n, err)
+	}
+	// A retry (snapshot download failed) does not duplicate them.
+	if n, err := a.SaveConflicts(ctx, ep, sbLast); err != nil || n != 0 {
+		t.Fatalf("conflicts saved twice: %d %v", n, err)
 	}
 	snap2, _ := b.Snapshot(ctx)
 	a.SetRecording(ctx, false, 0)
@@ -195,5 +200,49 @@ func TestStateMerge(t *testing.T) {
 	// Applied rows are not echoed back.
 	if _, rows, _ := b.Outbox(ctx, 100); len(rows) != 1 { // only B's own totp insert
 		t.Fatalf("echo: %+v", rows)
+	}
+}
+
+// Downgrading the schema must not leave replication triggers that name
+// dropped tables or columns (every later write would fail).
+func TestMigrateDownWithTriggers(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, _ := node(t) // migrated, triggers installed
+	seed(t, db)
+	if err := db.MigrateDown(ctx, 3, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, db, `INSERT INTO users(id, username, role, password_hash, webauthn_handle, disabled, created_at, updated_at, password_changed_at, last_login_at)
+		VALUES ('u2', 'bob', 'admin', 'h', X'02', 0, 1, 1, 1, 5)`)
+	exec(t, db, `UPDATE records SET name = 'nas2' WHERE id = 'r1'`)
+	if err := db.MigrateDown(ctx, 0, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInHistory(t *testing.T) {
+	// Primary: single-node history (epoch 0) up to 10, epoch 3 from 11,
+	// epoch 5 from 101, last seq 120.
+	eps := []proto.EpochStart{{Epoch: 5, StartSeq: 101}, {Epoch: 3, StartSeq: 11}}
+	cases := []struct {
+		seq, epoch uint64
+		in         bool
+	}{
+		{5, 0, true}, {5, 2, false}, {11, 3, true}, {100, 3, true},
+		{96, 4, false},  // written alone in epoch 4, before the primary's next epoch
+		{101, 3, false}, // past the point where the primary moved to epoch 5
+		{120, 5, true}, {121, 5, false},
+	}
+	for _, c := range cases {
+		if got := InHistory(eps, 120, c.seq, c.epoch); got != c.in {
+			t.Errorf("seq %d epoch %d: %v, want %v", c.seq, c.epoch, got, c.in)
+		}
 	}
 }
