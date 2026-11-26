@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // haImages builds two images that only differ by version (update scenario).
@@ -73,6 +75,29 @@ const (
 )
 
 var nodeIP = map[string]string{"lzha1": "10.88.0.11", "lzha2": "10.88.0.12"}
+
+const vip = "10.88.0.50"
+
+// vipAnswers asks the virtual IP for the SOA of zone.
+func vipAnswers(zone string) bool {
+	c := &dns.Client{Timeout: time.Second}
+	q := new(dns.Msg)
+	q.SetQuestion(dns.Fqdn(zone), dns.TypeSOA)
+	r, _, err := c.Exchange(q, net.JoinHostPort(vip, "53"))
+	return err == nil && len(r.Answer) == 1
+}
+
+func waitVIP(t *testing.T, zone string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if vipAnswers(zone) {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Fatalf("the virtual IP %s does not answer DNS for %s", vip, zone)
+}
 var mgmtIP = map[string]string{"lzha1": "10.88.1.11", "lzha2": "10.88.2.12"}
 
 func (e *haEnv) cleanup() {
@@ -95,7 +120,8 @@ func (e *haEnv) startNode(name, image, preferred string) {
 	}
 	args := []string{"create", "--name", name, "--network", netLink, "--ip", nodeIP[name], "--user", "1000:1000", "--read-only",
 		"--tmpfs", "/tmp:mode=1777", "--tmpfs", "/logs:mode=1777", "--security-opt", "no-new-privileges:true",
-		"--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW",
+		"--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--cap-add", "NET_RAW", "--cap-add", "NET_ADMIN",
+		"-e", "LEAZONE_VIP=" + vip + "/24", "-e", "LEAZONE_VIP_INTERFACE=eth0",
 		"-e", "LEAZONE_NODE_NAME=" + name, "-e", "LEAZONE_PREFERRED_ROLE=" + preferred,
 		"-e", "LEAZONE_CLUSTER_ADDR=https://" + nodeIP[name] + ":7443", "-e", "LEAZONE_CLUSTER_PEERS=https://" + nodeIP[peer] + ":7443",
 		"-e", "LEAZONE_CLUSTER_LISTEN=:7443", "-e", "LEAZONE_WITNESS=" + witness,
@@ -312,11 +338,27 @@ func TestPhase4HA(t *testing.T) {
 	}
 	t.Logf("✔ 6 DHCP clients served by the two nodes, unique addresses, leases known by both: %v", keys(ips))
 
+	// DNS on the virtual IP (held by the primary).
+	if s := e.tok("lzha1", "PATCH", "/api/v1/interfaces/eth0", map[string]any{"dnsEnabled": true}, nil); s != 200 {
+		t.Fatalf("enable DNS: %d", s)
+	}
+	waitVIP(t, "ha.lan", 15*time.Second)
+	var vv struct {
+		VIP struct{ HeldHere bool } `json:"vip"`
+	}
+	e.tok("lzha1", "GET", "/api/v1/cluster", nil, &vv)
+	if !vv.VIP.HeldHere {
+		t.Fatal("the primary does not hold the virtual IP")
+	}
+	t.Log("✔ the primary holds the virtual IP; DNS answers on it")
+
 	// Primary failure.
 	run(t, "docker", "stop", "-t", "2", "lzha1")
 	start := time.Now()
 	e.waitRole("lzha2", "primary", 40*time.Second)
 	t.Logf("✔ node2 promoted %.1f s after node1 stopped", time.Since(start).Seconds())
+	waitVIP(t, "ha.lan", 15*time.Second)
+	t.Logf("✔ the virtual IP moved to node2: DNS answers again %.1f s after the failure", time.Since(start).Seconds())
 	if s := e.tok("lzha2", "POST", "/api/v1/dns/zones", map[string]any{"name": "outage.lan"}, nil); s != 201 {
 		t.Fatalf("zone during outage: %d", s)
 	}
