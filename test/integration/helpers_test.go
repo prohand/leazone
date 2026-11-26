@@ -204,3 +204,30 @@ func (a *api) loginAdmin() {
 		a.t.Fatalf("totp confirm: %d", s)
 	}
 }
+
+func jsonDecode(resp *http.Response, v any) error {
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// doToken calls the API with a bearer token (no cookie, no CSRF).
+func (a *api) doToken(method, path string, body, out any, token string) int {
+	a.t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, _ := http.NewRequest(method, a.base+path, rd)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := a.hc.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if out != nil && len(raw) > 0 {
+		_ = json.Unmarshal(raw, out)
+	}
+	return resp.StatusCode
+}
