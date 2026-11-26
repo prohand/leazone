@@ -245,6 +245,7 @@ func TestReloadKeepsUpstreamWithoutRace(t *testing.T) {
 	st.CacheSize = 0
 	f := fwd("f1", "", "udp", "127.0.0.1", port)
 	e.Load(nil, nil, []*dnsconf.Forwarder{f}, st)
+	ask(t, e, "first.example", dns.TypeA, "127.0.0.1") // health recorded before the reloads
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	wg.Add(1)
