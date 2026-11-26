@@ -56,6 +56,11 @@ export function toastError(err: unknown, title?: string) {
  */
 export function formError(err: unknown, fields: string[]): string | undefined {
   if (!err) return undefined
-  if (err instanceof ApiError && err.errors && Object.keys(err.errors).every((k) => fields.includes(k))) return undefined
+  if (err instanceof ApiError && err.errors) {
+    // Messages for fields the form does not show (e.g. "data.foo") go on the form-level line.
+    const unknown = Object.entries(err.errors).filter(([k]) => !fields.includes(k))
+    if (unknown.length === 0) return undefined
+    return unknown.map(([, v]) => v).join(" ")
+  }
   return errorMessage(err)
 }

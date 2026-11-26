@@ -14,6 +14,10 @@ const AccountPage = React.lazy(() => import("@/pages/account"))
 const UsersPage = React.lazy(() => import("@/pages/users"))
 const SettingsPage = React.lazy(() => import("@/pages/settings"))
 const LogsPage = React.lazy(() => import("@/pages/logs"))
+const InterfacesPage = React.lazy(() => import("@/pages/interfaces"))
+const ZonesPage = React.lazy(() => import("@/pages/dns/zones"))
+const ZoneDetailPage = React.lazy(() => import("@/pages/dns/zone-detail"))
+const ForwardersPage = React.lazy(() => import("@/pages/dns/forwarders"))
 const ComingSoonPage = React.lazy(() => import("@/pages/coming-soon"))
 const NotFoundPage = React.lazy(() => import("@/pages/not-found"))
 
@@ -42,10 +46,11 @@ export const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <DashboardPage /> },
-          soon("/interfaces"),
+          { path: "/interfaces", element: <InterfacesPage /> },
           soon("/vlans"),
-          soon("/dns/zones"),
-          soon("/dns/forwarders"),
+          { path: "/dns/zones", element: <ZonesPage /> },
+          { path: "/dns/zones/:id", element: <ZoneDetailPage /> },
+          { path: "/dns/forwarders", element: <ForwardersPage /> },
           soon("/blocking"),
           soon("/dnssec"),
           soon("/dhcp/scopes"),

@@ -1533,6 +1533,864 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/interfaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Network interfaces of the host (physical, VLAN, bond, bridge) with Leazone settings */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["NetInterface"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/interfaces/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Enable or disable DNS / DHCP on an interface (config.write) */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        dnsEnabled?: boolean;
+                        /** @description Stored now, used from phase 3 */
+                        dhcpEnabled?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NetInterface"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/dns/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** DNS server settings */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DnsSettings"];
+                    };
+                };
+            };
+        };
+        /** Update DNS server settings (config.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DnsSettings"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DnsSettings"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listeners, cache and forwarder health */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DnsStatus"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/cache/flush": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Empty the cache, or only the entries of one name and its sub-names (records.write) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @description Empty = whole cache */
+                        name?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            removed?: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a name like a client would (test tool) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        name: string;
+                        /** @example A */
+                        type: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LookupResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/zones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List zones */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Zone"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Create a zone (config.write). For a reverse zone, `name` may be a network like 192.168.1.0/24. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ZoneInput"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Zone"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/zones/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** One zone */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Zone"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /** Delete a zone and its records (config.write, step-up required) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /** Update default TTL / SOA (config.write) */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        ttl?: number;
+                        soa?: components["schemas"]["Soa"];
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Zone"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/dns/zones/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Zone in BIND (RFC 1035) format */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/zones/{id}/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import records from a BIND zone file (records.write). SOA lines are ignored. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        content: string;
+                        /**
+                         * @description Delete existing records first
+                         * @default false
+                         */
+                        replace?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            imported?: number;
+                            skipped?: number;
+                            errors?: string[];
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/zones/{id}/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Records of a zone */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Record"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Add a record (records.write) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RecordInput"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Record"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/zones/{id}/records/{rid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                rid: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace a record (records.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                    rid: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RecordInput"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Record"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /** Delete a record (records.write) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                    rid: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/forwarders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Global and conditional forwarders, ordered by domain then position */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Forwarder"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Add a forwarder (config.write). It is placed last in its group unless position is given. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ForwarderInput"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Forwarder"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/forwarders/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test a forwarder configuration without saving it */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ForwarderInput"];
+                };
+            };
+            responses: {
+                /** @description Test result (ok=false on failure, never an HTTP error) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForwarderTest"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/forwarders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace a forwarder (config.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ForwarderInput"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Forwarder"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        /** Delete a forwarder (config.write) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Deleted */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dns/forwarders/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test a saved forwarder */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Test result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForwarderTest"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1694,6 +2552,217 @@ export interface components {
             /** @enum {string} */
             result?: "success" | "failure";
             details?: Record<string, never>;
+        };
+        NetAddress: {
+            /** @example 192.168.20.1 */
+            address?: string;
+            /** @example 24 */
+            prefixLength?: number;
+            /** @example 192.168.20.0/24 */
+            network?: string;
+            /** @enum {string} */
+            family?: "ipv4" | "ipv6";
+        };
+        DnsListener: {
+            /** @example 192.168.20.1:53 */
+            address?: string;
+            /** @enum {string} */
+            protocol?: "udp" | "tcp";
+            interface?: string;
+            /** @enum {string} */
+            state?: "listening" | "error";
+            /** @description Human readable (French), e.g. port already used */
+            error?: string;
+        };
+        NetInterface: {
+            /** @example eth0.20 */
+            name?: string;
+            index?: number;
+            /** @enum {string} */
+            type?: "physical" | "vlan" | "bond" | "bridge" | "loopback" | "virtual" | "other";
+            /** @example eth0 */
+            parent?: string | null;
+            /** @example 20 */
+            vlanId?: number | null;
+            mac?: string;
+            mtu?: number;
+            up?: boolean;
+            /** @description false: settings exist but the interface is gone from the host */
+            present?: boolean;
+            addresses?: components["schemas"]["NetAddress"][];
+            dnsEnabled?: boolean;
+            dhcpEnabled?: boolean;
+            dnsListeners?: components["schemas"]["DnsListener"][];
+        };
+        DnsSettings: {
+            /** @description Max entries, 0 disables the cache */
+            cacheSize?: number;
+            cacheMinTtl?: number;
+            cacheMaxTtl?: number;
+            cacheNegativeMaxTtl?: number;
+            /** @description CIDR allowed to use recursion (forwarders). Local zones answer everyone. */
+            recursionNetworks?: string[];
+            /** @description Extra IPs to listen on (e.g. 127.0.0.1) */
+            extraListenAddresses?: string[];
+        };
+        DnsStatus: {
+            port?: number;
+            listeners?: components["schemas"]["DnsListener"][];
+            cache?: {
+                entries?: number;
+                hits?: number;
+                misses?: number;
+            };
+            forwarders?: {
+                id?: string;
+                healthy?: boolean;
+                lastError?: string;
+                lastLatencyMs?: number;
+            }[];
+        };
+        LookupResult: {
+            /** @example NOERROR */
+            rcode?: string;
+            /** @enum {string} */
+            source?: "local" | "cache" | "forwarder" | "refused" | "error";
+            forwarder?: string;
+            latencyMs?: number;
+            /** @description Records in presentation format */
+            answers?: string[];
+            authority?: string[];
+        };
+        Soa: {
+            /** @example ns1.maison.lan. */
+            primaryNs?: string;
+            /** @example admin@maison.lan */
+            adminEmail?: string;
+            /** @default 3600 */
+            refresh?: number;
+            /** @default 600 */
+            retry?: number;
+            /** @default 604800 */
+            expire?: number;
+            /**
+             * @description Negative caching TTL
+             * @default 300
+             */
+            minimum?: number;
+        };
+        Zone: {
+            id?: string;
+            /** @example maison.lan */
+            name?: string;
+            /** @enum {string} */
+            kind?: "primary" | "reverse";
+            /** @description Created from a DHCP scope (phase 3) */
+            auto?: boolean;
+            /** @description Default TTL of records */
+            ttl?: number;
+            soa?: components["schemas"]["Soa"];
+            serial?: number;
+            recordCount?: number;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        ZoneInput: {
+            /** @description maison.lan, 20.168.192.in-addr.arpa or 192.168.20.0/24 */
+            name: string;
+            /** @default 3600 */
+            ttl?: number;
+            soa?: components["schemas"]["Soa"];
+        };
+        /** @enum {string} */
+        RecordType: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "SRV" | "PTR" | "NS";
+        Record: {
+            id?: string;
+            /**
+             * @description Relative to the zone, @ for the apex
+             * @example www
+             */
+            name?: string;
+            /** @example www.maison.lan. */
+            fqdn?: string;
+            type?: components["schemas"]["RecordType"];
+            /** @description null = zone default */
+            ttl?: number | null;
+            data?: components["schemas"]["RecordData"];
+            /** @description Data in presentation format, e.g. '10 mail.maison.lan.' */
+            value?: string;
+            /** @enum {string} */
+            source?: "manual" | "dhcp";
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        RecordInput: {
+            /** @description @, www, or a FQDN ending with the zone name */
+            name: string;
+            type: components["schemas"]["RecordType"];
+            ttl?: number | null;
+            data: components["schemas"]["RecordData"];
+        };
+        /**
+         * @description Fields depend on the type:
+         *       A / AAAA: { ip }
+         *       CNAME / PTR: { target }
+         *       NS: { host }
+         *       MX: { preference, exchange }
+         *       TXT: { text }  (long text is split in 255-byte strings automatically)
+         *       SRV: { priority, weight, port, target }
+         *     Host names may be relative to the zone (mail) or absolute (mail.maison.lan.).
+         */
+        RecordData: {
+            ip?: string;
+            target?: string;
+            host?: string;
+            preference?: number;
+            exchange?: string;
+            text?: string;
+            priority?: number;
+            weight?: number;
+            port?: number;
+        };
+        /** @enum {string} */
+        ForwarderProtocol: "udp" | "tcp" | "dot" | "doh";
+        ForwarderInput: {
+            /** @description Empty = global forwarder; otherwise conditional for this domain and its sub-domains */
+            domain?: string;
+            protocol: components["schemas"]["ForwarderProtocol"];
+            /** @description IP address (required for udp/tcp/dot; for doh: bootstrap IP, optional if the URL host is an IP) */
+            address?: string;
+            /** @description Default 53 (udp/tcp), 853 (dot), 443 (doh) */
+            port?: number;
+            /** @description Name checked in the certificate (dot), e.g. dns.quad9.net */
+            tlsServerName?: string;
+            /** @default true */
+            tlsVerify?: boolean;
+            /** @example https://dns.quad9.net/dns-query */
+            dohUrl?: string;
+            /** @default true */
+            enabled?: boolean;
+            /** @description Order inside its group (0 = first) */
+            position?: number;
+        };
+        Forwarder: components["schemas"]["ForwarderInput"] & {
+            id?: string;
+            health?: {
+                healthy?: boolean;
+                lastError?: string;
+                lastLatencyMs?: number;
+                /** Format: date-time */
+                lastCheckAt?: string | null;
+            };
+        };
+        ForwarderTest: {
+            ok?: boolean;
+            latencyMs?: number;
+            rcode?: string;
+            answers?: string[];
+            /** @description French message, e.g. certificat invalide */
+            error?: string;
         };
     };
     responses: {

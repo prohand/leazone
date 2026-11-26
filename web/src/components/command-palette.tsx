@@ -1,6 +1,10 @@
 import * as React from "react"
 import { useNavigate } from "react-router"
-import { LogOut, Monitor, Moon, Sun, UserRound } from "lucide-react"
+import { useMutation, useQuery } from "@tanstack/react-query"
+import { Eraser, Forward, Globe, LogOut, Monitor, Moon, Plus, SearchCheck, SlidersHorizontal, Sun, UserRound } from "lucide-react"
+import { toast } from "sonner"
+import { api } from "@/api/client"
+import { zonesQuery } from "@/api/queries"
 import {
   CommandDialog,
   CommandEmpty,
@@ -11,8 +15,10 @@ import {
   CommandSeparator,
 } from "@/components/ui/command"
 import { useCurrentUser, useLogout } from "@/hooks/use-session"
+import { can } from "@/lib/permissions"
 import { visibleGroups } from "@/lib/nav"
 import { useTheme } from "@/lib/theme"
+import { useDnsLookup } from "./dns-lookup"
 
 // Predictable matching: every typed word must start a word of the item
 // (case and accent insensitive). Title matches rank above keyword matches.
@@ -59,6 +65,14 @@ function CommandPalette({ open, setOpen }: Ctx) {
   const logout = useLogout()
   const { setTheme } = useTheme()
   const groups = visibleGroups(user?.role)
+  const { openLookup } = useDnsLookup()
+  const role = user?.role
+  // Zones are listed for quick jumps; fetched only while the palette is open.
+  const zones = useQuery({ ...zonesQuery, enabled: open, staleTime: 30_000 })
+  const flush = useMutation({
+    mutationFn: () => api.post("/dns/cache/flush", { body: {} }),
+    onSuccess: (r) => toast.success(`Cache DNS vidé : ${r?.removed ?? 0} entrée(s) supprimée(s).`),
+  })
 
   const run = (fn: () => void) => {
     setOpen(false)
@@ -84,6 +98,58 @@ function CommandPalette({ open, setOpen }: Ctx) {
             ))}
           </CommandGroup>
         ))}
+        {(zones.data?.items ?? []).length > 0 && (
+          <CommandGroup heading="Zones DNS">
+            {(zones.data?.items ?? []).map((z) => (
+              <CommandItem
+                key={z.id}
+                value={`Zone ${z.name}`}
+                keywords={["zone", "dns", "enregistrements"]}
+                onSelect={() => run(() => navigate(`/dns/zones/${encodeURIComponent(z.id ?? "")}`))}
+              >
+                <Globe /> {z.name}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+        <CommandSeparator />
+        <CommandGroup heading="DNS">
+          <CommandItem
+            value="Tester une résolution DNS"
+            keywords={["lookup", "dig", "nslookup", "résoudre", "nom"]}
+            onSelect={() => run(() => openLookup())}
+          >
+            <SearchCheck /> Tester une résolution DNS
+          </CommandItem>
+          {can(role, "config.write") && (
+            <CommandItem value="Nouvelle zone DNS" keywords={["créer", "ajouter", "domaine"]} onSelect={() => run(() => navigate("/dns/zones?new=1"))}>
+              <Plus /> Nouvelle zone DNS
+            </CommandItem>
+          )}
+          {can(role, "config.write") && (
+            <CommandItem
+              value="Ajouter un redirecteur"
+              keywords={["forwarder", "DoH", "DoT", "nouveau"]}
+              onSelect={() => run(() => navigate("/dns/forwarders?new=1"))}
+            >
+              <Forward /> Ajouter un redirecteur
+            </CommandItem>
+          )}
+          {can(role, "records.write") && (
+            <CommandItem value="Vider le cache DNS" keywords={["flush", "effacer"]} onSelect={() => run(() => flush.mutate())}>
+              <Eraser /> Vider le cache DNS
+            </CommandItem>
+          )}
+          {can(role, "admin") && (
+            <CommandItem
+              value="Paramètres DNS"
+              keywords={["cache", "TTL", "récursion", "écoute"]}
+              onSelect={() => run(() => navigate("/settings?tab=dns"))}
+            >
+              <SlidersHorizontal /> Paramètres DNS
+            </CommandItem>
+          )}
+        </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Actions">
           <CommandItem value="Mon compte" keywords={["profil", "passkey", "mot de passe", "jeton"]} onSelect={() => run(() => navigate("/account"))}>

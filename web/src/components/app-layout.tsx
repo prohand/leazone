@@ -8,6 +8,7 @@ import { findNavItem } from "@/lib/nav"
 import { AppSidebar } from "./app-sidebar"
 import { SelfSignedBanner } from "./auth-shell"
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette"
+import { DnsLookupProvider } from "./dns-lookup"
 import { BlockSpinner } from "./spinner"
 import { ThemeToggle } from "./theme-toggle"
 
@@ -43,19 +44,21 @@ function TopBar() {
 
 export function AppLayout() {
   return (
-    <CommandPaletteProvider>
-      <SidebarProvider>
-        <AppSidebar />
-        <SidebarInset>
-          <SelfSignedBanner />
-          <TopBar />
-          <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8">
-            <React.Suspense fallback={<BlockSpinner />}>
-              <Outlet />
-            </React.Suspense>
-          </main>
-        </SidebarInset>
-      </SidebarProvider>
-    </CommandPaletteProvider>
+    <DnsLookupProvider>
+      <CommandPaletteProvider>
+        <SidebarProvider>
+          <AppSidebar />
+          <SidebarInset>
+            <SelfSignedBanner />
+            <TopBar />
+            <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8">
+              <React.Suspense fallback={<BlockSpinner />}>
+                <Outlet />
+              </React.Suspense>
+            </main>
+          </SidebarInset>
+        </SidebarProvider>
+      </CommandPaletteProvider>
+    </DnsLookupProvider>
   )
 }

@@ -80,7 +80,13 @@ export function visibleGroups(role: Role | undefined): NavGroup[] {
     .filter((g) => g.items.length > 0)
 }
 
+/** Nav item of a path: exact match, else the deepest parent (e.g. /dns/zones/42 -> Zones DNS). */
 export function findNavItem(path: string): NavItem | undefined {
-  for (const g of navGroups) for (const i of g.items) if (i.path === path) return i
-  return undefined
+  let best: NavItem | undefined
+  for (const g of navGroups)
+    for (const i of g.items) {
+      if (i.path === path) return i
+      if (i.path !== "/" && path.startsWith(i.path + "/") && (!best || i.path.length > best.path.length)) best = i
+    }
+  return best
 }

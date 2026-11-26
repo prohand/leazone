@@ -90,7 +90,11 @@ type PathsWith<M extends Method> = {
 
 type Op<P extends Path, M extends Method> = paths[P][M]
 
-type JsonOf<R> = R extends { content: { "application/json": infer T } } ? T : void
+type JsonOf<R> = R extends { content: { "application/json": infer T } }
+  ? T
+  : R extends { content: { "text/plain": infer T } }
+    ? T
+    : void
 
 type ResponseOf<O> = O extends { responses: infer R }
   ? 200 extends keyof R
@@ -179,7 +183,7 @@ export async function request<P extends Path, M extends Method>(
   options: Options<Op<P, M>> = {},
 ): Promise<ApiResponse<P, M>> {
   const url = buildUrl(path, options.params as object | undefined, options.query as object | undefined)
-  const headers: Record<string, string> = { Accept: "application/json" }
+  const headers: Record<string, string> = { Accept: "application/json, text/plain;q=0.9" }
   if (method !== "get" && csrfToken) headers["X-CSRF-Token"] = csrfToken
   let body: string | undefined
   if (options.body !== undefined) {
@@ -225,6 +229,9 @@ export async function request<P extends Path, M extends Method>(
 
   if (res.status === 204) return undefined as ApiResponse<P, M>
   const text = await res.text()
+  // Non-JSON bodies (e.g. a zone export in text/plain) are returned as a string.
+  const ctype = res.headers.get("Content-Type") ?? ""
+  if (ctype && !/[/+]json\b/i.test(ctype)) return text as ApiResponse<P, M>
   return (text ? JSON.parse(text) : undefined) as ApiResponse<P, M>
 }
 

@@ -52,6 +52,8 @@ export function DataTable<T>({
   empty = "Aucun élément.",
   initialSorting = [],
   getRowId,
+  onRowClick,
+  rowClassName,
 }: {
   columns: ColumnDef<T, unknown>[]
   data: T[] | undefined
@@ -61,6 +63,9 @@ export function DataTable<T>({
   empty?: React.ReactNode
   initialSorting?: SortingState
   getRowId?: (row: T) => string
+  /** Makes rows clickable (and keyboard focusable). */
+  onRowClick?: (row: T) => void
+  rowClassName?: (row: T) => string | undefined
 }) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting)
   const [globalFilter, setGlobalFilter] = React.useState("")
@@ -128,7 +133,27 @@ export function DataTable<T>({
               </TableRow>
             ) : (
               rows.map((row) => (
-                <TableRow key={row.id}>
+                <TableRow
+                  key={row.id}
+                  className={cn(onRowClick && "cursor-pointer", rowClassName?.(row.original))}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onClick={
+                    onRowClick
+                      ? (e) => {
+                          // Clicks on buttons, links, switches... inside the row keep their own behavior.
+                          if ((e.target as HTMLElement).closest("button, a, input, [role=switch], [role=menuitem]")) return
+                          onRowClick(row.original)
+                        }
+                      : undefined
+                  }
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key === "Enter" && e.target === e.currentTarget) onRowClick(row.original)
+                        }
+                      : undefined
+                  }
+                >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
                   ))}
