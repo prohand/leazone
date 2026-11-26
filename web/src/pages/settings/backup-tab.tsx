@@ -224,7 +224,7 @@ function RestoreCard() {
     meta: { silent: true },
     onSuccess: () => {
       toast.success("Configuration restaurée.", {
-        description: "Toutes les sessions et tous les jetons d'API ont été révoqués : reconnectez-vous.",
+        description: "Toutes les sessions ont été fermées : reconnectez-vous.",
       })
       setFile(null)
       setPassword("")
@@ -360,7 +360,7 @@ function RestoreCard() {
         </CardTitle>
         <CardDescription>
           Remplace toute la configuration par celle du fichier. Les utilisateurs, passkeys et TOTP viennent de la sauvegarde
-          (sans faire revivre un second facteur supprimé depuis) ; toutes les sessions et tous les jetons d'API sont révoqués. Le
+          (sans faire revivre un second facteur supprimé depuis) ; toutes les sessions sont fermées et les jetons d'API révoqués depuis la sauvegarde le restent. Le
           fichier est d'abord vérifié, rien n'est changé avant votre confirmation.
         </CardDescription>
       </CardHeader>

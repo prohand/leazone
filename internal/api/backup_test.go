@@ -93,8 +93,9 @@ func TestBackupRestore(t *testing.T) {
 	if s := c.do("POST", "/api/v1/restore", map[string]any{"password": pw, "content": file}, &res); s != 200 || res.DryRun {
 		t.Fatalf("restore: %d", s)
 	}
-	// Every session and token is revoked: log in again. Old recovery codes
-	// stay invalid; the TOTP (unchanged since the backup) works.
+	// Every session is revoked: log in again. The token revoked since the
+	// backup stays revoked, old recovery codes stay invalid; the TOTP
+	// (unchanged since the backup) works.
 	c.expect("GET", "/api/v1/dns/zones", nil, 401, TUnauthenticated)
 	tc := h.client()
 	tc.origin, tc.token = "", token
@@ -143,6 +144,10 @@ func TestBackupRestore(t *testing.T) {
 	// The session of the replaced admin account is gone; the restored admin works.
 	c2.expect("GET", "/api/v1/backups", nil, 401, TUnauthenticated)
 	l.expect("GET", "/api/v1/backups", nil, 200, "")
+	// The API token of the backup works on the new install (disaster recovery).
+	tk2 := h2.client()
+	tk2.origin, tk2.token = "", token
+	tk2.expect("GET", "/api/v1/users", nil, 200, "")
 	// Read-only users cannot back up.
 	ro := h2.client()
 	ro.login("lecteur", adminPass)

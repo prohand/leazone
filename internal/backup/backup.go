@@ -297,8 +297,10 @@ func (s *Service) Open(ctx context.Context, data []byte, password string) (*File
 //
 // A backup is an old copy of the credentials, so the restore must not bring
 // back access that was taken away since:
-//   - every session and every API token is revoked (tokens revoked since the
-//     backup would otherwise come back; users log in again);
+//   - every session is revoked (users log in again);
+//   - for users that exist on this node, API tokens that are not active here
+//     (revoked or deleted since the backup) stay revoked; tokens of users that
+//     only exist in the backup (restore on a new install) keep working;
 //   - for users that exist on this node, second factors that this node no
 //     longer has (deleted passkey, disabled or replaced TOTP, recovery codes
 //     regenerated or reset, whose usage records are gone) are dropped. Users
@@ -376,18 +378,20 @@ func hasActiveAdmin(users []map[string]any) bool {
 // factors lists the second factors present on this node before a restore.
 type factors struct {
 	users    map[string]bool
+	tokens   map[string]bool // api_tokens.id, active only
 	passkeys map[string]bool // webauthn_credentials.id
 	totp     map[string]bool // user_id + secret
 	recovery map[string]bool // recovery_codes.id, unused only
 }
 
 func localFactors(ctx context.Context, db *store.DB) (*factors, error) {
-	f := &factors{users: map[string]bool{}, passkeys: map[string]bool{}, totp: map[string]bool{}, recovery: map[string]bool{}}
+	f := &factors{users: map[string]bool{}, tokens: map[string]bool{}, passkeys: map[string]bool{}, totp: map[string]bool{}, recovery: map[string]bool{}}
 	for _, q := range []struct {
 		sql string
 		set map[string]bool
 	}{
 		{`SELECT id FROM users`, f.users},
+		{`SELECT id FROM api_tokens WHERE revoked_at IS NULL`, f.tokens},
 		{`SELECT id FROM webauthn_credentials`, f.passkeys},
 		{`SELECT user_id || ' ' || secret_enc FROM totp`, f.totp},
 		{`SELECT id FROM recovery_codes c WHERE NOT EXISTS (SELECT 1 FROM recovery_usage u WHERE u.code_id = c.id)`, f.recovery},
@@ -418,8 +422,29 @@ func dropRevokedAccess(ctx context.Context, tx *sql.Tx, local *factors, now time
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE revoked_at IS NULL`, ms); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL`, ms); err != nil {
+	tokens, err := tx.QueryContext(ctx, `SELECT id, user_id FROM api_tokens WHERE revoked_at IS NULL`)
+	if err != nil {
 		return err
+	}
+	var revoke []string
+	for tokens.Next() {
+		var id, user string
+		if err := tokens.Scan(&id, &user); err != nil {
+			tokens.Close()
+			return err
+		}
+		if local.users[user] && !local.tokens[id] {
+			revoke = append(revoke, id)
+		}
+	}
+	tokens.Close()
+	if err := tokens.Err(); err != nil {
+		return err
+	}
+	for _, id := range revoke {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE id = ?`, ms, id); err != nil {
+			return err
+		}
 	}
 	for _, t := range []struct {
 		table, key string

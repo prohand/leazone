@@ -5,7 +5,7 @@
 Version de correction : plus de 40 bugs trouvés par une revue du code, chacun avec un test de régression.
 
 ### À savoir avant la mise à jour
-- Une restauration révoque toutes les sessions et tous les jetons d'API (il faut se reconnecter).
+- Une restauration ferme toutes les sessions (il faut se reconnecter).
 - Le socket de contrôle passe de `/tmp/leazone.sock` à `<data_dir>/run/leazone.sock`.
 - Ajouter une passkey ou un TOTP, ou créer un jeton d'API, demande une revérification quand le compte a déjà un
   facteur. Changer de mot de passe ou réinitialiser la MFA révoque les jetons d'API.
