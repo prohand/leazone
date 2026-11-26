@@ -320,7 +320,9 @@ func (e *Engine) request(ctx context.Context, p Packet, s *scopeRT, src netip.Ad
 	if sid.IsValid() && !sid.IsUnspecified() && sid != src {
 		// SELECTING another server's offer: free ours.
 		e.mu.Lock()
-		if l := e.clientLease(s.ID, mac, cid); l != nil && l.State == StateOffered {
+		// Only our own offer: the chosen server's offer reached us through
+		// lease sync and must stay untouched.
+		if l := e.clientLease(s.ID, mac, cid); l != nil && l.State == StateOffered && (l.Owner == "" || l.Owner == e.NodeID) {
 			nl := *l
 			nl.State, nl.Ends = StateReleased, e.Now()
 			e.store(ctx, &nl)

@@ -408,3 +408,26 @@ func TestSplitPoolNeverOverlaps(t *testing.T) {
 		t.Fatalf("expected the whole pool (50) to be used, got %d", len(given))
 	}
 }
+
+// TestSelectingOtherServerKeepsItsOffer: in HA, the offer of the chosen
+// server reaches the other node by lease sync; the REQUEST naming the other
+// server must not release it.
+func TestSelectingOtherServerKeepsItsOffer(t *testing.T) {
+	e, _, now := newEngine(t)
+	e.NodeID = "me"
+	ctx := context.Background()
+	sc := e.scopes[firstScope(e, "eth0.10")]
+	ip := netip.MustParseAddr("10.0.10.120")
+	hw := mac(55)
+	e.ApplyRemote(ctx, []Lease{{ScopeID: sc.ID, IP: ip, MAC: hw.String(), State: StateOffered, Starts: *now,
+		Ends: now.Add(time.Minute), Owner: "other", HLC: now.UnixMilli() + 1}})
+	req := request(hw, ip, netip.MustParseAddr("10.0.10.3")) // server id of the other node
+	if r := e.Handle(ctx, Packet{Msg: req, IfIndex: 10}); r != nil {
+		t.Fatal("answered a request for another server")
+	}
+	for _, l := range e.Leases() {
+		if l.IP == ip && l.State != StateOffered {
+			t.Fatalf("other node's offer changed to %s", l.State)
+		}
+	}
+}
