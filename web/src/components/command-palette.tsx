@@ -2,6 +2,7 @@ import * as React from "react"
 import { useNavigate } from "react-router"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import {
+  ArrowLeftRight,
   BookmarkPlus,
   Download,
   Eraser,
@@ -12,6 +13,7 @@ import {
   Moon,
   Network,
   Plus,
+  RefreshCw,
   SearchCheck,
   SlidersHorizontal,
   Sun,
@@ -31,8 +33,8 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command"
+import { usePermissions } from "@/hooks/use-cluster"
 import { useCurrentUser, useLogout } from "@/hooks/use-session"
-import { can } from "@/lib/permissions"
 import { visibleGroups } from "@/lib/nav"
 import { useTheme } from "@/lib/theme"
 import { useDnsLookup } from "./dns-lookup"
@@ -83,7 +85,8 @@ function CommandPalette({ open, setOpen }: Ctx) {
   const { setTheme } = useTheme()
   const groups = visibleGroups(user?.role)
   const { openLookup } = useDnsLookup()
-  const role = user?.role
+  // Role AND node writability: config actions disappear on a cluster secondary.
+  const { can, allowed, view: cluster } = usePermissions()
   // Zones are listed for quick jumps; fetched only while the palette is open.
   const zones = useQuery({ ...zonesQuery, enabled: open, staleTime: 30_000 })
   const scopes = useQuery({ ...scopesQuery, enabled: open, staleTime: 30_000, refetchInterval: false })
@@ -166,12 +169,12 @@ function CommandPalette({ open, setOpen }: Ctx) {
           >
             <TextSearch /> Rechercher un bail
           </CommandItem>
-          {can(role, "config.write") && (
+          {can("config.write") && (
             <CommandItem value="Nouvelle étendue" keywords={["créer", "ajouter", "scope", "plage", "dhcp"]} onSelect={() => run(() => navigate("/dhcp/scopes?new=1"), true)}>
               <Plus /> Nouvelle étendue
             </CommandItem>
           )}
-          {can(role, "leases.write") && (
+          {can("leases.write") && (
             <CommandItem
               value="Nouvelle réservation"
               keywords={["créer", "ajouter", "IP fixe", "MAC", "dhcp"]}
@@ -180,12 +183,12 @@ function CommandPalette({ open, setOpen }: Ctx) {
               <BookmarkPlus /> Nouvelle réservation
             </CommandItem>
           )}
-          {can(role, "config.write") && (
+          {can("config.write") && (
             <CommandItem value="Nommer un VLAN" keywords={["vlan", "nom", "étiquette", "label"]} onSelect={() => run(() => navigate("/vlans?new=1"), true)}>
               <Tag /> Nommer un VLAN
             </CommandItem>
           )}
-          {can(role, "admin") && (
+          {can("admin") && (
             <CommandItem
               value="Importer depuis Technitium"
               keywords={["import", "migration", "technitium", "zones", "redirecteurs"]}
@@ -204,12 +207,12 @@ function CommandPalette({ open, setOpen }: Ctx) {
           >
             <SearchCheck /> Tester une résolution DNS
           </CommandItem>
-          {can(role, "config.write") && (
+          {can("config.write") && (
             <CommandItem value="Nouvelle zone DNS" keywords={["créer", "ajouter", "domaine"]} onSelect={() => run(() => navigate("/dns/zones?new=1"), true)}>
               <Plus /> Nouvelle zone DNS
             </CommandItem>
           )}
-          {can(role, "config.write") && (
+          {can("config.write") && (
             <CommandItem
               value="Ajouter un redirecteur"
               keywords={["forwarder", "DoH", "DoT", "nouveau"]}
@@ -218,12 +221,12 @@ function CommandPalette({ open, setOpen }: Ctx) {
               <Forward /> Ajouter un redirecteur
             </CommandItem>
           )}
-          {can(role, "records.write") && (
+          {can("cache.flush") && (
             <CommandItem value="Vider le cache DNS" keywords={["flush", "effacer"]} onSelect={() => run(() => flush.mutate())}>
               <Eraser /> Vider le cache DNS
             </CommandItem>
           )}
-          {can(role, "admin") && (
+          {allowed("admin") && (
             <CommandItem
               value="Paramètres DNS"
               keywords={["cache", "TTL", "récursion", "écoute"]}
@@ -233,6 +236,29 @@ function CommandPalette({ open, setOpen }: Ctx) {
             </CommandItem>
           )}
         </CommandGroup>
+        {cluster?.enabled && user?.role === "admin" && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Haute disponibilité">
+              <CommandItem
+                value="Forcer la resynchro"
+                keywords={["cluster", "HA", "synchro", "resync", "copier"]}
+                onSelect={() => run(() => navigate("/cluster?confirm=resync"), true)}
+              >
+                <RefreshCw /> Forcer la resynchro
+              </CommandItem>
+              {cluster.role === "primary" && (
+                <CommandItem
+                  value="Rebasculer"
+                  keywords={["cluster", "HA", "failback", "bascule", "primaire"]}
+                  onSelect={() => run(() => navigate("/cluster?confirm=failback"), true)}
+                >
+                  <ArrowLeftRight /> Rebasculer vers l'autre nœud
+                </CommandItem>
+              )}
+            </CommandGroup>
+          </>
+        )}
         <CommandSeparator />
         <CommandGroup heading="Actions">
           <CommandItem value="Mon compte" keywords={["profil", "passkey", "mot de passe", "jeton"]} onSelect={() => run(() => navigate("/account"))}>

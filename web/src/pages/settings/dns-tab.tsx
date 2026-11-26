@@ -13,8 +13,9 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { hitRate, humanDuration, percent } from "@/lib/dns"
-import { errorMessage } from "@/lib/errors"
+import { errorMessage, toastError } from "@/lib/errors"
 import { isCidr, isIP, lines } from "@/lib/net"
+import { WriteGuard } from "@/components/read-only"
 import { CacheFlushForm } from "@/pages/dns/cache-flush"
 
 type NumKey = "cacheSize" | "cacheMinTtl" | "cacheMaxTtl" | "cacheNegativeMaxTtl"
@@ -50,7 +51,10 @@ export function DnsTab() {
   return (
     <div className="space-y-6">
       <DnsStatusCard />
-      <DnsSettingsForm />
+      {/* The cache flush above is local to the node; the settings are replicated config. */}
+      <WriteGuard block>
+        <DnsSettingsForm />
+      </WriteGuard>
     </div>
   )
 }
@@ -151,7 +155,7 @@ function DnsSettingsForm() {
           errs[base] = errs[base] ? `${errs[base]} ${m}` : m
         }
       setErrors(errs)
-      toast.error(errorMessage(e))
+      toastError(e)
     },
   })
 

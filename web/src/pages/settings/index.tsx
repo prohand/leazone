@@ -1,5 +1,6 @@
 import { useSearchParams } from "react-router"
 import { PageHeader } from "@/components/page-header"
+import { WriteGuard } from "@/components/read-only"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DnsTab } from "./dns-tab"
 import { HttpsTab } from "./https-tab"
@@ -21,16 +22,22 @@ export default function SettingsPage() {
           <TabsTrigger value="import">Import</TabsTrigger>
         </TabsList>
         <TabsContent value="security" className="mt-4">
-          <SecurityTab />
+          <WriteGuard block>
+            <SecurityTab />
+          </WriteGuard>
         </TabsContent>
         <TabsContent value="https" className="mt-4">
-          <HttpsTab />
+          <WriteGuard block>
+            <HttpsTab />
+          </WriteGuard>
         </TabsContent>
         <TabsContent value="dns" className="mt-4">
           <DnsTab />
         </TabsContent>
         <TabsContent value="import" className="mt-4">
-          <ImportTab />
+          <WriteGuard block>
+            <ImportTab />
+          </WriteGuard>
         </TabsContent>
       </Tabs>
     </>

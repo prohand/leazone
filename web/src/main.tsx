@@ -3,13 +3,14 @@ import { createRoot } from "react-dom/client"
 import { RouterProvider } from "react-router"
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { ApiError, setAuthLostHandler, setCsrfToken } from "@/api/client"
+import { ApiError, ProblemType, setAuthLostHandler, setCsrfToken, setReadOnlyHandler } from "@/api/client"
 import { qk } from "@/api/queries"
 import type { SessionState } from "@/api/types"
 import { StepUpProvider } from "@/components/step-up"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { toastError } from "@/lib/errors"
+import { safeUrl } from "@/hooks/use-cluster"
+import { errorMessage, toastError } from "@/lib/errors"
 import { ThemeProvider } from "@/lib/theme"
 import { router } from "./router"
 import "./index.css"
@@ -49,6 +50,19 @@ setAuthLostHandler(() => {
     toast.info("Session expirée. Reconnectez-vous.")
   }
   void queryClient.invalidateQueries({ queryKey: qk.session })
+})
+
+// Config change refused by a cluster secondary (or while the config is frozen):
+// explain it once, offer to open the primary, and refresh the cluster state so
+// the read-only banner and disabled buttons show up at once.
+setReadOnlyHandler((err) => {
+  const primary = err.is(ProblemType.notPrimary) ? safeUrl(err.primaryUrl) : ""
+  toast.error(err.is(ProblemType.notPrimary) ? "Nœud secondaire" : "Configuration en lecture seule", {
+    id: "read-only",
+    description: errorMessage(err),
+    action: primary ? { label: "Ouvrir le primaire", onClick: () => window.open(primary, "_blank", "noopener,noreferrer") } : undefined,
+  })
+  void queryClient.invalidateQueries({ queryKey: qk.cluster })
 })
 
 createRoot(document.getElementById("root")!).render(

@@ -24,18 +24,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { useCurrentUser } from "@/hooks/use-session"
+import { WriteGuard } from "@/components/read-only"
+import { usePermissions } from "@/hooks/use-cluster"
 import { activeLeasesLabel } from "@/lib/dhcp"
 import { errorMessage, fieldError, formError } from "@/lib/errors"
-import { can } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 
 type Editing = { id: string | null; vlanId?: number; name?: string; lockId?: boolean }
 
 export default function VlansPage() {
   const qc = useQueryClient()
-  const user = useCurrentUser()
-  const canConfig = can(user?.role, "config.write")
+  const perms = usePermissions()
+  const canConfig = perms.can("config.write")
   const [params, setParams] = useSearchParams()
   const list = useQuery(vlansQuery)
   const [editing, setEditing] = React.useState<Editing | null>(null)
@@ -70,8 +70,8 @@ export default function VlansPage() {
         title="VLAN"
         description="Remplissage des étendues DHCP, VLAN par VLAN. Actualisé toutes les 10 secondes."
         actions={
-          canConfig && (
-            <>
+          perms.allowed("config.write") && (
+            <WriteGuard className="gap-2">
               <Button variant="outline" asChild>
                 <Link to="/dhcp/scopes?new=1">
                   <Plus /> Nouvelle étendue
@@ -80,7 +80,7 @@ export default function VlansPage() {
               <Button onClick={() => setEditing({ id: null })}>
                 <Tag /> Nommer un VLAN
               </Button>
-            </>
+            </WriteGuard>
           )
         }
       />

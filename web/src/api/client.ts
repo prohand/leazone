@@ -8,6 +8,9 @@ import type { paths } from "./schema"
  * - Parses RFC 9457 problem+json errors into ApiError.
  * - On `urn:leazone:step-up-required`, asks the registered step-up handler
  *   (a global dialog) to re-verify the user, then retries the request once.
+ * - On `urn:leazone:not-primary` / `urn:leazone:read-only` (config change on a
+ *   cluster secondary, or while the config is frozen), tells the registered
+ *   read-only handler (a toast with a link to the primary), then throws.
  */
 
 export const API_BASE = "/api/v1"
@@ -22,6 +25,8 @@ export const ProblemType = {
   notFound: "urn:leazone:not-found",
   conflict: "urn:leazone:conflict",
   csrf: "urn:leazone:csrf",
+  notPrimary: "urn:leazone:not-primary",
+  readOnly: "urn:leazone:read-only",
 } as const
 
 export class ApiError extends Error {
@@ -31,6 +36,10 @@ export class ApiError extends Error {
   readonly detail?: string
   readonly retryAfter?: number
   readonly errors?: Record<string, string>
+  /** UI address of the cluster primary (not-primary problems). */
+  readonly primaryUrl?: string
+  /** Set when a global handler already told the user (no second toast). */
+  notified = false
 
   constructor(init: {
     type?: string
@@ -39,6 +48,7 @@ export class ApiError extends Error {
     detail?: string
     retryAfter?: number
     errors?: Record<string, string>
+    primaryUrl?: string
   }) {
     super(init.detail || init.title || `HTTP ${init.status}`)
     this.name = "ApiError"
@@ -48,6 +58,7 @@ export class ApiError extends Error {
     this.detail = init.detail
     this.retryAfter = init.retryAfter
     this.errors = init.errors
+    this.primaryUrl = init.primaryUrl
   }
 
   is(type: string) {
@@ -77,6 +88,13 @@ let authLostHandler: AuthLostHandler | null = null
 /** Called when an authenticated call fails with 401 / mfa-required / csrf. */
 export function setAuthLostHandler(handler: AuthLostHandler | null) {
   authLostHandler = handler
+}
+
+type ReadOnlyHandler = (err: ApiError) => void
+let readOnlyHandler: ReadOnlyHandler | null = null
+/** Called when a change is refused because this node is not writable (cluster). */
+export function setReadOnlyHandler(handler: ReadOnlyHandler | null) {
+  readOnlyHandler = handler
 }
 
 // ---- Typing helpers derived from the generated OpenAPI schema ----
@@ -170,6 +188,7 @@ async function parseError(res: Response): Promise<ApiError> {
       body.errors && typeof body.errors === "object"
         ? (body.errors as Record<string, string>)
         : undefined,
+    primaryUrl: typeof body.primaryUrl === "string" && body.primaryUrl ? body.primaryUrl : undefined,
   })
 }
 
@@ -223,6 +242,11 @@ export async function request<P extends Path, M extends Method>(
       (err.is(ProblemType.unauthenticated) || err.is(ProblemType.mfaRequired) || err.is(ProblemType.csrf))
     ) {
       authLostHandler?.(err)
+    }
+
+    if ((err.is(ProblemType.notPrimary) || err.is(ProblemType.readOnly)) && readOnlyHandler) {
+      readOnlyHandler(err)
+      err.notified = true
     }
     throw err
   }

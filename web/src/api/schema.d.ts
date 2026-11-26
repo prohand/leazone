@@ -3004,6 +3004,326 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cluster": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Cluster state (enabled=false on a single node) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterView"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Cluster settings */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterSettings"];
+                    };
+                };
+            };
+        };
+        /** Update cluster settings (admin, step-up, on the primary) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ClusterSettings"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterSettings"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/resync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force a full resynchronization (on a secondary itself; from the primary, of its secondaries) (admin) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterView"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/failback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Give the primary role back to the up-to-date secondary (admin, step-up, on the primary) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterView"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force this node to become primary (no witness, or other node known down) (admin, step-up) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterView"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Changes made on this node while it was primary that were never replicated (admin) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["Conflict"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/conflicts/{id}/reapply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply the lost change on the primary (admin) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClusterView"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cluster/conflicts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Ignore a conflict (admin) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Ignored */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3563,6 +3883,112 @@ export interface components {
             created?: number;
             skipped?: number;
             errors?: number;
+        };
+        ClusterSettings: {
+            /** @default 1000 */
+            heartbeatMs?: number;
+            /** @default 3 */
+            failCount?: number;
+            /** @default 6000 */
+            leaseMs?: number;
+            /**
+             * @default auto
+             * @enum {string}
+             */
+            failbackMode?: "auto" | "manual";
+            /** @default 300 */
+            failbackDelaySec?: number;
+            /**
+             * @default load-balancing
+             * @enum {string}
+             */
+            dhcpMode?: "load-balancing" | "active-passive";
+        };
+        /** @enum {string} */
+        ClusterRole: "standalone" | "joining" | "secondary" | "primary" | "isolated" | "incompatible" | "offline";
+        ClusterNode: {
+            id?: string;
+            name?: string;
+            addr?: string;
+            self?: boolean;
+            online?: boolean;
+            role?: components["schemas"]["ClusterRole"];
+            /** @enum {string} */
+            preferredRole?: "primary" | "secondary";
+            latencyMs?: number;
+            /** Format: date-time */
+            lastSeen?: string | null;
+            /** Format: date-time */
+            lastSync?: string | null;
+            epoch?: number;
+            /** @description Config version (journal position) */
+            seq?: number;
+            configHash?: string;
+            /** @description Leazone version */
+            version?: string;
+            /** @description Primary serving all DHCP clients (partner confirmed down) */
+            partnerDown?: boolean;
+            error?: string;
+        };
+        ClusterView: {
+            enabled?: boolean;
+            role?: components["schemas"]["ClusterRole"];
+            epoch?: number;
+            seq?: number;
+            primaryUrl?: string;
+            writable?: boolean;
+            readOnlyReason?: string;
+            nodes?: components["schemas"]["ClusterNode"][];
+            witness?: {
+                /** @enum {string} */
+                mode?: "container" | "ping" | "none";
+                address?: string;
+                reachable?: boolean;
+                /** Format: date-time */
+                lastOk?: string | null;
+                error?: string;
+                epoch?: number;
+                primary?: string;
+            };
+            gaps?: {
+                /** @enum {string} */
+                kind?: "config" | "vlan" | "version" | "sync";
+                detail?: string;
+            }[];
+            /** @description Pending conflicts on this node */
+            conflicts?: number;
+            /** @description Primary terms, newest first (failovers and returns) */
+            history?: {
+                epoch?: number;
+                startSeq?: number;
+                nodeId?: string;
+                name?: string;
+                /** Format: date-time */
+                at?: string;
+                reason?: string;
+            }[];
+            settings?: components["schemas"]["ClusterSettings"];
+            vip?: {
+                address?: string;
+                interface?: string;
+                heldHere?: boolean;
+                error?: string;
+            } | null;
+        };
+        Conflict: {
+            id?: string;
+            epoch?: number;
+            seq?: number;
+            table?: string;
+            pk?: string;
+            /** @enum {string} */
+            op?: "upsert" | "delete";
+            /** @description Row as JSON */
+            row?: string;
+            /** Format: date-time */
+            detectedAt?: string;
+            /** @enum {string} */
+            status?: "pending" | "reapplied" | "dismissed";
         };
     };
     responses: {

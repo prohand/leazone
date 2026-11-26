@@ -61,3 +61,14 @@ export type LeaseState = NonNullable<Lease["state"]>
 export type TechnitiumImportInput = S["TechnitiumImportInput"]
 export type ImportItem = S["ImportItem"]
 export type ImportReport = S["ImportReport"]
+
+// ---- Phase 4: high availability ----
+export type ClusterView = S["ClusterView"]
+export type ClusterNode = S["ClusterNode"]
+export type ClusterRole = S["ClusterRole"]
+export type ClusterSettings = S["ClusterSettings"]
+export type ClusterWitness = NonNullable<ClusterView["witness"]>
+export type ClusterGap = NonNullable<ClusterView["gaps"]>[number]
+export type ClusterTerm = NonNullable<ClusterView["history"]>[number]
+export type ClusterVip = NonNullable<ClusterView["vip"]>
+export type Conflict = S["Conflict"]

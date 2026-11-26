@@ -13,17 +13,17 @@ import { EmptyState } from "@/components/empty-state"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useCurrentUser } from "@/hooks/use-session"
+import { WriteGuard } from "@/components/read-only"
+import { usePermissions } from "@/hooks/use-cluster"
 import { ipToInt } from "@/lib/dhcp"
 import { errorMessage } from "@/lib/errors"
 import { formatDateTime, formatRelative } from "@/lib/format"
-import { can } from "@/lib/permissions"
 import { ReservationDialog } from "./reservation-dialog"
 
 export default function ReservationsPage() {
   const qc = useQueryClient()
-  const user = useCurrentUser()
-  const canWrite = can(user?.role, "leases.write")
+  const perms = usePermissions()
+  const canWrite = perms.can("leases.write")
   const [params, setParams] = useSearchParams()
   const scope = params.get("scope") ?? ""
   const list = useQuery(reservationsQuery(scope || undefined))
@@ -147,10 +147,12 @@ export default function ReservationsPage() {
         title="Réservations"
         description="Appareils qui reçoivent toujours la même adresse IP."
         actions={
-          canWrite && (
-            <Button onClick={() => setEditing({ r: null })}>
-              <Plus /> Nouvelle réservation
-            </Button>
+          perms.allowed("leases.write") && (
+            <WriteGuard>
+              <Button onClick={() => setEditing({ r: null })}>
+                <Plus /> Nouvelle réservation
+              </Button>
+            </WriteGuard>
           )
         }
       />

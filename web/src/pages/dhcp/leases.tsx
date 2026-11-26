@@ -25,11 +25,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useDebounced } from "@/hooks/use-debounced"
-import { useCurrentUser } from "@/hooks/use-session"
+import { usePermissions } from "@/hooks/use-cluster"
 import { ipToInt, leaseStateLabel, leaseStates, vlanLabel } from "@/lib/dhcp"
 import { errorMessage } from "@/lib/errors"
 import { formatDateTime, formatRelativeShort } from "@/lib/format"
-import { can } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 
 const leaseKey = (l: Lease) => `${l.scopeId}/${l.ip}`
@@ -57,8 +56,10 @@ function Option82({ l }: { l: Lease }) {
 export default function LeasesPage() {
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const user = useCurrentUser()
-  const canWrite = can(user?.role, "leases.write")
+  const perms = usePermissions()
+  // Releasing a lease is local to this node; turning it into a reservation changes the config.
+  const canWrite = perms.can("leases.release")
+  const canReserve = perms.can("leases.write")
   const [params, setParams] = useSearchParams()
   // ⌘K "Rechercher un bail" lands here with ?search=1: focus the search box once.
   const [focusSearch] = React.useState(() => params.get("search") === "1")
@@ -248,7 +249,7 @@ export default function LeasesPage() {
               enableGlobalFilter: false,
               cell: ({ row }) => {
                 const l = row.original
-                if (!isLive(l) && l.reserved) return null
+                if (!isLive(l) && (l.reserved || !canReserve)) return null
                 return (
                   <div className="flex justify-end">
                     <DropdownMenu>
@@ -260,7 +261,7 @@ export default function LeasesPage() {
                       <DropdownMenuContent align="end" className="w-56">
                         <DropdownMenuLabel className="font-mono">{l.ip}</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        {!l.reserved && (
+                        {!l.reserved && canReserve && (
                           <DropdownMenuItem onSelect={() => reserveMutate(l)}>
                             <BookmarkPlus /> Convertir en réservation
                           </DropdownMenuItem>
@@ -279,7 +280,7 @@ export default function LeasesPage() {
           ]
         : []),
     ],
-    [canWrite, reserveMutate],
+    [canWrite, canReserve, reserveMutate],
   )
 
   const updated = list.dataUpdatedAt ? new Date(list.dataUpdatedAt).toLocaleTimeString("fr-FR") : ""

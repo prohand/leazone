@@ -12,10 +12,10 @@ import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useCurrentUser } from "@/hooks/use-session"
+import { WriteGuard } from "@/components/read-only"
+import { usePermissions } from "@/hooks/use-cluster"
 import { errorMessage } from "@/lib/errors"
 import { formatDateTime, formatRelative } from "@/lib/format"
-import { can } from "@/lib/permissions"
 import { CacheFlushPopover } from "./cache-flush"
 import { ZoneCreateDialog } from "./zone-dialogs"
 
@@ -26,9 +26,8 @@ export function ZoneKindBadge({ kind }: { kind?: Zone["kind"] }) {
 export default function ZonesPage() {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
-  const user = useCurrentUser()
-  const canConfig = can(user?.role, "config.write")
-  const canRecords = can(user?.role, "records.write")
+  const perms = usePermissions()
+  const canConfig = perms.can("config.write")
   const { openLookup } = useDnsLookup()
   const list = useQuery(zonesQuery)
   const [kind, setKind] = React.useState<"all" | "primary" | "reverse">("all")
@@ -108,11 +107,13 @@ export default function ZonesPage() {
             <Button variant="outline" onClick={() => openLookup()}>
               <SearchCheck /> Tester une résolution
             </Button>
-            {canRecords && <CacheFlushPopover />}
-            {canConfig && (
-              <Button onClick={() => setCreating(true)}>
-                <Plus /> Nouvelle zone
-              </Button>
+            {perms.can("cache.flush") && <CacheFlushPopover />}
+            {perms.allowed("config.write") && (
+              <WriteGuard>
+                <Button onClick={() => setCreating(true)}>
+                  <Plus /> Nouvelle zone
+                </Button>
+              </WriteGuard>
             )}
           </>
         }

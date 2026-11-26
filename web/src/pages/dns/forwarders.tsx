@@ -16,11 +16,11 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { useCurrentUser } from "@/hooks/use-session"
+import { WriteGuard } from "@/components/read-only"
+import { usePermissions } from "@/hooks/use-cluster"
 import { defaultPort, formatLatency, protocolLabel } from "@/lib/dns"
 import { errorMessage } from "@/lib/errors"
 import { formatDateTime } from "@/lib/format"
-import { can } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import { ForwarderDialog } from "./forwarder-dialog"
 
@@ -170,8 +170,8 @@ function ForwarderRow({
 
 export default function ForwardersPage() {
   const qc = useQueryClient()
-  const user = useCurrentUser()
-  const canEdit = can(user?.role, "config.write")
+  const perms = usePermissions()
+  const canEdit = perms.can("config.write")
   const [params, setParams] = useSearchParams()
   const list = useQuery(forwardersQuery)
   const [editing, setEditing] = React.useState<{ forwarder: Forwarder | null; domain?: string } | null>(null)
@@ -263,10 +263,12 @@ export default function ForwardersPage() {
         title="Redirecteurs"
         description="Serveurs DNS qui résolvent les noms externes, dans l'ordre : si un redirecteur ne répond pas, Leazone passe au suivant."
         actions={
-          canEdit && (
-            <Button onClick={() => setEditing({ forwarder: null })}>
-              <Plus /> Ajouter un redirecteur
-            </Button>
+          perms.allowed("config.write") && (
+            <WriteGuard>
+              <Button onClick={() => setEditing({ forwarder: null })}>
+                <Plus /> Ajouter un redirecteur
+              </Button>
+            </WriteGuard>
           )
         }
       />

@@ -13,10 +13,9 @@ import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { useCurrentUser } from "@/hooks/use-session"
+import { usePermissions } from "@/hooks/use-cluster"
 import { interfaceTypeLabel } from "@/lib/dns"
 import { errorMessage } from "@/lib/errors"
-import { can } from "@/lib/permissions"
 
 /** IPv4 first, then IPv6; keep the server order inside a family. */
 function sortedAddresses(i: NetInterface) {
@@ -56,8 +55,10 @@ function WithTooltip({ text, children }: { text?: string; children: React.ReactN
 
 export default function InterfacesPage() {
   const qc = useQueryClient()
-  const user = useCurrentUser()
-  const canEdit = can(user?.role, "config.write")
+  const perms = usePermissions()
+  const canEdit = perms.can("config.write")
+  // Why the switches are disabled: role first, then a read-only cluster node.
+  const lockHint = !perms.allowed("config.write") ? "Réservé aux administrateurs" : canEdit ? undefined : perms.hint
   const list = useQuery(interfacesQuery)
   const [typeFilter, setTypeFilter] = React.useState<"all" | InterfaceType>("all")
 
@@ -190,7 +191,7 @@ export default function InterfacesPage() {
         cell: ({ row }) => {
           const i = row.original
           return (
-            <WithTooltip text={canEdit ? undefined : "Réservé aux administrateurs"}>
+            <WithTooltip text={lockHint}>
               <Switch
                 checked={!!i.dnsEnabled}
                 disabled={!canEdit || pendingName === i.name}
@@ -209,7 +210,7 @@ export default function InterfacesPage() {
         cell: ({ row }) => {
           const i = row.original
           return (
-            <WithTooltip text={canEdit ? undefined : "Réservé aux administrateurs"}>
+            <WithTooltip text={lockHint}>
               <Switch
                 checked={!!i.dhcpEnabled}
                 disabled={!canEdit || pendingDhcp === i.name || i.type === "loopback"}
@@ -242,7 +243,7 @@ export default function InterfacesPage() {
         },
       },
     ],
-    [canEdit, pendingName, mutate, pendingDhcp, mutateDhcp],
+    [canEdit, lockHint, pendingName, mutate, pendingDhcp, mutateDhcp],
   )
 
   const all = list.data?.items

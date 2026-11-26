@@ -31,6 +31,9 @@ export const qk = {
   reservations: (scope?: string) => ["dhcp", "reservations", scope ?? ""] as const,
   leasesAll: ["dhcp", "leases"] as const,
   leases: (f: LeaseFilters) => ["dhcp", "leases", f] as const,
+  cluster: ["cluster"] as const,
+  clusterSettings: ["cluster", "settings"] as const,
+  clusterConflicts: ["cluster", "conflicts"] as const,
 }
 
 export type LeaseFilters = {
@@ -142,3 +145,27 @@ export const leasesQuery = (f: LeaseFilters) =>
     // "Real time" view: clients come and go.
     refetchInterval: 5_000,
   })
+
+// ---- Phase 4: high availability ----
+
+/**
+ * Cluster state. Shared by the read-only banner (every page, 10 s) and the
+ * Cluster page, which adds its own faster refresh while it is open.
+ */
+export const clusterQuery = queryOptions({
+  queryKey: qk.cluster,
+  queryFn: () => api.get("/cluster"),
+  refetchInterval: 10_000,
+  // An old backend without /cluster must not break the app (treated as a single node).
+  retry: false,
+})
+
+export const clusterSettingsQuery = queryOptions({
+  queryKey: qk.clusterSettings,
+  queryFn: () => api.get("/cluster/settings"),
+})
+
+export const clusterConflictsQuery = queryOptions({
+  queryKey: qk.clusterConflicts,
+  queryFn: () => api.get("/cluster/conflicts"),
+})

@@ -15,10 +15,10 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { useCurrentUser } from "@/hooks/use-session"
+import { WriteGuard } from "@/components/read-only"
+import { usePermissions } from "@/hooks/use-cluster"
 import { humanDuration, recordTypes } from "@/lib/dns"
 import { errorMessage, toastError } from "@/lib/errors"
-import { can } from "@/lib/permissions"
 import { RecordDialog } from "./record-dialog"
 import { ZoneDeleteDialog, ZoneImportDialog, ZoneSettingsDialog } from "./zone-dialogs"
 import { ZoneKindBadge } from "./zones"
@@ -48,9 +48,8 @@ export default function ZoneDetailPage() {
   const { id = "" } = useParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const user = useCurrentUser()
-  const canConfig = can(user?.role, "config.write")
-  const canRecords = can(user?.role, "records.write")
+  const perms = usePermissions()
+  const canRecords = perms.can("records.write")
   const zone = useQuery(zoneQuery(id))
   const records = useQuery(recordsQuery(id))
   const [typeFilter, setTypeFilter] = React.useState<"all" | RecordType>("all")
@@ -236,13 +235,15 @@ export default function ZoneDetailPage() {
           <Button variant="outline" onClick={exportZone} disabled={exporting}>
             <Download /> Exporter
           </Button>
-          {canRecords && (
-            <Button variant="outline" onClick={() => setDialog("import")}>
-              <Upload /> Importer
-            </Button>
+          {perms.allowed("records.write") && (
+            <WriteGuard>
+              <Button variant="outline" onClick={() => setDialog("import")}>
+                <Upload /> Importer
+              </Button>
+            </WriteGuard>
           )}
-          {canConfig && (
-            <>
+          {perms.allowed("config.write") && (
+            <WriteGuard className="gap-2">
               <Button variant="outline" onClick={() => setDialog("settings")}>
                 <Settings2 /> Paramètres
               </Button>
@@ -253,7 +254,7 @@ export default function ZoneDetailPage() {
               >
                 <Trash2 /> Supprimer la zone
               </Button>
-            </>
+            </WriteGuard>
           )}
         </div>
       </div>
@@ -284,10 +285,12 @@ export default function ZoneDetailPage() {
                   ))}
               </SelectContent>
             </Select>
-            {canRecords && (
-              <Button onClick={() => setEditing({ record: null })}>
-                <Plus /> Ajouter
-              </Button>
+            {perms.allowed("records.write") && (
+              <WriteGuard>
+                <Button onClick={() => setEditing({ record: null })}>
+                  <Plus /> Ajouter
+                </Button>
+              </WriteGuard>
             )}
           </>
         }

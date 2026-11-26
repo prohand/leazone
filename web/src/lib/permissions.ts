@@ -2,18 +2,22 @@ import type { Role } from "@/api/types"
 
 /*
  * Client-side mirror of the role table (PLAN §4). The server enforces it;
- * the UI only uses it to hide what the user cannot do.
+ * the UI only uses it to hide what the user cannot do. Inside the app, prefer
+ * usePermissions() (hooks/use-cluster): it also says no to config changes on
+ * a read-only cluster node.
  */
 export type Action =
   | "read"
   | "records.write" // DNS records, leases, reservations
-  | "leases.write" // same right as records.write: release leases, reservations
+  | "leases.write" // same right as records.write: reservations
+  | "leases.release" // same right as records.write; local to the node (works on a secondary)
+  | "cache.flush" // same right as records.write; local to the node
   | "config.write" // zones, forwarders, scopes, interfaces, modules
   | "admin" // users, HA, settings, backup, DNSSEC keys
 
 const matrix: Record<Role, ReadonlySet<Action>> = {
-  admin: new Set<Action>(["read", "records.write", "leases.write", "config.write", "admin"]),
-  operator: new Set<Action>(["read", "records.write", "leases.write"]),
+  admin: new Set<Action>(["read", "records.write", "leases.write", "leases.release", "cache.flush", "config.write", "admin"]),
+  operator: new Set<Action>(["read", "records.write", "leases.write", "leases.release", "cache.flush"]),
   readonly: new Set<Action>(["read"]),
 }
 

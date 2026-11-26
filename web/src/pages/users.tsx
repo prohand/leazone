@@ -37,6 +37,8 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { WriteGuard } from "@/components/read-only"
+import { useWritable } from "@/hooks/use-cluster"
 import { useCurrentUser } from "@/hooks/use-session"
 import { fieldError, formError } from "@/lib/errors"
 import { formatDateTime, formatRelative } from "@/lib/format"
@@ -51,6 +53,8 @@ type Pending =
 export default function UsersPage() {
   const qc = useQueryClient()
   const me = useCurrentUser()
+  // Accounts are replicated config: no changes on a read-only cluster node.
+  const { writable } = useWritable()
   const list = useQuery({ queryKey: qk.users, queryFn: () => api.get("/users") })
   const [roleFilter, setRoleFilter] = React.useState<"all" | Role>("all")
   const [creating, setCreating] = React.useState(false)
@@ -155,6 +159,7 @@ export default function UsersPage() {
         cell: ({ row }) => {
           const u = row.original
           const self = u.id === me?.id
+          if (!writable) return null
           return (
             <div className="text-right">
               <DropdownMenu>
@@ -206,7 +211,7 @@ export default function UsersPage() {
         },
       },
     ],
-    [me?.id, mutateUpdate],
+    [me?.id, mutateUpdate, writable],
   )
 
   const data = React.useMemo(
@@ -262,9 +267,11 @@ export default function UsersPage() {
         title="Utilisateurs"
         description="Comptes qui peuvent ouvrir l'interface ou utiliser l'API."
         actions={
-          <Button onClick={() => setCreating(true)}>
-            <UserPlus /> Ajouter un utilisateur
-          </Button>
+          <WriteGuard>
+            <Button onClick={() => setCreating(true)}>
+              <UserPlus /> Ajouter un utilisateur
+            </Button>
+          </WriteGuard>
         }
       />
       <DataTable

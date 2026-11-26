@@ -3,10 +3,13 @@ import { useQuery } from "@tanstack/react-query"
 import { ArrowRight, CircleCheck, Circle, DatabaseZap, HeartPulse, Radio, Timer, TriangleAlert, type LucideIcon } from "lucide-react"
 import { dnsStatusQuery, meQuery, systemInfoQuery, vlansQuery } from "@/api/queries"
 import type { ScopeUsage } from "@/api/types"
+import { clusterRoleLabel } from "@/components/cluster"
 import { UsageBar } from "@/components/dhcp"
+import { StatusDot } from "@/components/status-dot"
 import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { useClusterView } from "@/hooks/use-cluster"
 import { useCurrentUser } from "@/hooks/use-session"
 import { fmtInt, formatPercent } from "@/lib/dhcp"
 import { hitRate, percent } from "@/lib/dns"
@@ -176,7 +179,7 @@ export default function DashboardPage() {
                   : `dans ${scopes.length} étendue${scopes.length > 1 ? "s" : ""}`
           }
         />
-        <StatCard title="État HA" icon={HeartPulse} hint="Disponible avec le cluster" />
+        <HaCard />
       </div>
       {scopes.length > 0 && <ScopeFillCard scopes={scopes} />}
       <Card className="mt-6">
@@ -232,5 +235,66 @@ function ScopeFillCard({ scopes }: { scopes: (ScopeUsage & { vlan: string })[] }
         )}
       </CardContent>
     </Card>
+  )
+}
+
+/** Compact high availability state (from the shared /cluster query). */
+function HaCard() {
+  const { data: v, isError } = useClusterView()
+  const other = v?.nodes?.find((n) => !n.self)
+  const gaps = v?.gaps?.length ?? 0
+  const conflicts = v?.conflicts ?? 0
+  const mode = v?.witness?.mode ?? "none"
+  const roleTone =
+    v?.role === "primary" ? "text-success" : v?.role === "secondary" ? "text-brand" : v?.role === "isolated" || v?.role === "incompatible" ? "text-warning" : ""
+  const label = v ? (v.enabled ? clusterRoleLabel[v.role ?? "joining"] : "nœud seul") : "—"
+  return (
+    <Link
+      to="/cluster"
+      data-testid="ha-card"
+      className="rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
+      <Card className="h-full gap-2 py-5 transition-colors hover:bg-muted/40">
+        <CardHeader className="flex flex-row items-center justify-between px-5">
+          <CardDescription className="text-sm font-medium">Haute disponibilité</CardDescription>
+          <HeartPulse className="size-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent className="px-5">
+          <div className={cn("text-3xl font-semibold tracking-tight first-letter:uppercase", roleTone)}>{label}</div>
+          {!v ? (
+            <p className="mt-1 text-xs text-muted-foreground">{isError ? "Indisponible" : "Chargement…"}</p>
+          ) : !v.enabled ? (
+            <p className="mt-1 text-xs text-muted-foreground">Non configurée : un seul serveur</p>
+          ) : (
+            <ul className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+              <li>
+                <StatusDot
+                  tone={other?.online ? "ok" : "error"}
+                  label={other ? `${other.name} ${other.online ? "en ligne" : "hors ligne"}` : "Autre nœud jamais vu"}
+                />
+              </li>
+              <li>
+                <StatusDot
+                  tone={mode === "none" ? "warning" : v.witness?.reachable ? "ok" : "error"}
+                  label={mode === "none" ? "Sans témoin" : v.witness?.reachable ? "Témoin joignable" : "Témoin injoignable"}
+                />
+              </li>
+              <li className={cn((gaps > 0 || conflicts > 0) && "text-warning")}>
+                <StatusDot
+                  tone={gaps > 0 || conflicts > 0 ? "warning" : "ok"}
+                  label={
+                    gaps === 0 && conflicts === 0
+                      ? "Aucun écart"
+                      : [gaps > 0 && `${gaps} écart${gaps > 1 ? "s" : ""}`, conflicts > 0 && `${conflicts} conflit${conflicts > 1 ? "s" : ""}`]
+                          .filter(Boolean)
+                          .join(" · ")
+                  }
+                />
+              </li>
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+    </Link>
   )
 }

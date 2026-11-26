@@ -1,5 +1,6 @@
 import { useSearchParams } from "react-router"
 import { PageHeader } from "@/components/page-header"
+import { WriteGuard } from "@/components/read-only"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PasskeysTab } from "./passkeys-tab"
 import { ProfileTab } from "./profile-tab"
@@ -8,13 +9,14 @@ import { SessionsTab } from "./sessions-tab"
 import { TokensTab } from "./tokens-tab"
 import { TotpTab } from "./totp-tab"
 
+// `local`: changes stay on this node (allowed on a read-only cluster secondary).
 const tabs = [
-  { value: "profile", label: "Profil", Component: ProfileTab },
-  { value: "passkeys", label: "Passkeys", Component: PasskeysTab },
-  { value: "totp", label: "TOTP", Component: TotpTab },
-  { value: "recovery", label: "Codes de secours", Component: RecoveryTab },
-  { value: "sessions", label: "Sessions", Component: SessionsTab },
-  { value: "tokens", label: "Jetons d'API", Component: TokensTab },
+  { value: "profile", label: "Profil", Component: ProfileTab, local: false },
+  { value: "passkeys", label: "Passkeys", Component: PasskeysTab, local: false },
+  { value: "totp", label: "TOTP", Component: TotpTab, local: false },
+  { value: "recovery", label: "Codes de secours", Component: RecoveryTab, local: false },
+  { value: "sessions", label: "Sessions", Component: SessionsTab, local: true },
+  { value: "tokens", label: "Jetons d'API", Component: TokensTab, local: false },
 ] as const
 
 export default function AccountPage() {
@@ -35,7 +37,13 @@ export default function AccountPage() {
         </div>
         {tabs.map((t) => (
           <TabsContent key={t.value} value={t.value} className="mt-4">
-            <t.Component />
+            {t.local ? (
+              <t.Component />
+            ) : (
+              <WriteGuard block>
+                <t.Component />
+              </WriteGuard>
+            )}
           </TabsContent>
         ))}
       </Tabs>

@@ -9,6 +9,7 @@ import { AppSidebar } from "./app-sidebar"
 import { SelfSignedBanner } from "./auth-shell"
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette"
 import { DnsLookupProvider } from "./dns-lookup"
+import { ReadOnlyBanner } from "./read-only"
 import { BlockSpinner } from "./spinner"
 import { ThemeToggle } from "./theme-toggle"
 
@@ -50,6 +51,7 @@ export function AppLayout() {
           <AppSidebar />
           <SidebarInset className="min-w-0">
             <SelfSignedBanner />
+            <ReadOnlyBanner />
             <TopBar />
             <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8">
               <React.Suspense fallback={<BlockSpinner />}>

@@ -21,6 +21,10 @@ export function errorMessage(err: unknown): string {
         return err.detail || "Élément introuvable."
       case ProblemType.conflict:
         return err.detail || "Conflit : l'élément existe déjà ou a changé."
+      case ProblemType.notPrimary:
+        return err.detail || "Ce nœud est secondaire : modifiez la configuration sur le primaire."
+      case ProblemType.readOnly:
+        return err.detail || "Configuration en lecture seule pour le moment."
       case ProblemType.validation: {
         const first = err.errors ? Object.values(err.errors)[0] : undefined
         return err.detail || first || "Certaines valeurs ne sont pas valides."
@@ -45,6 +49,8 @@ export function fieldError(err: unknown, field: string): string | undefined {
 }
 
 export function toastError(err: unknown, title?: string) {
+  // Already reported by a global handler (e.g. read-only cluster node).
+  if (err instanceof ApiError && err.notified) return
   const msg = errorMessage(err)
   if (title) toast.error(title, { description: msg })
   else toast.error(msg)

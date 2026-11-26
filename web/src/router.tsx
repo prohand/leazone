@@ -22,6 +22,7 @@ const VlansPage = React.lazy(() => import("@/pages/vlans"))
 const ScopesPage = React.lazy(() => import("@/pages/dhcp/scopes"))
 const LeasesPage = React.lazy(() => import("@/pages/dhcp/leases"))
 const ReservationsPage = React.lazy(() => import("@/pages/dhcp/reservations"))
+const ClusterPage = React.lazy(() => import("@/pages/cluster"))
 const ComingSoonPage = React.lazy(() => import("@/pages/coming-soon"))
 const NotFoundPage = React.lazy(() => import("@/pages/not-found"))
 
@@ -60,7 +61,7 @@ export const router = createBrowserRouter([
           { path: "/dhcp/scopes", element: <ScopesPage /> },
           { path: "/dhcp/leases", element: <LeasesPage /> },
           { path: "/dhcp/reservations", element: <ReservationsPage /> },
-          soon("/cluster"),
+          { path: "/cluster", element: <ClusterPage /> },
           { path: "/logs", element: <LogsPage /> },
           { path: "/account", element: <AccountPage /> },
           { path: "/users", element: <RequireAdmin><UsersPage /></RequireAdmin> },

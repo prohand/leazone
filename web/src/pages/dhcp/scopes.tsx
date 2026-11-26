@@ -22,10 +22,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Switch } from "@/components/ui/switch"
-import { useCurrentUser } from "@/hooks/use-session"
+import { WriteGuard } from "@/components/read-only"
+import { usePermissions } from "@/hooks/use-cluster"
 import { fmtInt, scopeInputOf } from "@/lib/dhcp"
 import { errorMessage } from "@/lib/errors"
-import { can } from "@/lib/permissions"
 import { ScopeDialog } from "./scope-dialog"
 
 /** "192.168.20.100 – 192.168.20.199" -> ".100 – .199" when both share the first three octets. */
@@ -40,8 +40,8 @@ function shortRange(a = "", b = "") {
 export default function ScopesPage() {
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const user = useCurrentUser()
-  const canConfig = can(user?.role, "config.write")
+  const perms = usePermissions()
+  const canConfig = perms.can("config.write")
   const [params, setParams] = useSearchParams()
   const list = useQuery(scopesQuery)
   const [editing, setEditing] = React.useState<{ scope: Scope | null; vlanId?: number } | null>(null)
@@ -216,10 +216,12 @@ export default function ScopesPage() {
         title="Étendues"
         description="Une étendue = un réseau et la plage d'adresses que Leazone y distribue."
         actions={
-          canConfig && (
-            <Button onClick={() => setEditing({ scope: null })}>
-              <Plus /> Nouvelle étendue
-            </Button>
+          perms.allowed("config.write") && (
+            <WriteGuard>
+              <Button onClick={() => setEditing({ scope: null })}>
+                <Plus /> Nouvelle étendue
+              </Button>
+            </WriteGuard>
           )
         }
       />
