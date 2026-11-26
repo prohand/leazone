@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -154,4 +155,38 @@ func TestEventsStream(t *testing.T) {
 	// Not logged in: no stream.
 	anon := h.client()
 	anon.expect("GET", "/api/v1/events", nil, 401, TUnauthenticated)
+}
+
+func TestMetrics(t *testing.T) {
+	h := newHarness(t, nil)
+	c := adminClient(t, h)
+	var tk struct{ Token string }
+	if s := c.do("POST", "/api/v1/me/tokens", map[string]string{"name": "prometheus", "scope": "read"}, &tk); s != 201 {
+		t.Fatalf("token: %d", s)
+	}
+	get := func(token string) (int, string) {
+		req, _ := http.NewRequest("GET", "https://"+testHost+"/metrics", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := h.client().hc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if s, _ := get(""); s != 401 {
+		t.Fatalf("without token: %d", s)
+	}
+	if s, _ := get("lz_bad_token"); s != 401 {
+		t.Fatalf("bad token: %d", s)
+	}
+	s, body := get(tk.Token)
+	for _, want := range []string{"leazone_build_info", "leazone_dns_queries_total", "leazone_dns_cache_entries", "go_goroutines"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics %d: missing %s\n%.600s", s, want, body)
+		}
+	}
 }

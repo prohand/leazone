@@ -346,6 +346,9 @@ type Status struct {
 	Dropped     uint64     `json:"dropped"`
 }
 
+// Dropped is the number of entries not written since start.
+func (l *Log) Dropped() uint64 { return l.dropped.Load() }
+
 // Status returns counts and size.
 func (l *Log) Status(ctx context.Context) (Status, error) {
 	var s Status

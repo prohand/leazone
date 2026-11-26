@@ -12,6 +12,7 @@ func (s *Server) registerRoutes() {
 	// System
 	s.handle("GET /system/info", pub, s.systemInfo)
 	s.mux.HandleFunc("GET /health", s.health)
+	s.registerMetrics()
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.openapi)
 
 	// Login flow
