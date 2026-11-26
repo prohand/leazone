@@ -4,10 +4,45 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestNetworkFilterPagination(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "logs.db"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	// Old matching entries, then many recent ones that share the text
+	// prefix ("10.1.") but are outside 10.1.16.0/20.
+	for i := 0; i < 5; i++ {
+		l.AddDNS(DNSEntry{Time: now, Client: "10.1.16.5", Name: "old.example", Type: "A", Rcode: "NOERROR", Source: "cache"})
+	}
+	for i := 0; i < 500; i++ {
+		l.AddDNS(DNSEntry{Time: now, Client: "10.1.99.1", Name: "new.example", Type: "A", Rcode: "NOERROR", Source: "cache"})
+	}
+	l.Flush()
+	ctx := context.Background()
+	f := DNSFilter{Client: netip.MustParsePrefix("10.1.16.0/20"), Limit: 20}
+	found := 0
+	for page := 0; page < 100; page++ {
+		items, next, err := l.DNS(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found += len(items)
+		if next == nil {
+			break
+		}
+		f.Before = *next
+	}
+	if found != 5 {
+		t.Fatalf("found %d matching entries through the pages, want 5", found)
+	}
+}
 
 func TestRetentionAndFilters(t *testing.T) {
 	l, err := Open(filepath.Join(t.TempDir(), "logs.db"), slog.New(slog.NewTextHandler(io.Discard, nil)))
