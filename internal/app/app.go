@@ -21,7 +21,11 @@ import (
 	"github.com/prohand/leazone/internal/caps"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/control"
+	"github.com/prohand/leazone/internal/dnsconf"
+	"github.com/prohand/leazone/internal/dnsmgr"
+	"github.com/prohand/leazone/internal/dnssrv"
 	"github.com/prohand/leazone/internal/ids"
+	"github.com/prohand/leazone/internal/netif"
 	"github.com/prohand/leazone/internal/secrets"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
@@ -87,7 +91,17 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("openapi spec: %w", err)
 	}
-	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, Log: log, UI: web.Dist(), Spec: spec})
+	// DNS: interface watcher, engine and manager.
+	watcher := netif.NewWatcher(log)
+	go watcher.Run(ctx)
+	engine := dnssrv.New(log, cfg.DNSPort)
+	dm := dnsmgr.New(dnsconf.New(n.db), engine, watcher, log)
+	if err := dm.Reload(ctx); err != nil {
+		return fmt.Errorf("DNS: %w", err)
+	}
+	go dm.Run(ctx)
+
+	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, Log: log, UI: web.Dist(), Spec: spec})
 
 	ln, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {

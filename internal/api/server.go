@@ -15,6 +15,7 @@ import (
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
 	"github.com/prohand/leazone/internal/config"
+	"github.com/prohand/leazone/internal/dnsmgr"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
 )
@@ -26,6 +27,7 @@ type Server struct {
 	auth  *auth.Service
 	audit *audit.Log
 	tls   *tlsmgr.Manager
+	dns   *dnsmgr.Manager
 	log   *slog.Logger
 	ui    fs.FS
 	spec  []byte
@@ -47,6 +49,7 @@ type Deps struct {
 	Auth   *auth.Service
 	Audit  *audit.Log
 	TLS    *tlsmgr.Manager
+	DNS    *dnsmgr.Manager
 	Log    *slog.Logger
 	UI     fs.FS
 	Spec   []byte // OpenAPI as JSON
@@ -54,7 +57,7 @@ type Deps struct {
 
 // New builds the server and registers all routes.
 func New(d Deps) *Server {
-	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, log: d.Log, ui: d.UI,
+	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, log: d.Log, ui: d.UI,
 		spec: d.Spec, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s

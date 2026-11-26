@@ -570,6 +570,323 @@ paths:
                   items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
                   nextCursor: { type: [string, "null"] }
 
+  /interfaces:
+    get:
+      summary: Network interfaces of the host (physical, VLAN, bond, bridge) with Leazone settings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/NetInterface" } }
+  /interfaces/{name}:
+    parameters:
+      - { name: name, in: path, required: true, schema: { type: string } }
+    patch:
+      summary: Enable or disable DNS / DHCP on an interface (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dnsEnabled: { type: boolean }
+                dhcpEnabled: { type: boolean, description: "Stored now, used from phase 3" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetInterface" }
+
+  /dns/settings:
+    get:
+      summary: DNS server settings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnsSettings" }
+    put:
+      summary: Update DNS server settings (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DnsSettings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnsSettings" }
+  /dns/status:
+    get:
+      summary: Listeners, cache and forwarder health
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DnsStatus" }
+  /dns/cache/flush:
+    post:
+      summary: Empty the cache, or only the entries of one name and its sub-names (records.write)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, description: "Empty = whole cache" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer }
+  /dns/lookup:
+    post:
+      summary: Resolve a name like a client would (test tool)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name: { type: string }
+                type: { type: string, example: A }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LookupResult" }
+
+  /dns/zones:
+    get:
+      summary: List zones
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Zone" } }
+    post:
+      summary: Create a zone (config.write). For a reverse zone, `name` may be a network like 192.168.1.0/24.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ZoneInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Zone" }
+  /dns/zones/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: One zone
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Zone" }
+    patch:
+      summary: Update default TTL / SOA (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttl: { type: integer }
+                soa: { $ref: "#/components/schemas/Soa" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Zone" }
+    delete:
+      summary: Delete a zone and its records (config.write, step-up required)
+      responses:
+        "204": { description: Deleted }
+  /dns/zones/{id}/export:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Zone in BIND (RFC 1035) format
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema: { type: string }
+  /dns/zones/{id}/import:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Import records from a BIND zone file (records.write). SOA lines are ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+                replace: { type: boolean, description: "Delete existing records first", default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+                  skipped: { type: integer }
+                  errors: { type: array, items: { type: string } }
+  /dns/zones/{id}/records:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Records of a zone
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Record" } }
+    post:
+      summary: Add a record (records.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+  /dns/zones/{id}/records/{rid}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: rid, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Replace a record (records.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+    delete:
+      summary: Delete a record (records.write)
+      responses:
+        "204": { description: Deleted }
+
+  /dns/forwarders:
+    get:
+      summary: Global and conditional forwarders, ordered by domain then position
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Forwarder" } }
+    post:
+      summary: Add a forwarder (config.write). It is placed last in its group unless position is given.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForwarderInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Forwarder" }
+  /dns/forwarders/test:
+    post:
+      summary: Test a forwarder configuration without saving it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForwarderInput" }
+      responses:
+        "200":
+          description: Test result (ok=false on failure, never an HTTP error)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ForwarderTest" }
+  /dns/forwarders/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Replace a forwarder (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ForwarderInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Forwarder" }
+    delete:
+      summary: Delete a forwarder (config.write)
+      responses:
+        "204": { description: Deleted }
+  /dns/forwarders/{id}/test:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Test a saved forwarder
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ForwarderTest" }
+
 components:
   securitySchemes:
     session:
@@ -757,3 +1074,200 @@ components:
         target: { type: string }
         result: { type: string, enum: [success, failure] }
         details: { type: object }
+
+    NetAddress:
+      type: object
+      properties:
+        address: { type: string, example: 192.168.20.1 }
+        prefixLength: { type: integer, example: 24 }
+        network: { type: string, example: 192.168.20.0/24 }
+        family: { type: string, enum: [ipv4, ipv6] }
+
+    DnsListener:
+      type: object
+      properties:
+        address: { type: string, example: "192.168.20.1:53" }
+        protocol: { type: string, enum: [udp, tcp] }
+        interface: { type: string }
+        state: { type: string, enum: [listening, error] }
+        error: { type: string, description: "Human readable (French), e.g. port already used" }
+
+    NetInterface:
+      type: object
+      properties:
+        name: { type: string, example: eth0.20 }
+        index: { type: integer }
+        type: { type: string, enum: [physical, vlan, bond, bridge, loopback, virtual, other] }
+        parent: { type: [string, "null"], example: eth0 }
+        vlanId: { type: [integer, "null"], example: 20 }
+        mac: { type: string }
+        mtu: { type: integer }
+        up: { type: boolean }
+        present: { type: boolean, description: "false: settings exist but the interface is gone from the host" }
+        addresses: { type: array, items: { $ref: "#/components/schemas/NetAddress" } }
+        dnsEnabled: { type: boolean }
+        dhcpEnabled: { type: boolean }
+        dnsListeners: { type: array, items: { $ref: "#/components/schemas/DnsListener" } }
+
+    DnsSettings:
+      type: object
+      properties:
+        cacheSize: { type: integer, minimum: 0, maximum: 1000000, description: "Max entries, 0 disables the cache" }
+        cacheMinTtl: { type: integer, minimum: 0, maximum: 86400 }
+        cacheMaxTtl: { type: integer, minimum: 1, maximum: 604800 }
+        cacheNegativeMaxTtl: { type: integer, minimum: 0, maximum: 86400 }
+        recursionNetworks: { type: array, items: { type: string }, description: "CIDR allowed to use recursion (forwarders). Local zones answer everyone." }
+        extraListenAddresses: { type: array, items: { type: string }, description: "Extra IPs to listen on (e.g. 127.0.0.1)" }
+
+    DnsStatus:
+      type: object
+      properties:
+        port: { type: integer }
+        listeners: { type: array, items: { $ref: "#/components/schemas/DnsListener" } }
+        cache:
+          type: object
+          properties:
+            entries: { type: integer }
+            hits: { type: integer }
+            misses: { type: integer }
+        forwarders:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              healthy: { type: boolean }
+              lastError: { type: string }
+              lastLatencyMs: { type: number }
+
+    LookupResult:
+      type: object
+      properties:
+        rcode: { type: string, example: NOERROR }
+        source: { type: string, enum: [local, cache, forwarder, refused, error] }
+        forwarder: { type: string }
+        latencyMs: { type: number }
+        answers: { type: array, items: { type: string }, description: "Records in presentation format" }
+        authority: { type: array, items: { type: string } }
+
+    Soa:
+      type: object
+      properties:
+        primaryNs: { type: string, example: ns1.maison.lan. }
+        adminEmail: { type: string, example: admin@maison.lan }
+        refresh: { type: integer, default: 3600 }
+        retry: { type: integer, default: 600 }
+        expire: { type: integer, default: 604800 }
+        minimum: { type: integer, default: 300, description: "Negative caching TTL" }
+
+    Zone:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string, example: maison.lan }
+        kind: { type: string, enum: [primary, reverse] }
+        auto: { type: boolean, description: "Created from a DHCP scope (phase 3)" }
+        ttl: { type: integer, description: "Default TTL of records" }
+        soa: { $ref: "#/components/schemas/Soa" }
+        serial: { type: integer }
+        recordCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ZoneInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: "maison.lan, 20.168.192.in-addr.arpa or 192.168.20.0/24" }
+        ttl: { type: integer, default: 3600 }
+        soa: { $ref: "#/components/schemas/Soa" }
+
+    RecordType:
+      type: string
+      enum: [A, AAAA, CNAME, MX, TXT, SRV, PTR, NS]
+
+    Record:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string, description: "Relative to the zone, @ for the apex", example: www }
+        fqdn: { type: string, example: www.maison.lan. }
+        type: { $ref: "#/components/schemas/RecordType" }
+        ttl: { type: [integer, "null"], description: "null = zone default" }
+        data: { $ref: "#/components/schemas/RecordData" }
+        value: { type: string, description: "Data in presentation format, e.g. '10 mail.maison.lan.'" }
+        source: { type: string, enum: [manual, dhcp] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    RecordInput:
+      type: object
+      required: [name, type, data]
+      properties:
+        name: { type: string, description: "@, www, or a FQDN ending with the zone name" }
+        type: { $ref: "#/components/schemas/RecordType" }
+        ttl: { type: [integer, "null"] }
+        data: { $ref: "#/components/schemas/RecordData" }
+
+    RecordData:
+      type: object
+      description: |
+        Fields depend on the type:
+          A / AAAA: { ip }
+          CNAME / PTR: { target }
+          NS: { host }
+          MX: { preference, exchange }
+          TXT: { text }  (long text is split in 255-byte strings automatically)
+          SRV: { priority, weight, port, target }
+        Host names may be relative to the zone (mail) or absolute (mail.maison.lan.).
+      properties:
+        ip: { type: string }
+        target: { type: string }
+        host: { type: string }
+        preference: { type: integer }
+        exchange: { type: string }
+        text: { type: string }
+        priority: { type: integer }
+        weight: { type: integer }
+        port: { type: integer }
+
+    ForwarderProtocol:
+      type: string
+      enum: [udp, tcp, dot, doh]
+
+    ForwarderInput:
+      type: object
+      required: [protocol]
+      properties:
+        domain: { type: string, description: "Empty = global forwarder; otherwise conditional for this domain and its sub-domains" }
+        protocol: { $ref: "#/components/schemas/ForwarderProtocol" }
+        address: { type: string, description: "IP address (required for udp/tcp/dot; for doh: bootstrap IP, optional if the URL host is an IP)" }
+        port: { type: integer, description: "Default 53 (udp/tcp), 853 (dot), 443 (doh)" }
+        tlsServerName: { type: string, description: "Name checked in the certificate (dot), e.g. dns.quad9.net" }
+        tlsVerify: { type: boolean, default: true }
+        dohUrl: { type: string, example: "https://dns.quad9.net/dns-query" }
+        enabled: { type: boolean, default: true }
+        position: { type: integer, description: "Order inside its group (0 = first)" }
+
+    Forwarder:
+      allOf:
+        - $ref: "#/components/schemas/ForwarderInput"
+        - type: object
+          properties:
+            id: { type: string }
+            health:
+              type: object
+              properties:
+                healthy: { type: boolean }
+                lastError: { type: string }
+                lastLatencyMs: { type: number }
+                lastCheckAt: { type: [string, "null"], format: date-time }
+
+    ForwarderTest:
+      type: object
+      properties:
+        ok: { type: boolean }
+        latencyMs: { type: number }
+        rcode: { type: string }
+        answers: { type: array, items: { type: string } }
+        error: { type: string, description: "French message, e.g. certificat invalide" }

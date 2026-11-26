@@ -65,6 +65,8 @@ func (s *Server) registerRoutes() {
 	// Audit (admin)
 	s.handle("GET /audit", need(auth.PermAdmin), s.listAudit)
 
+	s.registerDNSRoutes()
+
 	// Unknown API paths answer JSON 404 instead of the SPA.
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, TNotFound, "Route inconnue.")

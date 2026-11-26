@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -26,6 +28,10 @@ import (
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
 	"github.com/prohand/leazone/internal/config"
+	"github.com/prohand/leazone/internal/dnsconf"
+	"github.com/prohand/leazone/internal/dnsmgr"
+	"github.com/prohand/leazone/internal/dnssrv"
+	"github.com/prohand/leazone/internal/netif"
 	"github.com/prohand/leazone/internal/secrets"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
@@ -43,6 +49,38 @@ type harness struct {
 	auth  *auth.Service
 	audit *audit.Log
 	clock time.Duration // added to the real time
+
+	dns     *dnsmgr.Manager
+	ifaces  *fakeIfaces
+	dnsPort int
+}
+
+// fakeIfaces is a static interface source.
+type fakeIfaces struct {
+	list []netif.Interface
+	subs []func([]netif.Interface)
+}
+
+func (f *fakeIfaces) Interfaces() []netif.Interface        { return f.list }
+func (f *fakeIfaces) Subscribe(fn func([]netif.Interface)) { f.subs = append(f.subs, fn) }
+func (f *fakeIfaces) Kick()                                 {}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := pc.LocalAddr().(*net.UDPAddr).Port
+		pc.Close()
+		if ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p)); err == nil {
+			ln.Close()
+			return p
+		}
+	}
+	t.Fatal("no free port")
+	return 0
 }
 
 func newHarness(t *testing.T, env map[string]string) *harness {
@@ -87,7 +125,15 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 	spec, _ := apispec.JSON()
 	ui := fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>Leazone</title>")},
 		"assets/app.js": {Data: []byte("console.log(1)")}}
-	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, Log: log, UI: ui, Spec: spec})
+	h.ifaces = &fakeIfaces{list: []netif.Interface{{Name: "lo", Type: netif.TypeLoopback, Up: true,
+		Addresses: []netif.Address{{Prefix: netip.MustParsePrefix("127.0.0.1/8")}}}}}
+	h.dnsPort = freePort(t)
+	h.dns = dnsmgr.New(dnsconf.New(db), dnssrv.New(log, h.dnsPort), h.ifaces, log)
+	if err := h.dns.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.dns.Engine.Close)
+	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, Log: log, UI: ui, Spec: spec})
 	h.ts = httptest.NewTLSServer(h.srv.Handler())
 	t.Cleanup(h.ts.Close)
 	return h

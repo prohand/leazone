@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/dnsconf"
 	"github.com/prohand/leazone/internal/store"
 )
 
@@ -82,10 +83,18 @@ func writeProblem(w http.ResponseWriter, p Problem) {
 // fail maps a Go error to a problem response.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var verr auth.ErrValidation
+	var dverr dnsconf.Validation
+	var conflict dnsconf.ErrConflict
 	var rl *auth.RateLimitError
 	switch {
 	case errors.As(err, &verr):
 		writeProblem(w, Problem{Type: TValidation, Status: http.StatusUnprocessableEntity, Detail: "Vérifiez les champs.", Errors: verr})
+	case errors.As(err, &dverr):
+		writeProblem(w, Problem{Type: TValidation, Status: http.StatusUnprocessableEntity, Detail: "Vérifiez les champs.", Errors: dverr})
+	case errors.As(err, &conflict):
+		problem(w, http.StatusConflict, TConflict, conflict.Msg)
+	case errors.Is(err, dnsconf.ErrReadOnly):
+		problem(w, http.StatusConflict, TConflict, err.Error())
 	case errors.As(err, &rl):
 		writeProblem(w, Problem{Type: TRateLimited, Status: http.StatusTooManyRequests, Detail: rl.Error(),
 			RetryAfter: int(math.Ceil(rl.RetryAfter.Seconds()))})

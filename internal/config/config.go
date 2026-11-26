@@ -34,6 +34,9 @@ type Config struct {
 	LogLevel  string `yaml:"log_level"`
 	LogFormat string `yaml:"log_format"` // text or json (stdout)
 
+	// DNSPort is the port of the DNS server (53; another port helps tests).
+	DNSPort int `yaml:"dns_port"`
+
 	// ControlSocket is the local Unix socket used by CLI sub-commands.
 	ControlSocket string `yaml:"control_socket"`
 
@@ -60,6 +63,7 @@ func Defaults() Config {
 		LogLevel:      "info",
 		LogFormat:     "text",
 		ControlSocket: "/tmp/leazone.sock",
+		DNSPort:       53,
 		AdminUser:     "admin",
 	}
 }
@@ -95,6 +99,13 @@ func Load(getenv func(string) string) (*Config, error) {
 	str("LOG_FORMAT", &c.LogFormat)
 	str("CONTROL_SOCKET", &c.ControlSocket)
 	str("ADMIN_USER", &c.AdminUser)
+	if v := getenv("LEAZONE_DNS_PORT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return nil, fmt.Errorf("LEAZONE_DNS_PORT: port invalide %q", v)
+		}
+		c.DNSPort = p
+	}
 	if v := getenv("LEAZONE_TRUSTED_PROXIES"); v != "" {
 		c.TrustedProxies = splitList(v)
 	}
