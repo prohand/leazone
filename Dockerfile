@@ -52,10 +52,12 @@ LABEL org.opencontainers.image.title="Leazone" \
       org.opencontainers.image.licenses="NOASSERTION"
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/rootfs/ /
-COPY --from=build /out/leazone /leazone
-# File capabilities must be written in this stage: they are lost by COPY --from.
-# "+p" only, so the container still starts when NET_ADMIN is not granted.
-RUN ["/leazone", "internal", "setcap", "/leazone"]
+# File capabilities must be written in this stage (COPY --from drops them).
+# The binary copies itself from a bind mount and sets "+p" capabilities in one
+# step, so the image holds a single copy of it. "+p" only: the container still
+# starts when NET_ADMIN is not granted.
+RUN --mount=type=bind,from=build,source=/out/leazone,target=/mnt/leazone \
+    ["/mnt/leazone", "internal", "install", "/mnt/leazone", "/leazone"]
 USER 1000:1000
 WORKDIR /data
 EXPOSE 53/udp 53/tcp 67/udp 8443/tcp 7443/tcp

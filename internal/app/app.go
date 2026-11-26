@@ -199,6 +199,8 @@ func (n *Node) housekeeping(ctx context.Context) {
 // control answers CLI sub-commands on the local socket.
 func (n *Node) control(ctx context.Context, req control.Request) control.Response {
 	switch req.Cmd {
+	case "caps":
+		return control.Response{OK: true, Message: caps.Current().String()}
 	case "health":
 		if !n.ready.Load() {
 			return control.Response{Message: "starting"}

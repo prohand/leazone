@@ -59,8 +59,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "migrate":
 		return migrate(args, stdout, stderr)
 	case "caps":
-		fmt.Fprintln(stdout, caps.Current().String())
-		return 0
+		return showCaps(stdout)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "leazone %s (commit %s, built %s, schema %d, cluster protocol %s)\n",
 			version.Version, version.Commit, version.BuildDate, store.LatestSchema(), version.ClusterProtocol)
@@ -204,8 +203,34 @@ func migrate(args []string, stdout, stderr io.Writer) int {
 	return 2
 }
 
+// showCaps prints the capabilities of the running node (through the control
+// socket) or, when no node runs, what this process can raise.
+func showCaps(stdout io.Writer) int {
+	if cfg, err := config.Load(os.Getenv); err == nil {
+		if resp, err := control.Call(cfg.ControlSocket, control.Request{Cmd: "caps"}, 2*time.Second); err == nil && resp.OK {
+			fmt.Fprintln(stdout, resp.Message)
+			return 0
+		}
+	}
+	st, err := caps.Raise()
+	if err != nil {
+		fmt.Fprintln(stdout, caps.Current().String())
+		return 0
+	}
+	fmt.Fprintln(stdout, st.String())
+	return 0
+}
+
 // internal holds commands used while building the image.
 func internal(args []string, stderr io.Writer) int {
+	if len(args) == 3 && args[0] == "install" {
+		// Copy the binary and set its file capabilities in a single image layer.
+		if err := install(args[1], args[2]); err != nil {
+			fmt.Fprintln(stderr, "install:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) >= 1 && args[0] == "setcap" {
 		path := "/leazone"
 		if len(args) == 2 {
@@ -217,6 +242,26 @@ func internal(args []string, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintln(stderr, "usage : leazone internal setcap [path]")
+	fmt.Fprintln(stderr, "usage : leazone internal setcap [path] | install <src> <dst>")
 	return 2
+}
+
+func install(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return caps.SetFile(dst)
 }
