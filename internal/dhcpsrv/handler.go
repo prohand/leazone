@@ -159,6 +159,14 @@ func (e *Engine) localAddr(p Packet, s *scopeRT) netip.Addr {
 
 // Handle processes one request and returns the reply (nil = no answer).
 func (e *Engine) Handle(ctx context.Context, p Packet) *Reply {
+	r := e.handle(ctx, p)
+	if e.OnEvent != nil {
+		e.emit(p, r)
+	}
+	return r
+}
+
+func (e *Engine) handle(ctx context.Context, p Packet) *Reply {
 	m := p.Msg
 	if m.OpCode != dhcpv4.OpcodeBootRequest {
 		return nil

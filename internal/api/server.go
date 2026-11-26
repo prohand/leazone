@@ -19,6 +19,8 @@ import (
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/dhcpmgr"
 	"github.com/prohand/leazone/internal/dnsmgr"
+	"github.com/prohand/leazone/internal/querylog"
+	"github.com/prohand/leazone/internal/stats"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
 )
@@ -34,6 +36,8 @@ type Server struct {
 	dhcp     *dhcpmgr.Manager
 	cluster  *cluster.Node // nil on a single node
 	blocking *blocking.Manager
+	stats    *stats.Recorder
+	qlog     *querylog.Log
 	log      *slog.Logger
 	ui       fs.FS
 	spec     []byte
@@ -62,6 +66,8 @@ type Deps struct {
 	DHCP     *dhcpmgr.Manager
 	Cluster  *cluster.Node
 	Blocking *blocking.Manager
+	Stats    *stats.Recorder
+	QueryLog *querylog.Log
 	Log      *slog.Logger
 	UI       fs.FS
 	Spec     []byte // OpenAPI as JSON
@@ -69,7 +75,7 @@ type Deps struct {
 
 // New builds the server and registers all routes.
 func New(d Deps) *Server {
-	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, cluster: d.Cluster, blocking: d.Blocking, log: d.Log, ui: d.UI,
+	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, cluster: d.Cluster, blocking: d.Blocking, stats: d.Stats, qlog: d.QueryLog, log: d.Log, ui: d.UI,
 		spec: d.Spec, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s

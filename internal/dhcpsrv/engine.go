@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prohand/leazone/internal/dhcpconf"
@@ -56,6 +57,11 @@ type Engine struct {
 	// when they are acknowledged (or after its own timeout). It is called
 	// before a DHCPACK leaves, so a lease is known by both nodes first.
 	Sync func(ctx context.Context)
+	// OnEvent, when set, receives each DHCP event (logs). It must not block.
+	OnEvent func(Event)
+
+	version atomic.Uint64 // bumped on every lease change
+	ignored sync.Map      // MAC -> last "ignored" event time (rate limit)
 
 	outbox []Lease
 
@@ -184,6 +190,7 @@ func (e *Engine) store(ctx context.Context, l *Lease) {
 	l.Owner = e.NodeID
 	l.HLC = e.Now().UnixMilli()
 	e.leases[l.ScopeID][dhcpconf.U32(l.IP)] = l
+	e.version.Add(1)
 	if err := e.db.put(ctx, l); err != nil {
 		e.log.Error("lease persist failed", "ip", l.IP, "err", err)
 	}
@@ -251,6 +258,7 @@ func (e *Engine) ApplyRemote(ctx context.Context, list []Lease) {
 			e.leases[r.ScopeID] = map[uint32]*Lease{}
 		}
 		e.leases[r.ScopeID][u] = &nl
+		e.version.Add(1)
 		if err := e.db.put(ctx, &nl); err != nil {
 			e.log.Error("lease persist failed", "ip", nl.IP, "err", err)
 		}
@@ -457,6 +465,10 @@ func (e *Engine) Sweep(ctx context.Context) {
 				e.store(ctx, &nl)
 				if was.State == StateBound && sc != nil {
 					done = append(done, ended{sc.Scope, was})
+					if e.OnEvent != nil {
+						e.OnEvent(Event{Time: now, Kind: "expire", MAC: was.MAC, IP: was.IP.String(), Hostname: was.Hostname,
+							ScopeID: sc.ID, ScopeName: sc.Name, Interface: deref(sc.Interface), Relay: was.GIAddr})
+					}
 				}
 			case (l.State == StateExpired || l.State == StateReleased || l.State == StateDeclined) && now.Sub(l.Ends) > 30*24*time.Hour:
 				delete(m, ip)

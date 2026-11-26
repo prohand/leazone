@@ -12,11 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/miekg/dns"
 	apispec "github.com/prohand/leazone/api"
+
 	"github.com/prohand/leazone/internal/api"
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
@@ -36,7 +39,9 @@ import (
 	"github.com/prohand/leazone/internal/dnssrv"
 	"github.com/prohand/leazone/internal/ids"
 	"github.com/prohand/leazone/internal/netif"
+	"github.com/prohand/leazone/internal/querylog"
 	"github.com/prohand/leazone/internal/secrets"
+	"github.com/prohand/leazone/internal/stats"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
 	"github.com/prohand/leazone/internal/version"
@@ -151,12 +156,38 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	go dm.Run(ctx)
 
+	// Statistics (dashboard) and query/event logs (/data/logs.db).
+	rec := stats.New()
+	qlog, err := querylog.Open(filepath.Join(cfg.DataDir, "logs.db"), log)
+	if err != nil {
+		return fmt.Errorf("journaux : %w", err)
+	}
+	loadLogSettings := func(ctx context.Context) {
+		if st, err := querylog.LoadSettings(ctx, n.db); err == nil {
+			qlog.SetSettings(st)
+		}
+	}
+	loadLogSettings(ctx)
+	go qlog.Run(ctx)
+	engine.SetObserver(func(qi *dnssrv.QueryInfo) {
+		failed := qi.Rcode == dns.RcodeServerFailure || qi.Source == dnssrv.SourceError
+		client := qi.Client.String()
+		rec.Record(stats.Query{Time: qi.Time, Client: client, Name: qi.Name, Source: qi.Source, Failed: failed})
+		qlog.AddDNS(querylog.DNSEntry{Time: qi.Time, Client: client, Name: strings.TrimSuffix(strings.ToLower(qi.Name), "."),
+			Type: dns.TypeToString[qi.Type], Rcode: dns.RcodeToString[qi.Rcode], Source: qi.Source,
+			LatencyMs: float64(qi.Latency.Microseconds()) / 1000, Answer: qi.Answer})
+	})
+
 	// DHCP: lease engine, socket, DNS registration of leases.
 	dhcpEngine, err := dhcpsrv.NewEngine(ctx, n.db, log)
 	if err != nil {
 		return fmt.Errorf("DHCP: %w", err)
 	}
 	dhcpEngine.NodeID = nodeID
+	dhcpEngine.OnEvent = func(ev dhcpsrv.Event) {
+		qlog.AddDHCP(querylog.DHCPEntry{Time: ev.Time, Event: ev.Kind, MAC: ev.MAC, IP: ev.IP, Hostname: ev.Hostname,
+			ScopeID: ev.ScopeID, ScopeName: ev.ScopeName, Interface: ev.Interface, Relay: ev.Relay, Detail: ev.Detail})
+	}
 	dhcpConf := dhcpconf.New(n.db)
 	hm := dhcpmgr.New(dhcpConf, dm.Store, dhcpEngine, dhcpsrv.NewServer(dhcpEngine, cfg.DHCPPort, log), watcher, log)
 	if p := dhcpsrv.NewPinger(log); p != nil {
@@ -190,6 +221,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 			if err := tm.Reload(ctx); err != nil {
 				log.Warn("reload certificate", "err", err)
 			}
+			loadLogSettings(ctx)
 			if err := bm.Reload(ctx); err != nil {
 				log.Warn("reload blocking", "err", err)
 			}
@@ -215,7 +247,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 
 	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
-		Blocking: bm,
+		Blocking: bm, Stats: rec, QueryLog: qlog,
 		Log: log, UI: web.Dist(), Spec: spec})
 
 	ln, err := net.Listen("tcp", cfg.HTTPListen)

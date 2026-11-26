@@ -38,7 +38,9 @@ import (
 	"github.com/prohand/leazone/internal/dnssec"
 	"github.com/prohand/leazone/internal/dnssrv"
 	"github.com/prohand/leazone/internal/netif"
+	"github.com/prohand/leazone/internal/querylog"
 	"github.com/prohand/leazone/internal/secrets"
+	"github.com/prohand/leazone/internal/stats"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
 )
@@ -62,6 +64,8 @@ type harness struct {
 	dnsPort  int
 	dhcpPort int
 	blocking *blocking.Manager
+	stats    *stats.Recorder
+	qlog     *querylog.Log
 }
 
 // fakeIfaces is a static interface source.
@@ -141,6 +145,10 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 	h.dns.DB, h.dns.DNSSEC = db, dnssec.NewStore(db, box)
 	h.blocking = blocking.NewManager(db, blocking.NewEngine(), dir, log)
 	h.dns.Engine.SetBlocker(h.blocking.Engine)
+	h.stats = stats.New()
+	if h.qlog, err = querylog.Open(filepath.Join(dir, "logs.db"), log); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.dns.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +165,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(h.dhcp.Server.Close)
-	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, DHCP: h.dhcp, Blocking: h.blocking, Log: log, UI: ui, Spec: spec})
+	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, DHCP: h.dhcp, Blocking: h.blocking, Stats: h.stats, QueryLog: h.qlog, Log: log, UI: ui, Spec: spec})
 	h.ts = httptest.NewTLSServer(h.srv.Handler())
 	t.Cleanup(h.ts.Close)
 	return h

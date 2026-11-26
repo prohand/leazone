@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -35,6 +36,18 @@ const (
 // Blocker decides whether a recursive query is blocked (ad blocking).
 type Blocker interface {
 	Filter(name string, client, local netip.Addr, count bool) (blocked, nullIP bool)
+}
+
+// QueryInfo describes an answered query (logs, statistics).
+type QueryInfo struct {
+	Time    time.Time
+	Client  netip.Addr
+	Name    string
+	Type    uint16
+	Rcode   int
+	Source  string
+	Latency time.Duration
+	Answer  string // first answer, short form
 }
 
 // DNSSECConfig is the DNSSEC input of the engine.
@@ -65,6 +78,7 @@ type Engine struct {
 	listeners map[string]*listener // by IP
 
 	blocker   Blocker
+	observer  func(*QueryInfo)
 	dnssecCfg atomic.Pointer[DNSSECConfig]
 	sigs      *sigCache
 	anchors   []*dns.DS
@@ -84,6 +98,10 @@ func New(log *slog.Logger, port int) *Engine {
 
 // SetRootCAs replaces the trusted roots for DoT/DoH (tests only).
 func (e *Engine) SetRootCAs(p *x509.CertPool) { e.roots = p }
+
+// SetObserver installs a function called after each answer (before
+// serving). It must not block.
+func (e *Engine) SetObserver(f func(*QueryInfo)) { e.observer = f }
 
 // SetBlocker installs the ad blocker (before serving).
 func (e *Engine) SetBlocker(b Blocker) { e.blocker = b }
@@ -143,9 +161,28 @@ func (e *Engine) Load(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record, 
 func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	e.queries.Add(1)
 	client := addrOf(w.RemoteAddr())
-	resp, _ := e.handleFrom(context.Background(), r, client, addrOf(w.LocalAddr()))
+	start := time.Now()
+	resp, src := e.handleFrom(context.Background(), r, client, addrOf(w.LocalAddr()))
 	if resp == nil {
 		return
+	}
+	if e.observer != nil && len(r.Question) == 1 {
+		qi := &QueryInfo{Time: start, Client: client, Name: r.Question[0].Name, Type: r.Question[0].Qtype,
+			Rcode: resp.Rcode, Source: src, Latency: time.Since(start)}
+		for _, rr := range resp.Answer {
+			if rr.Header().Rrtype == dns.TypeRRSIG {
+				continue
+			}
+			qi.Answer = strings.TrimSpace(strings.TrimPrefix(rr.String(), rr.Header().String()))
+			if rr.Header().Rrtype != r.Question[0].Qtype {
+				qi.Answer = dns.TypeToString[rr.Header().Rrtype] + " " + qi.Answer
+			}
+			if len(qi.Answer) > 120 {
+				qi.Answer = qi.Answer[:120]
+			}
+			break
+		}
+		e.observer(qi)
 	}
 	if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
 		size := dns.MinMsgSize

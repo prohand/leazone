@@ -80,7 +80,7 @@ func localRoute(method, path string) bool {
 	case strings.HasPrefix(path, "/auth/"):
 		return true
 	case path == "/dns/lookup", path == "/dns/forwarders/test", path == "/dns/forwarders/{id}/test", path == "/dns/cache/flush",
-		path == "/blocking/refresh", path == "/blocking/check":
+		path == "/blocking/refresh", path == "/blocking/check", path == "/logs/purge", path == "/backup":
 		return true
 	case method == http.MethodDelete && (path == "/me/sessions/{id}" || path == "/dhcp/leases/{scope}/{ip}"):
 		return true
