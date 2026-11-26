@@ -40,7 +40,7 @@ Principes :
 | `leazone caps` | Affiche les capabilities effectives (diagnostic) |
 | `leazone version` | Version, version de schéma, version du protocole cluster |
 
-Les commandes `admin`, `backup`, `healthcheck` parlent au processus via un **socket Unix local** (`/tmp/leazone.sock`, droits 0600, propriétaire `leazone`). Donc `docker exec` suffit, rien n'est exposé sur le réseau.
+Les commandes `admin`, `backup`, `healthcheck` parlent au processus via un **socket Unix local** (`/data/run/leazone.sock`, dossier 0700 et socket 0600, propriétaire `leazone`). Donc `docker exec` suffit, rien n'est exposé sur le réseau.
 
 ---
 

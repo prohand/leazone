@@ -45,9 +45,15 @@ type LeaseRequest struct {
 	Epoch   uint64 `json:"epoch"`
 	Seq     uint64 `json:"seq"`     // last config change the node has
 	LeaseMs int64  `json:"leaseMs"` // requested lease duration
-	To      string `json:"to"`      // transfer: target node
-	ToName  string `json:"toName"`
-	ToSeq   uint64 `json:"toSeq"`
+	// LastEpoch is the epoch of the node's last config change (Seq). With
+	// Seq it orders histories: a node whose last change belongs to an older
+	// epoch than the committed one misses changes even with a higher Seq.
+	// Optional: nil from older nodes (the witness then only
+	// compares Seq, as before).
+	LastEpoch *uint64 `json:"lastEpoch,omitempty"`
+	To        string  `json:"to"` // transfer: target node
+	ToName    string  `json:"toName"`
+	ToSeq     uint64  `json:"toSeq"`
 }
 
 // LeaseResponse is the witness answer.
@@ -57,18 +63,22 @@ type LeaseResponse struct {
 	PrimaryID   string `json:"primaryId"`
 	PrimaryName string `json:"primaryName"`
 	Committed   uint64 `json:"committed"`
-	Reason      string `json:"reason"`
+	// CommittedEpoch is the epoch of the committed change (0 if unknown).
+	CommittedEpoch uint64 `json:"committedEpoch,omitempty"`
+	Reason         string `json:"reason"`
 }
 
 // WitnessState is the public state of the witness.
 type WitnessState struct {
-	Epoch       uint64    `json:"epoch"`
-	PrimaryID   string    `json:"primaryId"`
-	PrimaryName string    `json:"primaryName"`
-	Committed   uint64    `json:"committed"`
-	LeaseActive bool      `json:"leaseActive"`
-	Version     string    `json:"version"`
-	Time        time.Time `json:"time"`
+	Epoch       uint64 `json:"epoch"`
+	PrimaryID   string `json:"primaryId"`
+	PrimaryName string `json:"primaryName"`
+	Committed   uint64 `json:"committed"`
+	// CommittedEpoch is the epoch of the committed change (0 if unknown).
+	CommittedEpoch uint64    `json:"committedEpoch,omitempty"`
+	LeaseActive    bool      `json:"leaseActive"`
+	Version        string    `json:"version"`
+	Time           time.Time `json:"time"`
 }
 
 // Change is one row change of a config table.

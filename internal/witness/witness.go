@@ -33,6 +33,9 @@ type persisted struct {
 	PrimaryID   string `json:"primaryId"`
 	PrimaryName string `json:"primaryName"`
 	Committed   uint64 `json:"committed"`
+	// CommittedEpoch is the epoch of the committed change (0: unknown,
+	// e.g. a state file written by an older version).
+	CommittedEpoch uint64 `json:"committedEpoch,omitempty"`
 }
 
 // Witness holds the lease.
@@ -62,8 +65,20 @@ func New(dataDir string, log *slog.Logger) (*Witness, error) {
 	return w, nil
 }
 
-func (w *Witness) save() error {
-	b, _ := json.Marshal(w.st)
+// commit saves st then makes it the current state. On a write error
+// nothing changes (neither the state nor the lease).
+func (w *Witness) commit(st persisted, expires time.Time) error {
+	if st != w.st {
+		if err := w.save(st); err != nil {
+			return err
+		}
+	}
+	w.st, w.expires = st, expires
+	return nil
+}
+
+func (w *Witness) save(st persisted) error {
+	b, _ := json.Marshal(st)
 	tmp := w.path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -94,7 +109,31 @@ func leaseOf(ms int64) time.Duration {
 
 func (w *Witness) resp(granted bool, reason string) proto.LeaseResponse {
 	return proto.LeaseResponse{Granted: granted, Epoch: w.st.Epoch, PrimaryID: w.st.PrimaryID, PrimaryName: w.st.PrimaryName,
-		Committed: w.st.Committed, Reason: reason}
+		Committed: w.st.Committed, CommittedEpoch: w.st.CommittedEpoch, Reason: reason}
+}
+
+// raise records (lastEpoch, seq) as committed when it is further than the
+// current committed position. Without lastEpoch (older node) only the seq
+// is known.
+func (st *persisted) raise(lastEpoch *uint64, seq uint64) {
+	if lastEpoch == nil {
+		st.Committed = max(st.Committed, seq)
+		return
+	}
+	if *lastEpoch > st.CommittedEpoch || (*lastEpoch == st.CommittedEpoch && seq > st.Committed) {
+		st.CommittedEpoch, st.Committed = *lastEpoch, seq
+	}
+}
+
+// behind reports whether a node at (lastEpoch, seq) may miss committed
+// changes: its last change is older than the committed one, by seq or by
+// epoch (a higher seq in an older epoch is a divergent history, not a
+// more recent one).
+func (st *persisted) behind(lastEpoch *uint64, seq uint64) bool {
+	if seq < st.Committed {
+		return true
+	}
+	return lastEpoch != nil && *lastEpoch < st.CommittedEpoch
 }
 
 // Renew extends the lease of the current primary and records its last
@@ -105,12 +144,10 @@ func (w *Witness) Renew(r proto.LeaseRequest) proto.LeaseResponse {
 	if r.NodeID != w.st.PrimaryID || r.Epoch != w.st.Epoch {
 		return w.resp(false, "ce nœud n'est plus le primaire")
 	}
-	w.expires = w.now().Add(leaseOf(r.LeaseMs))
-	if r.Seq > w.st.Committed {
-		w.st.Committed = r.Seq
-		if err := w.save(); err != nil {
-			return w.resp(false, "témoin : écriture impossible : "+err.Error())
-		}
+	next := w.st
+	next.raise(r.LastEpoch, r.Seq)
+	if err := w.commit(next, w.now().Add(leaseOf(r.LeaseMs))); err != nil {
+		return w.resp(false, "témoin : écriture impossible : "+err.Error())
 	}
 	return w.resp(true, "")
 }
@@ -124,15 +161,14 @@ func (w *Witness) Acquire(r proto.LeaseRequest) proto.LeaseResponse {
 	if w.st.PrimaryID != "" && w.st.PrimaryID != r.NodeID && now.Before(w.expires) {
 		return w.resp(false, "le primaire actuel ("+w.st.PrimaryName+") est toujours en vie")
 	}
-	if r.Seq < w.st.Committed {
+	if w.st.behind(r.LastEpoch, r.Seq) {
 		return w.resp(false, "ce nœud n'a pas toutes les modifications validées : il ne peut pas devenir primaire")
 	}
-	w.st.Epoch++
-	w.st.PrimaryID, w.st.PrimaryName = r.NodeID, r.Name
-	w.st.Committed = max(w.st.Committed, r.Seq)
-	w.expires = now.Add(leaseOf(r.LeaseMs))
-	if err := w.save(); err != nil {
-		w.st.Epoch--
+	next := w.st
+	next.Epoch++
+	next.PrimaryID, next.PrimaryName = r.NodeID, r.Name
+	next.raise(r.LastEpoch, r.Seq)
+	if err := w.commit(next, now.Add(leaseOf(r.LeaseMs))); err != nil {
 		return w.resp(false, "témoin : écriture impossible : "+err.Error())
 	}
 	w.log.Info("primary lease granted", "node", r.Name, "epoch", w.st.Epoch)
@@ -150,12 +186,11 @@ func (w *Witness) Transfer(r proto.LeaseRequest) proto.LeaseResponse {
 	if r.ToSeq < w.st.Committed || r.ToSeq < r.Seq {
 		return w.resp(false, "le nœud cible n'est pas à jour")
 	}
-	w.st.Epoch++
-	w.st.PrimaryID, w.st.PrimaryName = r.To, r.ToName
-	w.st.Committed = max(w.st.Committed, r.Seq)
-	w.expires = w.now().Add(leaseOf(r.LeaseMs))
-	if err := w.save(); err != nil {
-		w.st.Epoch--
+	next := w.st
+	next.Epoch++
+	next.PrimaryID, next.PrimaryName = r.To, r.ToName
+	next.raise(r.LastEpoch, r.Seq)
+	if err := w.commit(next, w.now().Add(leaseOf(r.LeaseMs))); err != nil {
 		return w.resp(false, "témoin : écriture impossible : "+err.Error())
 	}
 	w.log.Info("primary lease transferred", "to", r.ToName, "epoch", w.st.Epoch)
@@ -167,7 +202,7 @@ func (w *Witness) State() proto.WitnessState {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return proto.WitnessState{Epoch: w.st.Epoch, PrimaryID: w.st.PrimaryID, PrimaryName: w.st.PrimaryName,
-		Committed: w.st.Committed, LeaseActive: w.now().Before(w.expires), Version: version.Version, Time: time.Now()}
+		Committed: w.st.Committed, CommittedEpoch: w.st.CommittedEpoch, LeaseActive: w.now().Before(w.expires), Version: version.Version, Time: time.Now()}
 }
 
 // Handler exposes the witness API.

@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -50,6 +51,8 @@ type Config struct {
 	VIPInterface  string   `yaml:"vip_interface"` // e.g. eno1
 
 	// ControlSocket is the local Unix socket used by CLI sub-commands.
+	// Default: <data_dir>/run/leazone.sock (a directory private to the user,
+	// not the world-writable /tmp).
 	ControlSocket string `yaml:"control_socket"`
 
 	AdminUser string `yaml:"admin_user"`
@@ -74,7 +77,6 @@ func Defaults() Config {
 		HTTPListen:    ":8443",
 		LogLevel:      "info",
 		LogFormat:     "text",
-		ControlSocket: "/tmp/leazone.sock",
 		DNSPort:       53,
 		ClusterListen: ":7443",
 		PreferredRole: "secondary",
@@ -212,8 +214,23 @@ func (c *Config) validate() error {
 	if c.NodeName == "" {
 		c.NodeName, _ = os.Hostname()
 	}
+	if c.ControlSocket == "" {
+		c.ControlSocket = filepath.Join(c.DataDir, "run", "leazone.sock")
+	}
 	if c.PreferredRole != "primary" && c.PreferredRole != "secondary" {
 		return fmt.Errorf("LEAZONE_PREFERRED_ROLE must be primary or secondary")
+	}
+	// Same address written with or without a trailing slash.
+	c.ClusterAddr = strings.TrimRight(c.ClusterAddr, "/")
+	for i, p := range c.Peers {
+		c.Peers[i] = strings.TrimRight(p, "/")
+	}
+	if strings.HasPrefix(c.Witness, "https://") {
+		c.Witness = strings.TrimRight(c.Witness, "/")
+	}
+	if len(c.Peers) > 0 && c.ClusterKey == "" {
+		return fmt.Errorf("LEAZONE_CLUSTER_PEERS is set but the cluster key is empty: " +
+			"LEAZONE_CLUSTER_KEY_FILE is missing or the file is empty (the node would start alone, outside the cluster)")
 	}
 	if c.Clustered() {
 		if c.ClusterAddr == "" {

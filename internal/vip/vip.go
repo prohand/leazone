@@ -82,21 +82,36 @@ func (m *Manager) Up() error {
 	return nil
 }
 
-// Down removes the VIP.
+// Down removes the VIP. It always asks the kernel, even when this process
+// did not add it: after a crash (network_mode host) the address stays on the
+// host interface and must not survive on a node that is not primary.
 func (m *Manager) Down() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.up {
-		return nil
-	}
-	link, err := netlink.LinkByName(m.Interface)
-	if err == nil {
-		if err := netlink.AddrDel(link, m.addr()); err != nil && !errors.Is(err, syscall.EADDRNOTAVAIL) {
-			return m.fail(err)
-		}
-	}
+	was := m.up
 	m.up = false
-	m.log.Info("virtual IP removed", "vip", m.Prefix)
+	link, err := netlink.LinkByName(m.Interface)
+	if err != nil {
+		return nil // no interface, no address
+	}
+	err = netlink.AddrDel(link, m.addr())
+	switch {
+	case err == nil:
+		m.lastErr = ""
+		if was {
+			m.log.Info("virtual IP removed", "vip", m.Prefix)
+		} else {
+			m.log.Warn("stale virtual IP removed (left by a previous run)", "vip", m.Prefix, "interface", m.Interface)
+		}
+	case errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.ESRCH), errors.Is(err, syscall.ENOENT):
+		// Not there: nothing to do.
+	case !was && errors.Is(err, syscall.EPERM):
+		// No NET_ADMIN: this run cannot have added it.
+		m.log.Warn("cannot check for a stale virtual IP: NET_ADMIN capability missing", "vip", m.Prefix)
+	default:
+		m.up = was
+		return m.fail(err)
+	}
 	return nil
 }
 

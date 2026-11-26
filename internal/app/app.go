@@ -64,7 +64,7 @@ type Node struct {
 
 	backup       *backup.Service
 	afterRestore func(context.Context)
-	writable     func() error // nil on a single node
+	writable     func() (done func(), err error) // nil on a single node
 }
 
 // Run starts the node and blocks until ctx is cancelled.
@@ -255,6 +255,15 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		}
 	}
 
+	// Backup/restore must be ready before the API and the control socket
+	// can call them.
+	n.backup = &backup.Service{DB: n.db, Repl: n.repl, Box: n.box, Node: cfg.NodeName,
+		WrapDEK: func(dek []byte) string { return n.master.Seal(dek, "dek") }}
+	n.afterRestore = reloadAll
+	if node != nil {
+		n.writable = node.BeginWrite
+	}
+
 	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
 		Blocking: bm, Stats: rec, QueryLog: qlog, Backup: n.backup, AfterRestore: reloadAll,
 		Log: log, UI: web.Dist(), Spec: spec})
@@ -269,15 +278,8 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		}
 		return err
 	}
-	if err := control.Serve(ctx, cfg.ControlSocket, n.control, log); err != nil {
+	if err := ServeControl(ctx, cfg.ControlSocket, n.control, log); err != nil {
 		log.Warn("control socket unavailable: CLI commands (healthcheck, admin) will not work", "err", err)
-	}
-
-	n.backup = &backup.Service{DB: n.db, Repl: n.repl, Box: n.box, Node: cfg.NodeName,
-		WrapDEK: func(dek []byte) string { return n.master.Seal(dek, "dek") }}
-	n.afterRestore = reloadAll
-	if node != nil {
-		n.writable = node.Writable
 	}
 	go n.autoBackups(ctx)
 	go n.housekeeping(ctx)
@@ -405,6 +407,8 @@ func (n *Node) housekeeping(ctx context.Context) {
 			_ = n.repl.Trim(ctx, 20000)
 			if !n.cfg.Clustered() {
 				_ = n.repl.ClearOutbox(ctx)
+			} else {
+				_ = n.repl.TrimOutbox(ctx, 100000) // peer down for a long time
 			}
 		}
 	}
@@ -490,9 +494,11 @@ func (n *Node) control(ctx context.Context, req control.Request) control.Respons
 		}
 		dry := req.Args["dryRun"] == "true"
 		if !dry && n.writable != nil {
-			if err := n.writable(); err != nil {
+			done, err := n.writable()
+			if err != nil {
 				return control.Response{Message: err.Error()}
 			}
+			defer done()
 		}
 		res, err := n.backup.Restore(ctx, []byte(req.Args["content"]), pw, dry)
 		if err != nil {
@@ -531,6 +537,15 @@ func tlsNames(cfg *config.Config) []string {
 		names = append(names, h)
 	}
 	return names
+}
+
+// ServeControl serves the CLI control socket, creating its directory first
+// (private to this user when it does not exist yet).
+func ServeControl(ctx context.Context, path string, h control.Handler, log *slog.Logger) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return control.Serve(ctx, path, h, log)
 }
 
 // CheckWritable is checkWritable for other commands (witness).
