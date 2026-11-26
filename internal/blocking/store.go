@@ -117,7 +117,7 @@ type Store struct {
 func NewStore(db *store.DB) *Store { return &Store{db: db, Now: time.Now} }
 
 // ErrNotFound is returned for unknown ids.
-var ErrNotFound = errors.New("not found")
+var ErrNotFound = store.ErrNotFound
 
 // Settings returns the settings or the defaults.
 func (s *Store) Settings(ctx context.Context) (Settings, error) {

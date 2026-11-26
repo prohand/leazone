@@ -27,6 +27,7 @@ import (
 	apispec "github.com/prohand/leazone/api"
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/blocking"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/ddns"
 	"github.com/prohand/leazone/internal/dhcpconf"
@@ -34,6 +35,7 @@ import (
 	"github.com/prohand/leazone/internal/dhcpsrv"
 	"github.com/prohand/leazone/internal/dnsconf"
 	"github.com/prohand/leazone/internal/dnsmgr"
+	"github.com/prohand/leazone/internal/dnssec"
 	"github.com/prohand/leazone/internal/dnssrv"
 	"github.com/prohand/leazone/internal/netif"
 	"github.com/prohand/leazone/internal/secrets"
@@ -59,6 +61,7 @@ type harness struct {
 	ifaces   *fakeIfaces
 	dnsPort  int
 	dhcpPort int
+	blocking *blocking.Manager
 }
 
 // fakeIfaces is a static interface source.
@@ -135,6 +138,9 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		Addresses: []netif.Address{{Prefix: netip.MustParsePrefix("127.0.0.1/8")}}}}}
 	h.dnsPort = freePort(t)
 	h.dns = dnsmgr.New(dnsconf.New(db), dnssrv.New(log, h.dnsPort), h.ifaces, log)
+	h.dns.DB, h.dns.DNSSEC = db, dnssec.NewStore(db, box)
+	h.blocking = blocking.NewManager(db, blocking.NewEngine(), dir, log)
+	h.dns.Engine.SetBlocker(h.blocking.Engine)
 	if err := h.dns.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +157,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(h.dhcp.Server.Close)
-	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, DHCP: h.dhcp, Log: log, UI: ui, Spec: spec})
+	h.srv = New(Deps{Config: cfg, DB: db, Auth: svc, Audit: h.audit, TLS: tm, DNS: h.dns, DHCP: h.dhcp, Blocking: h.blocking, Log: log, UI: ui, Spec: spec})
 	h.ts = httptest.NewTLSServer(h.srv.Handler())
 	t.Cleanup(h.ts.Close)
 	return h

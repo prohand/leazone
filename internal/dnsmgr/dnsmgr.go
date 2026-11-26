@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/prohand/leazone/internal/dnsconf"
+	"github.com/prohand/leazone/internal/dnssec"
+	"github.com/prohand/leazone/internal/modules"
+	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/dnssrv"
 	"github.com/prohand/leazone/internal/netif"
 )
@@ -28,6 +31,12 @@ type Manager struct {
 	Engine *dnssrv.Engine
 	Ifaces Interfaces
 	log    *slog.Logger
+
+	// DNSSEC (optional): key store, modules state and whether this node
+	// writes the configuration (only that node runs key maintenance).
+	DNSSEC   *dnssec.Store
+	DB       *store.DB
+	Writable func() bool
 
 	mu sync.Mutex // serializes reloads
 
@@ -80,6 +89,22 @@ func (m *Manager) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if m.DB != nil {
+		mods, err := modules.Get(ctx, m.DB)
+		if err != nil {
+			return err
+		}
+		c := dnssrv.DNSSECConfig{Validate: mods.DNSSECValidation}
+		if mods.DNSSEC && m.DNSSEC != nil {
+			if c.Keys, err = m.DNSSEC.SigningKeys(ctx); err != nil {
+				return err
+			}
+			if c.NSECMode, err = m.DNSSEC.NSECModes(ctx); err != nil {
+				return err
+			}
+		}
+		m.Engine.SetDNSSEC(c)
+	}
 	m.Engine.Load(zones, recs, fwd, st)
 	return m.applyListeners(ctx, st)
 }
@@ -121,10 +146,12 @@ func (m *Manager) applyListeners(ctx context.Context, st dnsconf.Settings) error
 	return nil
 }
 
-// Run retries failed listeners until ctx is done.
+// Run retries failed listeners, renews signatures and maintains DNSSEC
+// keys until ctx is done.
 func (m *Manager) Run(ctx context.Context) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
+	var lastMaintain time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -132,6 +159,35 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			m.Engine.Retry()
+			reload := m.Engine.NeedsResign(time.Now())
+			if time.Since(lastMaintain) > 5*time.Minute {
+				lastMaintain = time.Now()
+				if changed, err := m.maintain(ctx); err != nil {
+					m.log.Warn("DNSSEC key maintenance", "err", err)
+				} else if changed {
+					reload = true
+				}
+			}
+			if reload {
+				if err := m.Reload(ctx); err != nil {
+					m.log.Error("DNS reload", "err", err)
+				}
+			}
 		}
 	}
+}
+
+func (m *Manager) maintain(ctx context.Context) (bool, error) {
+	if m.DNSSEC == nil || m.DB == nil || (m.Writable != nil && !m.Writable()) {
+		return false, nil
+	}
+	mods, err := modules.Get(ctx, m.DB)
+	if err != nil || !mods.DNSSEC {
+		return false, err
+	}
+	changed, err := m.DNSSEC.Maintain(ctx)
+	if changed {
+		m.log.Info("DNSSEC keys rolled over")
+	}
+	return changed, err
 }

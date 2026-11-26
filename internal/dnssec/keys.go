@@ -82,7 +82,7 @@ type Store struct {
 func NewStore(db *store.DB, box *secrets.Box) *Store { return &Store{db: db, box: box, Now: time.Now} }
 
 // ErrNotFound is returned for an unknown zone.
-var ErrNotFound = errors.New("not found")
+var ErrNotFound = store.ErrNotFound
 
 func ms(t time.Time) int64 { return t.UnixMilli() }
 

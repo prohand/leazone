@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/prohand/leazone/internal/api"
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
+	"github.com/prohand/leazone/internal/blocking"
 	"github.com/prohand/leazone/internal/caps"
 	"github.com/prohand/leazone/internal/cluster"
 	"github.com/prohand/leazone/internal/cluster/repl"
@@ -30,6 +32,7 @@ import (
 	"github.com/prohand/leazone/internal/dhcpsrv"
 	"github.com/prohand/leazone/internal/dnsconf"
 	"github.com/prohand/leazone/internal/dnsmgr"
+	"github.com/prohand/leazone/internal/dnssec"
 	"github.com/prohand/leazone/internal/dnssrv"
 	"github.com/prohand/leazone/internal/ids"
 	"github.com/prohand/leazone/internal/netif"
@@ -118,7 +121,31 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	watcher := netif.NewWatcher(log)
 	go watcher.Run(ctx)
 	engine := dnssrv.New(log, cfg.DNSPort)
+	var node *cluster.Node
 	dm := dnsmgr.New(dnsconf.New(n.db), engine, watcher, log)
+	dm.DB, dm.DNSSEC = n.db, dnssec.NewStore(n.db, n.box)
+	dm.Writable = func() bool { return node == nil || node.Writable() == nil }
+
+	// Ad blocking (optional module): engine consulted by the DNS server.
+	blockEngine := blocking.NewEngine()
+	engine.SetBlocker(blockEngine)
+	bm := blocking.NewManager(n.db, blockEngine, cfg.DataDir, log)
+	setLocals := func(ifs []netif.Interface) {
+		m := map[netip.Addr]blocking.IfInfo{}
+		for _, it := range ifs {
+			for _, a := range it.Addresses {
+				m[a.Prefix.Addr()] = blocking.IfInfo{Name: it.Name, VLAN: it.VLANID}
+			}
+		}
+		blockEngine.SetLocals(m)
+	}
+	setLocals(watcher.Interfaces())
+	watcher.Subscribe(setLocals)
+	if err := bm.Reload(ctx); err != nil {
+		return fmt.Errorf("blocage : %w", err)
+	}
+	go bm.Run(ctx)
+
 	if err := dm.Reload(ctx); err != nil {
 		return fmt.Errorf("DNS: %w", err)
 	}
@@ -142,7 +169,6 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	go hm.Run(ctx)
 
 	// High availability.
-	var node *cluster.Node
 	if cfg.Clustered() {
 		vipM, err := vip.New(cfg.VIP, cfg.VIPInterface, log)
 		if err != nil {
@@ -163,6 +189,9 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 			}
 			if err := tm.Reload(ctx); err != nil {
 				log.Warn("reload certificate", "err", err)
+			}
+			if err := bm.Reload(ctx); err != nil {
+				log.Warn("reload blocking", "err", err)
 			}
 			if err := dm.Reload(ctx); err != nil {
 				log.Warn("reload DNS", "err", err)
@@ -186,6 +215,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 
 	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Cluster: node,
+		Blocking: bm,
 		Log: log, UI: web.Dist(), Spec: spec})
 
 	ln, err := net.Listen("tcp", cfg.HTTPListen)
