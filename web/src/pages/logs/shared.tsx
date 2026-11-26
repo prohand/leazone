@@ -66,25 +66,33 @@ export function UrlTextFilter({
   const urlValue = params.get(name) ?? ""
   const [value, setValue] = React.useState(urlValue)
   const pushed = React.useRef(urlValue)
+  // Only text typed here goes to the URL (never an echo of a URL value, which
+  // could be a stale one while the router switches tabs).
+  const typed = React.useRef(false)
   React.useEffect(() => {
     if (urlValue !== pushed.current) {
       pushed.current = urlValue
+      typed.current = false
       setValue(urlValue)
     }
   }, [urlValue])
   const debounced = useDebounced(value.trim(), 300)
   React.useEffect(() => {
-    if (debounced !== pushed.current) {
+    if (typed.current && debounced !== pushed.current) {
       pushed.current = debounced
       setParam({ [name]: debounced || undefined })
     }
   }, [debounced, name, setParam])
+  const change = (v: string) => {
+    typed.current = true
+    setValue(v)
+  }
   return (
     <div className={cn("relative", className)}>
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
       <Input
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => change(e.target.value)}
         placeholder={placeholder}
         aria-label={label}
         className={cn("pr-8 pl-8", mono && value && "font-mono text-xs")}
@@ -94,7 +102,7 @@ export function UrlTextFilter({
       {value && (
         <button
           type="button"
-          onClick={() => setValue("")}
+          onClick={() => change("")}
           className="absolute top-1/2 right-2 -translate-y-1/2 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
           aria-label={`Effacer : ${label}`}
         >
