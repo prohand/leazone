@@ -60,11 +60,11 @@ internal/
   ddns/                      baux → A + PTR
   cluster/                   nœuds, élection, journal, synchro, conflits
   witness/                   serveur témoin
-  vip/                       IP virtuelle (ARP gratuit, option VRRP)
+  vip/                       IP virtuelle (ARP gratuit)
   auth/                      mots de passe, webauthn, totp, codes, sessions, limites, rôles
   api/                       handlers HTTP, middlewares (CSRF, en-têtes, ACL IP)
   audit/                     journal d'audit chaîné (hash)
-  tlsmgr/                    auto-signé, import, ACME
+  tlsmgr/                    auto-signé, import
   secrets/                   chiffrement des secrets (AES-256-GCM)
   modules/blocking/          blocage pubs
   modules/dnssec/            signature + validation
@@ -79,7 +79,6 @@ Dockerfile
 
 Bibliothèques Go en plus de la stack imposée (toutes en Go pur) :
 - `github.com/vishvananda/netlink` : interfaces, VLAN, adresses, événements à chaud, ajout de la VIP.
-- `golang.org/x/crypto/acme` : ACME (plus léger que lego).
 - `github.com/prometheus/client_golang` : métriques.
 - `gopkg.in/natefinch/lumberjack.v2` : rotation des fichiers de log.
 - `kernel.org/pub/linux/libs/security/libcap/cap` : capabilities (fonctionne sans CGO).
@@ -156,10 +155,10 @@ L'état réel des interfaces (IP, parent, type) n'est **pas** stocké : il vient
 | `api_tokens` | C | `id`, `user_id`, `name`, `prefix`, `secret_hash`, `scope` (read/write), `expires_at`, `revoked_at` |
 | `login_guard` | E | `key` (ip:… / user:…), `failures`, `locked_until` |
 | `audit_log` | E | `id`, `ts`, `node_id`, `actor`, `ip`, `action`, `target`, `details`, `result`, `prev_hash`, `hash` |
-| `certificates` | C | `id`, `source` (import/acme/selfsigned), `domains`, `cert_pem`, `key_enc`, `not_after` |
+| `certificates` | C | `id`, `source` (import/selfsigned), `domains`, `cert_pem`, `key_enc`, `not_after` |
 
 ### Secrets
-- Une **clé de données (DEK)** AES-256 chiffre : secrets TOTP, clés privées DNSSEC, clés TLS/ACME, CA du cluster.
+- Une **clé de données (DEK)** AES-256 chiffre : secrets TOTP, clés privées DNSSEC, clés TLS, CA du cluster.
 - Nœud seul : DEK protégée par une clé maître locale (`/data/keys/master.key`).
 - Cluster : DEK protégée par une clé dérivée (Argon2id) de la **clé de cluster** (`LEAZONE_CLUSTER_KEY_FILE`). Même DEK sur tous les nœuds → chaque nœud déchiffre les secrets répliqués.
 - Mots de passe, codes de secours, jetons d'API : **hachés**, jamais chiffrés ni stockés en clair.
@@ -225,7 +224,7 @@ Droit effectif d'un jeton = **le plus faible** entre son scope (lecture/écritur
   - Bonus : on ne touche pas à `127.0.0.53`, donc pas de conflit avec systemd-resolved tant qu'on n'écoute pas en joker.
 - Au démarrage, si une IP:53 est déjà prise → message clair :
   `Port 53 déjà utilisé sur 0.0.0.0 (souvent systemd-resolved). Solution : DNSStubListener=no dans /etc/systemd/resolved.conf puis systemctl restart systemd-resolved.`
-- Ports par défaut : 53/udp+tcp (DNS), 67/udp (DHCP), 8443/tcp (UI + API), 7443/tcp (cluster mTLS).
+- Ports par défaut : 53/udp+tcp (DNS), 67/udp (DHCP), 8443/tcp (UI + API, derrière nginx), 7443/tcp (cluster mTLS).
 
 ---
 
@@ -353,7 +352,7 @@ Les modifs faites pendant la panne sont sur le primaire actuel, donc **reçues**
 
 ### 8.8 IP virtuelle (VIP)
 - Suit le rôle primaire. Mode par défaut **ARP gratuit** : ajout de l'IP sur l'interface (`NET_ADMIN`) + 3 GARP (`NET_RAW`). Retrait à la rétrogradation.
-- Option VRRPv3 (annonces standard, MAC virtuelle 00:00:5e:00:01:xx), l'élection restant décidée par Leazone. Voir § 12.
+- Pas de VRRP en v1 : l'élection est déjà faite par le cluster Leazone, VRRP n'apporterait rien entre deux nœuds Leazone.
 - La VIP sert aussi de **nom unique pour l'UI** (RP ID WebAuthn), indispensable aux passkeys après bascule.
 
 ### 8.9 DNS en HA
@@ -391,16 +390,28 @@ passkey sans mot de passe ──▶ session "full" directement
 - En-têtes :
   - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`
     (`style-src-attr` est nécessaire aux composants Radix de shadcn/ui ; aucun script inline).
-  - `HSTS` **seulement** avec un certificat de confiance (sinon le navigateur bloquerait l'accès en auto-signé).
+  - `HSTS` : posé par nginx (exemple fourni). Leazone ne le pose qu'en accès direct avec un certificat importé.
   - `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy`.
 - Step-up (passkey ou TOTP récent < 5 min) pour : supprimer une zone, changer la HA, exporter les clés DNSSEC, gérer les utilisateurs, sauvegarde avec secrets, réinitialiser un MFA.
 - Liste d'IP/réseaux autorisés pour l'UI (option), vérifiée avant toute autre chose.
 - Audit chaîné (chaque ligne contient le hash de la précédente) : une suppression ou modif du journal se voit.
 
 ### HTTPS et passkeys
-- Certificat : import (UI ou `/data/tls/`), ACME (HTTP-01 ou DNS-01), ou auto-signé au premier démarrage avec bandeau rouge.
+- Pas de Let's Encrypt / ACME.
+- Certificat : import (PKI interne, via l'UI ou `/data/tls/`), ou auto-signé au premier démarrage (bandeau rouge seulement en accès direct).
 - RP ID réglable (`leazone.mondomaine.lan`). Si l'UI est ouverte par une IP ou un autre nom, l'UI l'explique au lieu d'un échec muet.
 - En HA : même nom (VIP) et même certificat sur les deux nœuds (certificat répliqué chiffré).
+
+
+### Derrière nginx (cas retenu)
+- nginx porte le certificat de confiance et le nom public (ex. `https://leazone.mondomaine.lan`), puis renvoie vers Leazone sur `8443`.
+- `LEAZONE_PUBLIC_URL=https://leazone.mondomaine.lan` : sert d'origine WebAuthn, de RP ID et de contrôle `Origin` (CSRF).
+- `LEAZONE_TRUSTED_PROXIES=10.0.0.5/32` : seuls ces proxys peuvent fournir `X-Forwarded-For` / `X-Forwarded-Proto`. Sinon ces en-têtes sont ignorés (personne ne peut usurper une IP).
+- La vraie IP du client sert pour : limites de tentatives, liste d'IP autorisées, audit, liste des sessions.
+- Lien nginx → Leazone en HTTPS avec le certificat auto-signé de Leazone (nginx peut l'épingler avec `proxy_ssl_trusted_certificate`).
+- Temps réel (SSE) : `proxy_buffering off` et `proxy_read_timeout 1h` (dans l'exemple fourni).
+- En HA : nginx pointe vers la **VIP:8443**. Ainsi l'UI tombe toujours sur le primaire, et les passkeys gardent le même nom après une bascule.
+- Exemple de config nginx complet dans le README + page de dépannage « passkeys refusées » (nom, origine, proxy de confiance).
 
 ---
 
@@ -482,14 +493,14 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 
 ---
 
-## 12. Points à trancher
+## 12. Décisions
 
-| # | Question | Mon choix par défaut |
+| # | Sujet | Décision |
 |---|---|---|
-| 1 | **Récursion** : passer seulement par des redirecteurs, ou aussi résoudre seul depuis les serveurs racine ? | Redirecteurs obligatoires en v1 (plus simple, plus sûr). La résolution depuis la racine peut venir plus tard. |
-| 2 | **VIP** : l'ARP gratuit suffit-il, ou as-tu besoin d'un vrai VRRP compatible avec d'autres équipements ? | ARP gratuit en v1, VRRPv3 « annonces seulement » en option. |
-| 3 | **Témoin ping** : on l'autorise (avec l'avertissement split-brain) ou on exige le conteneur témoin pour la bascule auto ? | Autorisé, avec bandeau orange. |
-| 4 | **Port de l'UI** : 8443 ou 443 ? | 8443 (évite les conflits sur l'hôte), 443 possible par réglage. |
-| 5 | **ACME DNS-01** : Let's Encrypt doit joindre le DNS depuis Internet. Ta zone interne ne le sera pas. Faut-il gérer un fournisseur externe (RFC 2136 générique, OVH, Cloudflare…) ? | HTTP-01 + DNS-01 via RFC 2136 générique. Le reste plus tard. |
-| 6 | **Mise à jour en HA** : config gelée (lecture seule) pendant les quelques minutes où les versions diffèrent, ça te va ? | Oui. |
-| 7 | **Publication** : le dépôt est `prohand/leazone`. Pour pousser vers `ghcr.io/leazone/leazone` et Docker Hub `leazone/leazone`, il faut ces organisations et des secrets CI. Tu les as ? | Je prépare le workflow, la publication s'active quand les secrets existent. |
+| 1 | Récursion | Redirecteurs seulement en v1 (UDP/TCP/DoT/DoH). Résolution depuis la racine possible plus tard. |
+| 2 | VIP | ARP gratuit seulement (à confirmer). |
+| 3 | Témoin | En attente : 3e machine disponible ? |
+| 4 | Port UI | 8443, nginx devant (voir § 9 « Derrière nginx »). |
+| 5 | Let's Encrypt | Non. Import de certificat + auto-signé. |
+| 6 | Config gelée pendant une mise à jour HA | Oui. |
+| 7 | Publication de l'image | En attente. |
