@@ -1,0 +1,478 @@
+package dnssrv
+
+import (
+	"context"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/netip"
+	"sort"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/miekg/dns"
+	"golang.org/x/sync/singleflight"
+
+	"github.com/prohand/leazone/internal/dnsconf"
+)
+
+// Sources of an answer (for the lookup tool and, later, query logs).
+const (
+	SourceLocal     = "local"
+	SourceCache     = "cache"
+	SourceForwarder = "forwarder"
+	SourceRefused   = "refused"
+	SourceError     = "error"
+)
+
+// state is the immutable configuration used to answer queries.
+type state struct {
+	zones     *zoneSet
+	fwd       *forwarders
+	recursion []netip.Prefix
+}
+
+// Engine answers DNS queries and manages listeners.
+type Engine struct {
+	log   *slog.Logger
+	port  int
+	roots *x509.CertPool // nil = system roots (tests inject their own)
+
+	st    atomic.Pointer[state]
+	cache *cache
+	sf    singleflight.Group
+
+	mu        sync.Mutex
+	listeners map[string]*listener // by IP
+
+	queries, local, forwarded, refused, failed atomic.Uint64
+}
+
+// New creates an engine listening on the given port (53 in production).
+func New(log *slog.Logger, port int) *Engine {
+	e := &Engine{log: log, port: port, cache: newCache(), listeners: map[string]*listener{}}
+	e.st.Store(&state{zones: &zoneSet{zones: map[string]*zoneData{}}, fwd: &forwarders{}})
+	return e
+}
+
+// SetRootCAs replaces the trusted roots for DoT/DoH (tests only).
+func (e *Engine) SetRootCAs(p *x509.CertPool) { e.roots = p }
+
+// Port is the DNS port.
+func (e *Engine) Port() int { return e.port }
+
+// Load applies a full configuration snapshot. It is cheap enough to call
+// after every change (LAN-sized zones).
+func (e *Engine) Load(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record, fwd []*dnsconf.Forwarder, st dnsconf.Settings) {
+	old := e.st.Load()
+	var nets []netip.Prefix
+	for _, n := range st.RecursionNetworks {
+		if p, err := netip.ParsePrefix(n); err == nil {
+			nets = append(nets, p)
+		}
+	}
+	e.cache.configure(st.CacheSize, st.CacheMinTTL, st.CacheMaxTTL, st.CacheNegativeMaxTTL)
+	e.st.Store(&state{zones: buildZones(zones, recs), fwd: buildForwarders(fwd, old.fwd, e.roots), recursion: nets})
+}
+
+// ServeDNS implements dns.Handler.
+func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	e.queries.Add(1)
+	client := addrOf(w.RemoteAddr())
+	resp, _ := e.handle(context.Background(), r, client)
+	if resp == nil {
+		return
+	}
+	if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
+		size := dns.MinMsgSize
+		if o := r.IsEdns0(); o != nil {
+			size = int(max(o.UDPSize(), dns.MinMsgSize))
+		}
+		resp.Truncate(size)
+	}
+	_ = w.WriteMsg(resp)
+}
+
+func addrOf(a net.Addr) netip.Addr {
+	switch v := a.(type) {
+	case *net.UDPAddr:
+		ip, _ := netip.AddrFromSlice(v.IP)
+		return ip.Unmap()
+	case *net.TCPAddr:
+		ip, _ := netip.AddrFromSlice(v.IP)
+		return ip.Unmap()
+	}
+	return netip.Addr{}
+}
+
+// handle builds the response for a query from client. It returns the source.
+func (e *Engine) handle(ctx context.Context, r *dns.Msg, client netip.Addr) (*dns.Msg, string) {
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.RecursionAvailable = true
+	var do bool
+	if o := r.IsEdns0(); o != nil {
+		do = o.Do()
+		if o.Version() != 0 {
+			m.SetRcode(r, dns.RcodeBadVers)
+			m.SetEdns0(ednsSize, do)
+			return m, SourceError
+		}
+	}
+	finish := func(src string) (*dns.Msg, string) {
+		if r.IsEdns0() != nil && m.IsEdns0() == nil {
+			m.SetEdns0(ednsSize, do)
+		}
+		return m, src
+	}
+	if r.Opcode != dns.OpcodeQuery {
+		m.Rcode = dns.RcodeNotImplemented
+		return finish(SourceError)
+	}
+	if len(r.Question) != 1 {
+		m.Rcode = dns.RcodeFormatError
+		return finish(SourceError)
+	}
+	q := r.Question[0]
+	if q.Qclass != dns.ClassINET && q.Qclass != dns.ClassANY {
+		m.Rcode = dns.RcodeNotImplemented
+		return finish(SourceError)
+	}
+	st := e.st.Load()
+
+	// 1. Local zones answer everyone.
+	if res := st.zones.answer(q.Name, q.Qtype); res.authorized {
+		e.local.Add(1)
+		m.Authoritative = res.msg.Authoritative
+		m.Rcode = res.msg.Rcode
+		m.Answer, m.Ns, m.Extra = res.msg.Answer, res.msg.Ns, res.msg.Extra
+		if res.cnameOut == "" || !e.mayRecurse(st, client) {
+			return finish(SourceLocal)
+		}
+		// A local CNAME points outside: resolve the target upstream.
+		up, _, err := e.forward(ctx, st, dns.Question{Name: res.cnameOut, Qtype: q.Qtype, Qclass: q.Qclass}, do, r.CheckingDisabled)
+		if err == nil {
+			m.Answer = append(m.Answer, up.Answer...)
+			m.Rcode = up.Rcode
+		}
+		m.Authoritative = false
+		return finish(SourceLocal)
+	}
+
+	// 2. Recursion is limited to the allowed networks.
+	if !e.mayRecurse(st, client) {
+		e.refused.Add(1)
+		m.Rcode = dns.RcodeRefused
+		m.RecursionAvailable = false
+		return finish(SourceRefused)
+	}
+	up, src, err := e.forward(ctx, st, q, do, r.CheckingDisabled)
+	if err != nil {
+		e.failed.Add(1)
+		m.Rcode = dns.RcodeServerFailure
+		return finish(SourceError)
+	}
+	if src == SourceForwarder {
+		e.forwarded.Add(1)
+	}
+	m.Rcode = up.Rcode
+	m.Answer, m.Ns = up.Answer, up.Ns
+	for _, rr := range up.Extra {
+		if rr.Header().Rrtype != dns.TypeOPT {
+			m.Extra = append(m.Extra, rr)
+		}
+	}
+	// We do not validate DNSSEC yet (phase 5): never claim authenticated data.
+	m.AuthenticatedData = false
+	return finish(src)
+}
+
+func (e *Engine) mayRecurse(st *state, client netip.Addr) bool {
+	for _, p := range st.recursion {
+		if p.Contains(client) {
+			return true
+		}
+	}
+	return false
+}
+
+// forward answers from the cache or the upstreams, merging identical
+// concurrent queries.
+func (e *Engine) forward(ctx context.Context, st *state, q dns.Question, do, cd bool) (*dns.Msg, string, error) {
+	q.Name = dns.Fqdn(q.Name)
+	if m := e.cache.get(q, do); m != nil {
+		return m, SourceCache, nil
+	}
+	key := cacheKey(q, do)
+	v, err, _ := e.sf.Do(key, func() (any, error) {
+		qm := new(dns.Msg)
+		qm.SetQuestion(q.Name, q.Qtype)
+		qm.Question[0].Qclass = q.Qclass
+		qm.RecursionDesired = true
+		qm.CheckingDisabled = cd
+		qm.SetEdns0(ednsSize, do)
+		r, _, err := st.fwd.resolve(ctx, qm)
+		if err != nil {
+			return nil, err
+		}
+		e.cache.set(q, do, r)
+		return r, nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return v.(*dns.Msg).Copy(), SourceForwarder, nil
+}
+
+// LookupResult is returned by Lookup (UI test tool).
+type LookupResult struct {
+	Rcode     string   `json:"rcode"`
+	Source    string   `json:"source"`
+	Forwarder string   `json:"forwarder,omitempty"`
+	LatencyMs float64  `json:"latencyMs"`
+	Answers   []string `json:"answers"`
+	Authority []string `json:"authority"`
+}
+
+// Lookup resolves a name as a local client would.
+func (e *Engine) Lookup(ctx context.Context, name string, qtype uint16) LookupResult {
+	q := new(dns.Msg)
+	q.SetQuestion(dns.Fqdn(name), qtype)
+	start := time.Now()
+	r, src := e.handle(ctx, q, netip.MustParseAddr("127.0.0.1"))
+	res := LookupResult{Rcode: dns.RcodeToString[r.Rcode], Source: src, Answers: []string{}, Authority: []string{},
+		LatencyMs: float64(time.Since(start).Microseconds()) / 1000}
+	for _, rr := range r.Answer {
+		res.Answers = append(res.Answers, rr.String())
+	}
+	for _, rr := range r.Ns {
+		res.Authority = append(res.Authority, rr.String())
+	}
+	if src == SourceForwarder {
+		if ups := e.st.Load().fwd.pick(name); len(ups) > 0 {
+			for _, u := range ups {
+				if h := u.health(); h.Healthy && h.LastCheckAt != nil {
+					res.Forwarder = u.label()
+					break
+				}
+			}
+		}
+	}
+	return res
+}
+
+// FlushCache empties the cache (name == "") or one name and its sub-names.
+func (e *Engine) FlushCache(name string) int { return e.cache.flush(name) }
+
+// TestForwarder tests a forwarder configuration with the engine's roots.
+func (e *Engine) TestForwarder(ctx context.Context, f dnsconf.Forwarder) TestResult {
+	u := newUpstream(f, e.roots)
+	defer u.close()
+	q := new(dns.Msg)
+	q.SetQuestion(".", dns.TypeNS)
+	q.SetEdns0(ednsSize, false)
+	start := time.Now()
+	r, err := u.exchange(ctx, q)
+	res := TestResult{LatencyMs: float64(time.Since(start).Microseconds()) / 1000, Answers: []string{}}
+	if err != nil {
+		res.Error = humanError(err)
+		return res
+	}
+	res.Rcode = dns.RcodeToString[r.Rcode]
+	for _, rr := range r.Answer {
+		res.Answers = append(res.Answers, rr.String())
+	}
+	res.OK = r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError
+	if !res.OK {
+		res.Error = "réponse " + res.Rcode
+	}
+	return res
+}
+
+// Stats summarizes the engine counters.
+type Stats struct {
+	Queries, Local, Forwarded, Refused, Failed uint64
+	CacheEntries                               int
+	CacheHits, CacheMisses                     uint64
+}
+
+// Stats returns the counters.
+func (e *Engine) Stats() Stats {
+	return Stats{Queries: e.queries.Load(), Local: e.local.Load(), Forwarded: e.forwarded.Load(),
+		Refused: e.refused.Load(), Failed: e.failed.Load(), CacheEntries: e.cache.len(),
+		CacheHits: e.cache.hits.Load(), CacheMisses: e.cache.misses.Load()}
+}
+
+// Health returns the health of every configured forwarder.
+func (e *Engine) Health() map[string]Health {
+	out := map[string]Health{}
+	for id, u := range e.st.Load().fwd.all {
+		out[id] = u.health()
+	}
+	return out
+}
+
+// ---- listeners ----
+
+// ListenAddr is an IP to serve, with the interface it belongs to.
+type ListenAddr struct {
+	IP        netip.Addr
+	Interface string
+}
+
+type listener struct {
+	addr     ListenAddr
+	udp, tcp *dns.Server
+	udpErr   string
+	tcpErr   string
+	lastTry  time.Time
+}
+
+// ListenerStatus is reported to the UI.
+type ListenerStatus struct {
+	Address   string `json:"address"`
+	Protocol  string `json:"protocol"`
+	Interface string `json:"interface"`
+	State     string `json:"state"`
+	Error     string `json:"error,omitempty"`
+}
+
+// SetListeners starts/stops servers so exactly the given IPs are served.
+// Failed binds are retried by Retry (called periodically by the app).
+func (e *Engine) SetListeners(addrs []ListenAddr) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	want := map[string]ListenAddr{}
+	for _, a := range addrs {
+		if a.IP.Is6() && a.IP.IsLinkLocalUnicast() {
+			continue // needs a zone index; not supported for listening
+		}
+		want[a.IP.String()] = a
+	}
+	for ip, l := range e.listeners {
+		if _, ok := want[ip]; !ok {
+			l.stop()
+			delete(e.listeners, ip)
+			e.log.Info("DNS stopped listening", "ip", ip)
+		}
+	}
+	for ip, a := range want {
+		if l, ok := e.listeners[ip]; ok {
+			l.addr = a
+			continue
+		}
+		l := &listener{addr: a}
+		e.listeners[ip] = l
+		e.start(l)
+	}
+}
+
+// Retry restarts listeners whose bind failed (port freed, address back...).
+func (e *Engine) Retry() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, l := range e.listeners {
+		if (l.udp == nil || l.tcp == nil) && time.Since(l.lastTry) > 20*time.Second {
+			e.start(l)
+		}
+	}
+}
+
+func (e *Engine) start(l *listener) {
+	l.lastTry = time.Now()
+	hostport := net.JoinHostPort(l.addr.IP.String(), strconv.Itoa(e.port))
+	if l.udp == nil {
+		pc, err := net.ListenPacket("udp", hostport)
+		if err != nil {
+			l.udpErr = bindError(err, l.addr.IP, e.port)
+			e.log.Error("DNS listen failed", "addr", hostport, "proto", "udp", "err", l.udpErr)
+		} else {
+			l.udpErr = ""
+			l.udp = &dns.Server{PacketConn: pc, Handler: e, UDPSize: ednsSize}
+			go serve(e.log, l.udp)
+		}
+	}
+	if l.tcp == nil {
+		ln, err := net.Listen("tcp", hostport)
+		if err != nil {
+			l.tcpErr = bindError(err, l.addr.IP, e.port)
+			e.log.Error("DNS listen failed", "addr", hostport, "proto", "tcp", "err", l.tcpErr)
+		} else {
+			l.tcpErr = ""
+			l.tcp = &dns.Server{Listener: ln, Handler: e, ReadTimeout: 5 * time.Second, IdleTimeout: func() time.Duration { return 10 * time.Second }}
+			go serve(e.log, l.tcp)
+		}
+	}
+	if l.udp != nil && l.tcp != nil {
+		e.log.Info("DNS listening", "addr", hostport, "interface", l.addr.Interface)
+	}
+}
+
+func serve(log *slog.Logger, s *dns.Server) {
+	if err := s.ActivateAndServe(); err != nil {
+		log.Debug("DNS server stopped", "err", err)
+	}
+}
+
+func (l *listener) stop() {
+	if l.udp != nil {
+		_ = l.udp.Shutdown()
+	}
+	if l.tcp != nil {
+		_ = l.tcp.Shutdown()
+	}
+}
+
+// Close stops every listener.
+func (e *Engine) Close() {
+	e.SetListeners(nil)
+}
+
+// Listeners reports the state of each listener, sorted by address.
+func (e *Engine) Listeners() []ListenerStatus {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []ListenerStatus
+	for _, l := range e.listeners {
+		hp := net.JoinHostPort(l.addr.IP.String(), strconv.Itoa(e.port))
+		for _, p := range []struct {
+			proto string
+			ok    bool
+			err   string
+		}{{"udp", l.udp != nil, l.udpErr}, {"tcp", l.tcp != nil, l.tcpErr}} {
+			s := ListenerStatus{Address: hp, Protocol: p.proto, Interface: l.addr.Interface, State: "listening"}
+			if !p.ok {
+				s.State, s.Error = "error", p.err
+			}
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Address != out[j].Address {
+			return out[i].Address < out[j].Address
+		}
+		return out[i].Protocol > out[j].Protocol
+	})
+	return out
+}
+
+// bindError explains a bind failure in French, with the usual fix.
+func bindError(err error, ip netip.Addr, port int) string {
+	switch {
+	case errors.Is(err, syscall.EADDRINUSE):
+		return fmt.Sprintf("le port %d est déjà utilisé sur %s par un autre programme (autre serveur DNS, dnsmasq, "+
+			"ou systemd-resolved s'il écoute sur toutes les adresses : mettez DNSStubListener=no dans "+
+			"/etc/systemd/resolved.conf puis systemctl restart systemd-resolved). Vérifiez avec : ss -lntup | grep ':%d '",
+			port, ip, port)
+	case errors.Is(err, syscall.EACCES):
+		return fmt.Sprintf("permission refusée pour le port %d : ajoutez la capability NET_BIND_SERVICE au conteneur", port)
+	case errors.Is(err, syscall.EADDRNOTAVAIL):
+		return fmt.Sprintf("l'adresse %s n'existe pas sur cet hôte", ip)
+	}
+	return err.Error()
+}
