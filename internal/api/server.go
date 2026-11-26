@@ -15,6 +15,7 @@ import (
 	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
 	"github.com/prohand/leazone/internal/config"
+	"github.com/prohand/leazone/internal/dhcpmgr"
 	"github.com/prohand/leazone/internal/dnsmgr"
 	"github.com/prohand/leazone/internal/store"
 	"github.com/prohand/leazone/internal/tlsmgr"
@@ -28,12 +29,16 @@ type Server struct {
 	audit *audit.Log
 	tls   *tlsmgr.Manager
 	dns   *dnsmgr.Manager
+	dhcp  *dhcpmgr.Manager
 	log   *slog.Logger
 	ui    fs.FS
 	spec  []byte
 
 	mux    *http.ServeMux
 	routes []Route
+
+	// importClient overrides the HTTP client of imports (tests).
+	importClient *http.Client
 }
 
 // Route documents a registered endpoint (used by the OpenAPI coverage test).
@@ -50,6 +55,7 @@ type Deps struct {
 	Audit  *audit.Log
 	TLS    *tlsmgr.Manager
 	DNS    *dnsmgr.Manager
+	DHCP   *dhcpmgr.Manager
 	Log    *slog.Logger
 	UI     fs.FS
 	Spec   []byte // OpenAPI as JSON
@@ -57,7 +63,7 @@ type Deps struct {
 
 // New builds the server and registers all routes.
 func New(d Deps) *Server {
-	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, log: d.Log, ui: d.UI,
+	s := &Server{cfg: d.Config, db: d.DB, auth: d.Auth, audit: d.Audit, tls: d.TLS, dns: d.DNS, dhcp: d.DHCP, log: d.Log, ui: d.UI,
 		spec: d.Spec, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s

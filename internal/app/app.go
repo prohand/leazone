@@ -21,6 +21,10 @@ import (
 	"github.com/prohand/leazone/internal/caps"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/control"
+	"github.com/prohand/leazone/internal/ddns"
+	"github.com/prohand/leazone/internal/dhcpconf"
+	"github.com/prohand/leazone/internal/dhcpmgr"
+	"github.com/prohand/leazone/internal/dhcpsrv"
 	"github.com/prohand/leazone/internal/dnsconf"
 	"github.com/prohand/leazone/internal/dnsmgr"
 	"github.com/prohand/leazone/internal/dnssrv"
@@ -101,7 +105,24 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	go dm.Run(ctx)
 
-	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, Log: log, UI: web.Dist(), Spec: spec})
+	// DHCP: lease engine, socket, DNS registration of leases.
+	dhcpEngine, err := dhcpsrv.NewEngine(ctx, n.db, log)
+	if err != nil {
+		return fmt.Errorf("DHCP: %w", err)
+	}
+	dhcpEngine.NodeID = nodeID
+	dhcpConf := dhcpconf.New(n.db)
+	hm := dhcpmgr.New(dhcpConf, dm.Store, dhcpEngine, dhcpsrv.NewServer(dhcpEngine, cfg.DHCPPort, log), watcher, log)
+	if p := dhcpsrv.NewPinger(log); p != nil {
+		dhcpEngine.Pinger, hm.PingAvailable = p, true
+	}
+	dhcpEngine.Hooks = &ddns.Updater{DNS: dm.Store, DHCP: dhcpConf, Reload: dm, Log: log, Active: activeOwner(dhcpEngine)}
+	if err := hm.Reload(ctx); err != nil {
+		return fmt.Errorf("DHCP: %w", err)
+	}
+	go hm.Run(ctx)
+
+	srv := api.New(api.Deps{Config: cfg, DB: n.db, Auth: n.auth, Audit: n.audit, TLS: tm, DNS: dm, DHCP: hm, Log: log, UI: web.Dist(), Spec: spec})
 
 	ln, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {
@@ -287,4 +308,17 @@ func checkWritable(dir string) error {
 	name := f.Name()
 	f.Close()
 	return os.Remove(name)
+}
+
+// activeOwner tells DDNS whether a record owner still holds a bound lease.
+func activeOwner(e *dhcpsrv.Engine) func(string) bool {
+	return func(owner string) bool {
+		now := time.Now()
+		for _, l := range e.Leases() {
+			if l.State == dhcpsrv.StateBound && l.Active(now) && ddns.Owner(l.ScopeID, l) == owner {
+				return true
+			}
+		}
+		return false
+	}
 }

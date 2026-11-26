@@ -30,6 +30,27 @@ type Manager struct {
 	log    *slog.Logger
 
 	mu sync.Mutex // serializes reloads
+
+	soonMu sync.Mutex
+	soon   *time.Timer
+}
+
+// ReloadSoon schedules a reload in 200 ms, merging bursts of changes
+// (many DHCP leases at boot time).
+func (m *Manager) ReloadSoon() {
+	m.soonMu.Lock()
+	defer m.soonMu.Unlock()
+	if m.soon != nil {
+		return
+	}
+	m.soon = time.AfterFunc(200*time.Millisecond, func() {
+		m.soonMu.Lock()
+		m.soon = nil
+		m.soonMu.Unlock()
+		if err := m.Reload(context.Background()); err != nil {
+			m.log.Error("DNS reload", "err", err)
+		}
+	})
 }
 
 // New builds a manager.

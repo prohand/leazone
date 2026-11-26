@@ -12,6 +12,7 @@ import (
 
 	"github.com/prohand/leazone/internal/auth"
 	"github.com/prohand/leazone/internal/dnsconf"
+	"github.com/prohand/leazone/internal/importer/technitium"
 	"github.com/prohand/leazone/internal/store"
 )
 
@@ -38,6 +39,7 @@ const (
 	TCSRF            = "urn:leazone:csrf"
 	TBadRequest      = "urn:leazone:bad-request"
 	TInternal        = "urn:leazone:internal"
+	TUpstream        = "urn:leazone:upstream"
 )
 
 var titles = map[string]string{
@@ -52,6 +54,7 @@ var titles = map[string]string{
 	TCSRF:            "Requête refusée (CSRF)",
 	TBadRequest:      "Requête invalide",
 	TInternal:        "Erreur interne",
+	TUpstream:        "Serveur distant en erreur",
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -93,6 +96,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, Problem{Type: TValidation, Status: http.StatusUnprocessableEntity, Detail: "Vérifiez les champs.", Errors: dverr})
 	case errors.As(err, &conflict):
 		problem(w, http.StatusConflict, TConflict, conflict.Msg)
+	case errors.As(err, new(technitium.RemoteError)):
+		problem(w, http.StatusBadGateway, TUpstream, err.Error())
 	case errors.Is(err, dnsconf.ErrReadOnly):
 		problem(w, http.StatusConflict, TConflict, err.Error())
 	case errors.As(err, &rl):

@@ -124,6 +124,15 @@ func ipList(field string, in []string, errs Validation) []string {
 	return out
 }
 
+// ValidateScope checks an input without saving it (used by imports).
+func (s *Store) ValidateScope(ctx context.Context, in ScopeInput) error {
+	sc, err := validate(in)
+	if err != nil {
+		return err
+	}
+	return s.checkOverlap(ctx, sc, "")
+}
+
 // validate normalizes an input into a scope (without id/timestamps).
 func validate(in ScopeInput) (Scope, error) {
 	errs := Validation{}

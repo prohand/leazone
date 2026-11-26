@@ -36,6 +36,8 @@ type Config struct {
 
 	// DNSPort is the port of the DNS server (53; another port helps tests).
 	DNSPort int `yaml:"dns_port"`
+	// DHCPPort is the DHCP server port (67); clients are answered on DHCPPort+1.
+	DHCPPort int `yaml:"dhcp_port"`
 
 	// ControlSocket is the local Unix socket used by CLI sub-commands.
 	ControlSocket string `yaml:"control_socket"`
@@ -64,6 +66,7 @@ func Defaults() Config {
 		LogFormat:     "text",
 		ControlSocket: "/tmp/leazone.sock",
 		DNSPort:       53,
+		DHCPPort:      67,
 		AdminUser:     "admin",
 	}
 }
@@ -105,6 +108,13 @@ func Load(getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("LEAZONE_DNS_PORT: port invalide %q", v)
 		}
 		c.DNSPort = p
+	}
+	if v := getenv("LEAZONE_DHCP_PORT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65534 {
+			return nil, fmt.Errorf("LEAZONE_DHCP_PORT: port invalide %q", v)
+		}
+		c.DHCPPort = p
 	}
 	if v := getenv("LEAZONE_TRUSTED_PROXIES"); v != "" {
 		c.TrustedProxies = splitList(v)

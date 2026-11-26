@@ -376,19 +376,20 @@ func (s *Store) Import(ctx context.Context, zoneID, content string, replace bool
 		return nil, err
 	}
 	res := &ImportResult{Errors: []string{}}
-	zp := dns.NewZoneParser(strings.NewReader(content), dns.Fqdn(z.Name), "import")
-	zp.SetDefaultTTL(z.TTL)
+	rrs, skipped, perrs := ParseZoneLenient(content, z.Name, z.TTL)
+	res.Skipped += skipped
+	res.Errors = append(res.Errors, perrs...)
+	if len(rrs) == 0 && len(perrs) > 0 {
+		return nil, Validation{"content": "fichier de zone illisible : " + perrs[0]}
+	}
 	var inputs []RecordInput
-	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
+	for _, rr := range rrs {
 		in, ok := fromRR(rr, z)
 		if !ok {
 			res.Skipped++
 			continue
 		}
 		inputs = append(inputs, in)
-	}
-	if err := zp.Err(); err != nil {
-		return nil, Validation{"content": "fichier de zone illisible : " + err.Error()}
 	}
 	if replace {
 		if _, err := s.db.ExecContext(ctx, `DELETE FROM records WHERE zone_id = ? AND source = 'manual'`, zoneID); err != nil {
@@ -406,6 +407,69 @@ func (s *Store) Import(ctx context.Context, zoneID, content string, replace bool
 		res.Imported++
 	}
 	return res, nil
+}
+
+// ParseZoneLenient parses a zone file. When the strict parser fails (for
+// example on record types other servers invent), it falls back to a line by
+// line parse and skips the lines it does not understand.
+func ParseZoneLenient(content, zone string, ttl uint32) ([]dns.RR, int, []string) {
+	origin := dns.Fqdn(zone)
+	zp := dns.NewZoneParser(strings.NewReader(content), origin, "import")
+	zp.SetDefaultTTL(ttl)
+	var out []dns.RR
+	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
+		out = append(out, rr)
+	}
+	if zp.Err() == nil {
+		return out, 0, nil
+	}
+	out = nil
+	skipped := 0
+	var errs []string
+	owner := origin
+	for i, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		if c := strings.IndexByte(t, ';'); c >= 0 && !strings.Contains(t[:c], "\"") {
+			t = strings.TrimSpace(t[:c])
+		}
+		if t == "" {
+			continue
+		}
+		if strings.HasPrefix(t, "$ORIGIN") {
+			if f := strings.Fields(t); len(f) == 2 {
+				origin = dns.Fqdn(f[1])
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "$TTL") {
+			if f := strings.Fields(t); len(f) == 2 {
+				var v uint32
+				if _, err := fmt.Sscan(f[1], &v); err == nil {
+					ttl = v
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "$") || strings.ContainsAny(t, "()") {
+			skipped++
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			t = owner + " " + t // owner omitted: same as the previous line
+		} else {
+			owner = strings.Fields(t)[0]
+		}
+		rr, err := dns.NewRR(fmt.Sprintf("$ORIGIN %s\n$TTL %d\n%s", origin, ttl, t))
+		if err != nil || rr == nil {
+			skipped++
+			if len(errs) < 20 {
+				errs = append(errs, fmt.Sprintf("ligne %d ignorée : %s", i+1, t))
+			}
+			continue
+		}
+		out = append(out, rr)
+	}
+	return out, skipped, errs
 }
 
 func humanErr(err error) string {

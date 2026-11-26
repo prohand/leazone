@@ -19,6 +19,7 @@ info:
       - `urn:leazone:validation` (422) -> `errors` map field -> message
       - `urn:leazone:not-found` (404), `urn:leazone:conflict` (409)
       - `urn:leazone:csrf` (403)
+      - `urn:leazone:upstream` (502) -> a remote server (Technitium import) failed
 servers:
   - url: /api/v1
 security:

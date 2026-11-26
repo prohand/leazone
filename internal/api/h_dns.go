@@ -153,6 +153,7 @@ func (s *Server) patchInterface(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reloadDNS(r)
+	s.reloadDHCP(r)
 	s.record(r, "interface.update", name, audit.Success, map[string]any{"dnsEnabled": in.DNSEnabled, "dhcpEnabled": in.DHCPEnabled})
 	list, err := s.interfaces(r)
 	if err != nil {
