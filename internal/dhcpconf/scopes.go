@@ -441,8 +441,13 @@ func (s *Store) UpdateScope(ctx context.Context, id string, in ScopeInput) (*Sco
 		return nil, err
 	}
 	for _, r := range res {
-		if a, _ := netip.ParseAddr(r.IP); !sc.Prefix().Contains(a) {
+		a, _ := netip.ParseAddr(r.IP)
+		switch {
+		case !sc.Prefix().Contains(a):
 			return nil, ErrConflict{Msg: fmt.Sprintf("la réservation %s (%s) serait hors du nouveau réseau", r.IP, r.label())}
+		case reservationIPError(&sc, a) != "":
+			return nil, ErrConflict{Msg: fmt.Sprintf("la réservation %s (%s) ne serait plus valide : %s", r.IP, r.label(),
+				reservationIPError(&sc, a))}
 		}
 	}
 	err = s.db.Tx(ctx, func(tx *sql.Tx) error {

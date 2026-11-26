@@ -484,10 +484,11 @@ func (s *Server) listLeases(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) releaseLease(w http.ResponseWriter, r *http.Request) {
 	ip, err := netip.ParseAddr(r.PathValue("ip"))
-	if err != nil {
-		s.fail(w, r, store.ErrNotFound)
+	if err != nil || !ip.Unmap().Is4() {
+		s.fail(w, r, store.ErrNotFound) // leases are IPv4 only
 		return
 	}
+	ip = ip.Unmap()
 	l, err := s.dhcp.Engine.Release(r.Context(), r.PathValue("scope"), ip)
 	if err != nil {
 		s.fail(w, r, err)

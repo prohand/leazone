@@ -89,18 +89,21 @@ func (e *Engine) selectScope(p Packet) (*scopeRT, netip.Addr) {
 		if b := m.Options.Get(dhcpv4.OptionSubnetSelection); len(b) == 4 {
 			sel = netip.AddrFrom4([4]byte(b))
 		}
-		for _, s := range e.scopes {
+		// The network named by the relay wins; the relay agent list is only
+		// a fallback when no scope holds that address.
+		for _, s := range e.ordered {
+			if s.Enabled && s.Relay && s.prefix.Contains(sel) {
+				return s, e.localAddr(p, s)
+			}
+		}
+		for _, s := range e.ordered {
 			if !s.Enabled || !s.Relay {
 				continue
 			}
-			match := s.prefix.Contains(sel)
 			for _, a := range s.RelayAgents {
 				if a == gi.String() {
-					match = true
+					return s, e.localAddr(p, s)
 				}
-			}
-			if match {
-				return s, e.localAddr(p, s)
 			}
 		}
 		return nil, netip.Addr{}
@@ -110,7 +113,7 @@ func (e *Engine) selectScope(p Packet) (*scopeRT, netip.Addr) {
 		return nil, netip.Addr{}
 	}
 	var found *scopeRT
-	for _, s := range e.scopes {
+	for _, s := range e.ordered {
 		if !s.Enabled || s.Interface == nil || *s.Interface != it.Name {
 			continue
 		}
@@ -237,8 +240,20 @@ func (e *Engine) answers(p Packet, mt dhcpv4.MessageType, src netip.Addr) bool {
 	}
 	// The client has been trying for a while (its partner may be restarting):
 	// answer anyway, from our own half of the pool (RFC 3074 §6, like ISC
-	// dhcpd "load balance max seconds").
-	return (mt == dhcpv4.MessageTypeDiscover || mt == dhcpv4.MessageTypeRequest) && m.NumSeconds >= LoadBalanceMaxSecs
+	// dhcpd "load balance max seconds"). Only in load balancing: a passive
+	// node (serving no bucket) never answers.
+	return (mt == dhcpv4.MessageTypeDiscover || mt == dhcpv4.MessageTypeRequest) && m.NumSeconds >= LoadBalanceMaxSecs &&
+		servesAny(serves)
+}
+
+// servesAny reports whether a node serves at least one bucket.
+func servesAny(serves func(byte) bool) bool {
+	for b := 0; b < 256; b++ {
+		if serves(byte(b)) {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadBalanceMaxSecs: above this "secs" value, both nodes answer a client.
@@ -365,11 +380,30 @@ func (e *Engine) request(ctx context.Context, p Packet, s *scopeRT, src netip.Ad
 	case r != nil && r.IP != want.String():
 		e.mu.Unlock()
 		return e.nak(p, s, src) // the client must move to its reserved address
-	case mine:
+	case cur != nil && cur.State == StateReleased && cur.sameClient(mac, cid) && ciaddr.IsValid() && !ciaddr.IsUnspecified():
+		// Released from the UI: a renewal gets a NAK, the client starts over.
+		e.mu.Unlock()
+		e.log.Info("DHCP NAK: lease was released", "mac", mac, "ip", want, "scope", s.Name)
+		return e.nak(p, s, src)
 	case r != nil:
-		// Reserved for this client but no lease yet (e.g. after a restart).
+		// Reserved for this client (maybe no lease yet, e.g. after a restart).
 		if cur != nil && cur.Active(now) && !cur.sameClient(mac, cid) {
 			e.mu.Unlock()
+			return e.nak(p, s, src)
+		}
+	case mine:
+		// The configuration may have changed since the lease was given
+		// (exclusion, new range, reservation for another client).
+		// The lease ends now, so the address can go to its new holder.
+		if !s.allocatable(u, mac, cid) {
+			was, nl := *cur, *cur
+			nl.State, nl.Ends, nl.DNSName = StateReleased, now, ""
+			e.store(ctx, &nl)
+			e.mu.Unlock()
+			e.log.Info("DHCP NAK: address no longer available", "mac", mac, "ip", want, "scope", s.Name)
+			if was.State == StateBound && e.Hooks != nil {
+				e.Hooks.Ended(ctx, s.Scope, was)
+			}
 			return e.nak(p, s, src)
 		}
 	default:
@@ -389,10 +423,23 @@ func (e *Engine) request(ctx context.Context, p Packet, s *scopeRT, src netip.Ad
 	}
 	e.leaseFields(p, l)
 	nameChanged := cur == nil || cur.Hostname != l.Hostname
+	// The client moved: its other leases of the scope end now. Stored before
+	// the new lease so the peer applies them in this order, and not reported
+	// to Hooks.Ended (that would drop the DNS records of the new address):
+	// Hooks.Bound below replaces the client's records.
+	moved := false
+	for _, o := range e.leases[s.ID] {
+		if o.IP != want && o.sameClient(mac, cid) && (o.State == StateOffered || o.State == StateBound) {
+			ol := *o
+			ol.State, ol.Ends, ol.DNSName = StateReleased, now, ""
+			e.store(ctx, &ol)
+			moved = moved || o.State == StateBound
+		}
+	}
 	e.store(ctx, l)
 	e.mu.Unlock()
 
-	if e.Hooks != nil && (!wasBound || nameChanged || l.DNSName == "") {
+	if e.Hooks != nil && (!wasBound || nameChanged || moved || l.DNSName == "") {
 		if name := e.Hooks.Bound(ctx, s.Scope, *l); name != l.DNSName {
 			e.mu.Lock()
 			if cur := e.leaseAt(s.ID, u); cur != nil && cur.sameClient(mac, cid) {
@@ -412,17 +459,27 @@ func (e *Engine) decline(ctx context.Context, p Packet, s *scopeRT, mac, cid str
 		return
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	now := e.Now()
-	if cur := e.leaseAt(s.ID, dhcpconf.U32(ip)); cur != nil && !cur.sameClient(mac, cid) {
-		return // only the client holding the address may decline it
+	cur := e.leaseAt(s.ID, dhcpconf.U32(ip))
+	// Only the client we offered or gave the address to may decline it.
+	if cur == nil || !cur.sameClient(mac, cid) || (cur.State != StateOffered && cur.State != StateBound) || !cur.Active(now) {
+		e.mu.Unlock()
+		return
 	}
+	was := *cur
 	e.log.Warn("DHCP DECLINE: address already used on the network", "ip", ip, "mac", mac, "scope", s.Name)
 	e.store(ctx, &Lease{ScopeID: s.ID, IP: ip, State: StateDeclined, Starts: now, Ends: now.Add(declineHold)})
+	e.mu.Unlock()
+	if was.State == StateBound && e.Hooks != nil {
+		e.Hooks.Ended(ctx, s.Scope, was)
+	}
 }
 
 func (e *Engine) release(ctx context.Context, p Packet, s *scopeRT, mac, cid string) {
 	ip := ipOf(p.Msg.ClientIPAddr)
+	if !ip.Is4() {
+		return
+	}
 	e.mu.Lock()
 	cur := e.leaseAt(s.ID, dhcpconf.U32(ip))
 	if cur == nil || !cur.sameClient(mac, cid) || cur.State != StateBound {
