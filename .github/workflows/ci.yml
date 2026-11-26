@@ -38,10 +38,16 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Multi-arch build check (amd64 + arm64, not pushed)
+        run: docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=0.0.0-ci .
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Phase 1 integration test (image, non-root, read-only, capabilities)
         run: test/integration/phase1.sh
-      - name: Docker scenarios (DNS on test interfaces, hot add, forwarding, port conflict)
+      - name: Independent DNSSEC validator image (BIND delv)
+        run: docker build -t lz-delv -f test/integration/delv.Dockerfile test/integration
+      - name: Docker scenarios (DNS, DHCP multi-VLAN, HA, modules, logs, backup)
         run: sudo -E env "PATH=$PATH" LEAZONE_TEST_IMAGE=leazone:phase1-test BUSYBOX_IMAGE=busybox:1.36 go test -tags integration -count=1 -v -timeout 30m ./test/integration/

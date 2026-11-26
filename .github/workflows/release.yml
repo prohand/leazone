@@ -1,0 +1,104 @@
+name: Release
+
+# Publishes ghcr.io/prohand/leazone for linux/amd64 and linux/arm64 when a
+# version tag is pushed (git tag v1.2.3 && git push origin v1.2.3).
+# Tags: 1.2.3, 1.2 and latest. Each image has an SBOM and a provenance
+# attestation, and is signed with cosign (keyless, GitHub OIDC).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (without v), e.g. 1.2.3"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/prohand/leazone
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push to ghcr.io
+      id-token: write   # cosign keyless signature
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          v="${{ github.event.inputs.version }}"
+          [ -z "$v" ] && v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ steps.v.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.v.outputs.version }}
+            type=raw,value=latest
+
+      - name: Build and push (amd64 + arm64, SBOM, provenance)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          sbom: true
+          provenance: mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.v.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.v.outputs.date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image size < 40 MB (amd64)
+        run: |
+          docker pull --platform linux/amd64 "$IMAGE@${{ steps.build.outputs.digest }}"
+          size=$(docker image inspect "$IMAGE@${{ steps.build.outputs.digest }}" -f '{{.Size}}')
+          echo "size: $((size/1024/1024)) MB"
+          [ "$size" -lt $((40*1024*1024)) ]
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign with cosign (keyless)
+        run: cosign sign --yes "$IMAGE@${{ steps.build.outputs.digest }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### ghcr.io/prohand/leazone ${{ steps.v.outputs.version }}"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo "Vérifier la signature :"
+            echo '```'
+            echo "cosign verify $IMAGE:${{ steps.v.outputs.version }} \\"
+            echo "  --certificate-identity-regexp 'https://github.com/prohand/leazone/.github/workflows/release.yml@.*' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
