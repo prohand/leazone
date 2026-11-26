@@ -197,3 +197,27 @@ func TestStateMerge(t *testing.T) {
 		t.Fatalf("echo: %+v", rows)
 	}
 }
+
+// Downgrading the schema must not leave replication triggers that name
+// dropped tables or columns (every later write would fail).
+func TestMigrateDownWithTriggers(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, _ := node(t) // migrated, triggers installed
+	seed(t, db)
+	if err := db.MigrateDown(ctx, 3, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, db, `INSERT INTO users(id, username, role, password_hash, webauthn_handle, disabled, created_at, updated_at, password_changed_at, last_login_at)
+		VALUES ('u2', 'bob', 'admin', 'h', X'02', 0, 1, 1, 1, 5)`)
+	exec(t, db, `UPDATE records SET name = 'nas2' WHERE id = 'r1'`)
+	if err := db.MigrateDown(ctx, 0, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+}
