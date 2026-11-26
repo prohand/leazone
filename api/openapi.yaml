@@ -1530,6 +1530,180 @@ paths:
             text/plain:
               schema: { type: string }
 
+  /dashboard:
+    get:
+      summary: Dashboard of this node (any role)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dashboard" }
+  /events:
+    get:
+      summary: Server-sent events (text/event-stream). Event "dashboard" every 2 s (Dashboard JSON), "leases" when DHCP leases change (no body), "ping" every 15 s.
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /logs/dns:
+    get:
+      summary: DNS query log of this node, newest first
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Part of the name" }
+        - { name: client, in: query, schema: { type: string }, description: "Client IP or network (CIDR)" }
+        - { name: type, in: query, schema: { type: string }, description: "A, AAAA, MX..." }
+        - { name: rcode, in: query, schema: { type: string }, description: "NOERROR, NXDOMAIN, SERVFAIL, REFUSED" }
+        - { name: source, in: query, schema: { type: string, enum: [local, cache, forwarder, blocked, refused, error] } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: before, in: query, schema: { type: integer }, description: "Cursor: id of the last item of the previous page" }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/DnsLogEntry" } }
+                  nextCursor: { type: [integer, "null"] }
+  /logs/dhcp:
+    get:
+      summary: DHCP event log of this node, newest first
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Part of MAC, IP or hostname" }
+        - { name: event, in: query, schema: { type: string, enum: [offer, ack, nak, release, decline, expire, ignored] } }
+        - { name: scope, in: query, schema: { type: string }, description: "Scope id" }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: before, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/DhcpLogEntry" } }
+                  nextCursor: { type: [integer, "null"] }
+  /logs/settings:
+    get:
+      summary: Log settings (replicated)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogSettings" }
+    put:
+      summary: Update log settings (config.write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogSettings" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogSettings" }
+  /logs/status:
+    get:
+      summary: Size and content of the log database of this node
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogStatus" }
+  /logs/purge:
+    post:
+      summary: Empty the DNS and DHCP logs of this node (admin, step-up)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogStatus" }
+
+  /backup:
+    post:
+      summary: Download the whole configuration as one YAML file (admin, step-up). Secrets stay encrypted; their key is encrypted with the password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 12 }
+      responses:
+        "200":
+          description: The backup file (Content-Disposition attachment leazone-backup-YYYYMMDD-HHMM.yaml)
+          content:
+            application/yaml:
+              schema: { type: string }
+  /restore:
+    post:
+      summary: Replace the whole configuration with a backup (admin, step-up, primary only). Users, passkeys and TOTP come from the backup; current sessions stay open.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, content]
+              properties:
+                password: { type: string }
+                content: { type: string, description: "The YAML file content (32 MB max)" }
+                dryRun: { type: boolean, default: false, description: "Check the file and the password, write nothing" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestoreResult" }
+  /backups:
+    get:
+      summary: Automatic daily backups kept in /data/backups (admin). Needs LEAZONE_BACKUP_PASSWORD_FILE.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean, description: "A backup password is configured" }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        size: { type: integer }
+                        createdAt: { type: string, format: date-time }
+  /backups/{name}:
+    parameters:
+      - { name: name, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Download an automatic backup (admin, step-up)
+      responses:
+        "200":
+          description: The file
+          content:
+            application/yaml:
+              schema: { type: string }
+
 components:
   securitySchemes:
     session:
@@ -2294,3 +2468,123 @@ components:
         ds: { type: array, items: { type: string }, description: "DS records to give to the registrar (SHA-256)" }
         dsPending: { type: boolean, description: "A KSK rollover waits for the new DS at the registrar" }
         nextZskRollover: { type: [string, "null"], format: date-time }
+
+    Dashboard:
+      type: object
+      properties:
+        generatedAt: { type: string, format: date-time }
+        node: { type: string }
+        uptimeSeconds: { type: integer }
+        dns:
+          type: object
+          properties:
+            qps: { type: number, description: "Queries per second over the last minute" }
+            queries24h: { type: integer }
+            cacheHitRate: { type: number, description: "0..100, over the last hour" }
+            blocked24h: { type: integer }
+            failed24h: { type: integer }
+            series:
+              type: array
+              description: "Last hour, one point per minute (oldest first)"
+              items:
+                type: object
+                properties:
+                  t: { type: string, format: date-time }
+                  queries: { type: integer }
+                  cached: { type: integer }
+                  blocked: { type: integer }
+            topDomains: { type: array, items: { $ref: "#/components/schemas/TopCount" } }
+            topClients: { type: array, items: { $ref: "#/components/schemas/TopCount" } }
+            topBlocked: { type: array, items: { $ref: "#/components/schemas/TopCount" } }
+        dhcp:
+          type: object
+          properties:
+            activeLeases: { type: integer }
+            scopes:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  network: { type: string }
+                  vlanId: { type: [integer, "null"] }
+                  size: { type: integer }
+                  used: { type: integer }
+                  percent: { type: number }
+        ha:
+          type: [object, "null"]
+          description: "null on a single node"
+          properties:
+            role: { type: string }
+            peerOnline: { type: boolean }
+            witnessReachable: { type: boolean }
+            gaps: { type: integer }
+        blocking:
+          type: [object, "null"]
+          description: "null when the module is off"
+          properties:
+            percent: { type: number }
+            blocked: { type: integer }
+            queries: { type: integer }
+            paused: { type: boolean }
+
+    TopCount:
+      type: object
+      properties:
+        name: { type: string }
+        count: { type: integer }
+
+    DnsLogEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        time: { type: string, format: date-time }
+        client: { type: string }
+        name: { type: string }
+        type: { type: string }
+        rcode: { type: string }
+        source: { type: string, enum: [local, cache, forwarder, blocked, refused, error] }
+        latencyMs: { type: number }
+        answer: { type: string, description: "First answer (short), if any" }
+
+    DhcpLogEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        time: { type: string, format: date-time }
+        event: { type: string, enum: [offer, ack, nak, release, decline, expire, ignored] }
+        mac: { type: string }
+        ip: { type: string }
+        hostname: { type: string }
+        scopeId: { type: string }
+        scopeName: { type: string }
+        interface: { type: string }
+        relay: { type: string, description: "Relay agent address (giaddr), empty when direct" }
+        detail: { type: string, description: "e.g. reason of a NAK" }
+
+    LogSettings:
+      type: object
+      properties:
+        dnsQueries: { type: boolean, default: true }
+        dhcpEvents: { type: boolean, default: true }
+        retentionDays: { type: integer, minimum: 1, maximum: 365, default: 7 }
+        maxSizeMb: { type: integer, minimum: 10, maximum: 100000, default: 500 }
+
+    LogStatus:
+      type: object
+      properties:
+        dnsEntries: { type: integer }
+        dhcpEntries: { type: integer }
+        sizeBytes: { type: integer }
+        oldest: { type: [string, "null"], format: date-time }
+        dropped: { type: integer, description: "Entries not written (too many at once) since start" }
+
+    RestoreResult:
+      type: object
+      properties:
+        dryRun: { type: boolean }
+        createdAt: { type: string, format: date-time, description: "When the backup was made" }
+        version: { type: string, description: "Leazone version that made it" }
+        node: { type: string }
+        tables: { type: object, additionalProperties: { type: integer }, description: "Rows per table" }
