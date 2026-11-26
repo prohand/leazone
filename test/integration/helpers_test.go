@@ -148,6 +148,8 @@ type api struct {
 	base string
 	hc   *http.Client
 	csrf string
+
+	totpSecret string // set by loginAdmin
 }
 
 func newAPI(t *testing.T, c *container) *api {
@@ -199,6 +201,7 @@ func (a *api) loginAdmin() {
 	}
 	var setup struct{ Secret string }
 	a.do("POST", "/api/v1/me/totp/setup", nil, &setup)
+	a.totpSecret = setup.Secret
 	code, _ := totp.GenerateCode(setup.Secret, time.Now())
 	if s := a.do("POST", "/api/v1/me/totp/confirm", map[string]string{"code": code}, nil); s != 200 {
 		a.t.Fatalf("totp confirm: %d", s)
