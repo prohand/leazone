@@ -1,0 +1,22 @@
+import type { components } from "./schema"
+
+type S = components["schemas"]
+
+export type Problem = S["Problem"]
+export type Role = S["Role"]
+export type SystemInfo = S["SystemInfo"]
+export type SessionState = S["SessionState"]
+export type SessionStateName = SessionState["state"]
+export type MfaMethod = NonNullable<SessionState["mfaMethods"]>[number]
+export type EnrollMethod = NonNullable<SessionState["allowedMfaMethods"]>[number]
+export type WebAuthnBegin = S["WebAuthnBegin"]
+export type WebAuthnFinish = S["WebAuthnFinish"]
+export type MfaEnrollResult = S["MfaEnrollResult"]
+export type Me = S["Me"]
+export type Passkey = S["Passkey"]
+export type Session = S["Session"]
+export type ApiToken = S["ApiToken"]
+export type User = S["User"]
+export type SecuritySettings = S["SecuritySettings"]
+export type TlsInfo = S["TlsInfo"]
+export type AuditEntry = S["AuditEntry"]
