@@ -2,13 +2,17 @@
 
 Serveur **DNS + DHCP** léger, avec haute disponibilité, interface web moderne, conçu pour Docker.
 
-> **État : phase 5 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
-> codes de secours, sessions, rôles, jetons d'API, audit), l'image Docker, le **DNS** (zones, redirecteurs
-> UDP/TCP/DoT/DoH, cache, écoute par interface), le **DHCP multi-VLAN** (direct et relais, enregistrement DNS
-> automatique), l'**import depuis Technitium** et la **haute disponibilité** (2 nœuds + témoin, bascule automatique,
-> IP virtuelle), le **blocage des publicités** et **DNSSEC** (signature des zones, validation). Tableau de bord,
-> métriques et sauvegardes (phase 6) arrivent ensuite.
-> Le plan complet est dans [docs/PLAN.md](docs/PLAN.md).
+Fonctions :
+
+- **DNS** : zones locales, redirecteurs UDP/TCP/DoT/DoH avec bascule, cache, écoute par interface (jamais sur `0.0.0.0`).
+- **DHCP multi-VLAN** : direct ou par relais, isolation stricte par réseau, option 82, réservations, DNS automatique.
+- **Haute disponibilité** : 2 nœuds + témoin, bascule automatique en quelques secondes, IP virtuelle.
+- **Modules** : blocage des publicités, DNSSEC (signature et validation).
+- **Exploitation** : tableau de bord en direct, journaux des requêtes DNS et du DHCP, métriques Prometheus,
+  sauvegarde/restauration en un fichier, import depuis Technitium.
+- **Sécurité** : passkeys, TOTP, rôles, jetons d'API, audit ; conteneur non-root en lecture seule ; image signée.
+
+Le plan et les choix techniques sont dans [docs/PLAN.md](docs/PLAN.md).
 
 ---
 
@@ -38,7 +42,8 @@ Puis :
 - Ouvrez `https://<ip-ou-nom-de-l-hôte>:8443`.
 - Au premier login, Leazone **impose la configuration du MFA** (passkey ou TOTP) et donne 10 codes de secours. Gardez-les.
 
-> Tant que l'image n'est pas publiée sur `ghcr.io/prohand/leazone`, `--build` la construit sur place.
+> `--build` construit l'image sur place. Pour utiliser l'image publiée (`ghcr.io/prohand/leazone`, amd64 et arm64),
+> retirez `--build`. Vérifier sa signature : voir « Mises à jour ».
 
 ### Ce que fait le fichier compose
 
@@ -51,12 +56,41 @@ Puis :
 | `no-new-privileges: true` | Aucune élévation de privilèges possible |
 | secret `admin_password` | Le mot de passe initial n'est jamais dans une variable d'environnement |
 
+### Mode macvlan (alternative à `network_mode: host`)
+
+Le conteneur a sa propre IP sur le réseau (comme une machine à part). Utile si l'hôte a déjà un DNS sur le port 53.
+
+```yaml
+services:
+  leazone:
+    networks:
+      lan:
+        ipv4_address: 192.168.1.53
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: eno1        # ou eno1.20 pour un VLAN
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24
+          gateway: 192.168.1.1
+```
+
+Limites :
+
+- **Un seul réseau par interface macvlan** : pour plusieurs VLAN en direct, ajoutez un réseau macvlan par VLAN
+  (`parent: eno1.20`, `eno1.30`…), ou servez les VLAN par **relais DHCP** (recommandé dans ce mode).
+- **L'hôte ne joint pas le conteneur** (règle du noyau Linux pour macvlan) : l'hôte lui-même ne peut pas utiliser
+  ce DNS, sauf avec une interface macvlan supplémentaire côté hôte.
+- L'IP virtuelle de la HA n'est pas gérée dans ce mode : utilisez `network_mode: host` pour la HA.
+
 ### Volumes
 
 | Dossier | Contenu |
 |---|---|
 | `/config` | `leazone.yaml` (optionnel) |
-| `/data` | base SQLite, clé maître (`keys/`), certificats (`tls/`), sauvegardes avant migration (`backups/`) |
+| `/data` | base SQLite, clé maître (`keys/`), certificats (`tls/`), listes de blocage, journaux des requêtes (`logs.db`), sauvegardes (`backups/`) |
 | `/logs` | `leazone.log` (JSON, rotation 20 Mo × 5). Les journaux vont aussi dans `docker logs` |
 
 **Sauvegarde du volume `/data`** (nœud arrêté ou non, la base est en mode WAL) :
@@ -116,7 +150,7 @@ vraie IP du client (blocage après échecs, audit, liste d'IP autorisées) sans 
 **Sans nginx** : importez votre certificat dans *Paramètres > HTTPS*, ou déposez `cert.pem` + `key.pem`
 dans `/data/tls/` puis redémarrez. Le certificat auto-signé créé au premier démarrage ne sert qu'à l'installation.
 
-**En HA** (phase 4) : nginx pointera vers l'IP virtuelle, pour garder le même nom (et donc les mêmes passkeys) après une bascule.
+**En HA** : faites pointer nginx vers l'IP virtuelle, pour garder le même nom (et donc les mêmes passkeys) après une bascule.
 
 ---
 
@@ -201,7 +235,7 @@ interface Vlan40
 /ip dhcp-relay add name=relay-vlan40 interface=vlan40 dhcp-server=192.168.1.2 local-address=10.40.0.1 disabled=no
 ```
 
-En HA (phase 4), mettez les **deux** nœuds en `helper-address`.
+En HA, mettez les **deux** nœuds en `helper-address`.
 
 ### Isolation stricte
 
@@ -316,6 +350,93 @@ Option séparée (*Paramètres > Modules*). Leazone vérifie lui-même la chaîn
 
 > Les redirecteurs doivent transmettre les données DNSSEC (1.1.1.1, 9.9.9.9, 8.8.8.8 le font). Un redirecteur
 > qui les supprime rend tous les domaines signés « bogus » : désactivez alors la validation.
+
+---
+
+## Tableau de bord, journaux et supervision
+
+### Tableau de bord
+
+Mis à jour en direct (toutes les 2 s) : requêtes/s, taux de cache, top domaines, top clients, domaines bloqués,
+remplissage de chaque étendue DHCP, état de la HA. Ce sont les chiffres **du nœud affiché**.
+
+### Journaux (page *Journaux*)
+
+| Onglet | Contenu |
+|---|---|
+| Requêtes DNS | Heure, client, nom, type, réponse, origine (local, cache, redirecteur, bloqué…), latence. Filtres par nom, client ou réseau (`192.168.20.0/24`), type, réponse, origine, période. Mode « suivre en direct » |
+| DHCP | Offres, attributions, refus (NAK) avec la raison, libérations, conflits, baux expirés, et clients **ignorés** (aucune étendue pour leur interface ou relais : utile quand un poste n'a pas d'IP) |
+| Audit | Connexions et modifications (qui, quoi, quand, depuis quelle IP) |
+
+- Stockés dans `/data/logs.db`, **par nœud** (non synchronisés).
+- Rétention réglable : 7 jours et 500 Mo par défaut ; les plus anciens partent en premier.
+- Journalisation DNS désactivable (vie privée, ou très gros trafic). Sous forte charge, des entrées peuvent être
+  sautées plutôt que de ralentir le DNS : le compteur « non écrites » l'indique.
+
+### Prometheus
+
+`/metrics` demande un **jeton d'API** (*Mon compte > Jetons d'API*, portée « lecture » suffisante) :
+
+```yaml
+scrape_configs:
+  - job_name: leazone
+    scheme: https
+    authorization:
+      credentials_file: /etc/prometheus/leazone_token
+    tls_config:
+      insecure_skip_verify: true   # ou ca_file: … si le certificat n'est pas public
+    static_configs:
+      - targets: ["192.168.1.2:8443", "192.168.1.3:8443"]
+```
+
+| Métrique | Contenu |
+|---|---|
+| `leazone_dns_queries_total`, `leazone_dns_answers_total{source}` | Requêtes, réponses par origine |
+| `leazone_dns_cache_hits_total`, `leazone_dns_cache_entries` | Cache |
+| `leazone_dns_forwarder_up`, `leazone_dns_forwarder_latency_seconds` | État de chaque redirecteur |
+| `leazone_dhcp_scope_addresses`, `…_used_addresses`, `…_active_leases` | Remplissage des étendues |
+| `leazone_blocking_blocked_total`, `leazone_blocking_paused` | Blocage |
+| `leazone_cluster_role{role}`, `leazone_cluster_peer_up`, `leazone_cluster_witness_reachable` | HA |
+
+Exemple d'alerte : `leazone_dhcp_scope_used_addresses / leazone_dhcp_scope_addresses > 0.9`.
+
+`/health` (sans authentification) répond `{"status":"ok"}` : pour un équilibreur ou une supervision simple.
+
+---
+
+## Sauvegarde et restauration
+
+Toute la configuration (utilisateurs, passkeys, TOTP, jetons, certificat, zones, redirecteurs, étendues,
+réservations, VLAN, blocage, clés DNSSEC, réglages) tient dans **un fichier YAML**. Les secrets restent chiffrés ;
+leur clé est chiffrée par **votre mot de passe** (Argon2id + AES-256-GCM). Le fichier est aussi protégé contre
+toute modification. Les baux DHCP et les journaux n'y sont pas (les clients renouvellent leurs adresses).
+
+**Depuis l'interface** : *Paramètres > Sauvegarde* (admin, revérification passkey/TOTP).
+
+**En ligne de commande** :
+
+```bash
+docker exec leazone leazone backup --password-file /run/secrets/backup_password > leazone-backup.yaml
+```
+
+```bash
+docker exec -i leazone leazone restore - --password-file /run/secrets/backup_password < leazone-backup.yaml
+```
+
+(`--dry-run` vérifie le fichier et le mot de passe sans rien changer.)
+
+**Sauvegarde automatique** : donnez un mot de passe par `LEAZONE_BACKUP_PASSWORD_FILE` (lignes prêtes, en commentaire,
+dans les fichiers compose). Leazone écrit alors chaque jour `/data/backups/leazone-AAAAMMJJ.yaml` et garde les 7 derniers.
+Avec ce réglage, `--password-file` devient inutile dans les commandes ci-dessus.
+
+Bon à savoir :
+
+- La restauration **remplace** toute la configuration. Les comptes, passkeys et TOTP redeviennent ceux de la sauvegarde :
+  sur une installation neuve, reconnectez-vous avec le compte admin **de la sauvegarde**.
+- Les passkeys restent valables si l'adresse de l'interface (`LEAZONE_PUBLIC_URL`) est la même.
+- En HA, restaurez sur le **primaire** : le secondaire reprend tout seul la nouvelle configuration.
+- Une sauvegarde faite par une version plus récente est refusée (mettez Leazone à jour d'abord).
+- Perte du mot de passe = sauvegarde inutilisable. Gardez-le avec vos codes de secours.
 
 ---
 
@@ -466,6 +587,7 @@ Tout se règle par variables d'environnement (prioritaires) ou dans `/config/lea
 | `LEAZONE_DHCP_PORT` | `67` | Port du serveur DHCP (les clients sont joints sur ce port + 1) |
 | `LEAZONE_ADMIN_USER` | `admin` | Nom du premier compte |
 | `LEAZONE_ADMIN_PASSWORD_FILE` | vide | Fichier (secret Docker) du mot de passe initial |
+| `LEAZONE_BACKUP_PASSWORD_FILE` | vide | Mot de passe des sauvegardes automatiques et de `leazone backup/restore` |
 | `LEAZONE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LEAZONE_LOG_FORMAT` | `text` | Format de `docker logs` : `text` ou `json` |
 | `LEAZONE_DATA_DIR` / `LEAZONE_LOG_DIR` / `LEAZONE_CONFIG_DIR` | `/data` `/logs` `/config` | Dossiers |
@@ -485,6 +607,16 @@ log_level: info
 ---
 
 ## Mises à jour
+
+Images publiées : `ghcr.io/prohand/leazone` pour amd64 et arm64 (Raspberry Pi 4/5, serveurs ARM), avec les tags
+`1.2.3`, `1.2` et `latest`. Chaque image a son SBOM (liste des composants) et est **signée** (cosign, sans clé,
+par GitHub Actions). Vérifier avant de déployer :
+
+```bash
+cosign verify ghcr.io/prohand/leazone:1.2.3 --certificate-identity-regexp 'https://github.com/prohand/leazone/.github/workflows/release.yml@.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Pour suivre les correctifs sans changer de version mineure, mettez `LEAZONE_IMAGE=ghcr.io/prohand/leazone:1.2` dans `.env`.
 
 Au démarrage, Leazone met la base à jour tout seul, **après** en avoir fait une copie dans `/data/backups/`
 (5 dernières gardées).

@@ -513,6 +513,11 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 | Validation, joker | Preuve complète | Réponse par joker acceptée si une preuve NSEC/NSEC3 signée l'accompagne (sans calcul exact de couverture) | Cas rare ; les autres preuves (NXDOMAIN, NODATA, délégation non signée, opt-out) sont vérifiées en entier |
 | Listes de blocage en HA | — | Chaque nœud télécharge les listes ; l'abonnement, les règles et la pause sont répliqués | Pas de gros fichiers dans la réplication |
 | Pause du blocage | — | Réglage répliqué (les deux nœuds) | Les clients utilisent l'un ou l'autre nœud |
+| Temps réel | SSE pour tout | SSE pour le tableau de bord (et signal « baux changés ») ; les autres pages rafraîchissent toutes les 2 à 5 s | Suffisant et plus simple |
+| Statistiques du tableau de bord | Tirées des journaux | Compteurs en mémoire (série 1 h par 10 s, 24 tranches horaires bornées) | Indépendantes des journaux (désactivables) et légères |
+| Sauvegarde | Secrets rechiffrés par mot de passe | Clé de données chiffrée par le mot de passe (Argon2id + AES-GCM) + HMAC du contenu | Même protection, et restaure aussi les codes de secours ; en HA le secondaire reprend un instantané si la clé change |
+| `/metrics` | Jeton dédié | Jetons d'API existants (portée lecture) | Un seul système de jetons, révocable |
+| Image arm64 | Testée localement | Construite et vérifiée par la CI (QEMU) | Pas d'émulation dans l'environnement de développement |
 
 ## 12. Décisions
 

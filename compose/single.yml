@@ -39,9 +39,13 @@ services:
       LEAZONE_LOG_LEVEL: ${LEAZONE_LOG_LEVEL:-info}
       LEAZONE_ADMIN_USER: ${LEAZONE_ADMIN_USER:-admin}
       LEAZONE_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      # Daily automatic backup in /data/backups (7 kept): uncomment here and
+      # in both "secrets" lists, then write a password in secrets/backup_password.
+      # LEAZONE_BACKUP_PASSWORD_FILE: /run/secrets/backup_password
       TZ: ${TZ:-Europe/Paris}
     secrets:
       - admin_password
+      # - backup_password
     volumes:
       - leazone-config:/config
       - leazone-data:/data
@@ -56,6 +60,8 @@ secrets:
   admin_password:
     # Only read on the very first start (empty /data).
     file: ./secrets/admin_password
+  # backup_password:
+  #   file: ./secrets/backup_password
 
 volumes:
   leazone-config:
