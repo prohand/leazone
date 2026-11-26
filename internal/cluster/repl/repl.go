@@ -38,6 +38,7 @@ var ConfigTables = []struct {
 	{"settings", ""}, {"users", ""}, {"webauthn_credentials", ""}, {"totp", ""}, {"recovery_codes", ""},
 	{"api_tokens", ""}, {"certificates", ""}, {"zones", ""}, {"records", "source = 'manual'"}, {"forwarders", ""},
 	{"interface_settings", ""}, {"vlans", ""}, {"dhcp_scopes", ""}, {"dhcp_reservations", ""}, {"epochs", ""},
+	{"block_lists", ""}, {"block_rules", ""}, {"block_policies", ""}, {"dnssec_keys", ""},
 }
 
 // StateTables are merged between nodes (no single source of truth).
