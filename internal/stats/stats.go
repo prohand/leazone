@@ -61,12 +61,18 @@ func (r *Recorder) Record(q Query) {
 	name := strings.TrimSuffix(strings.ToLower(q.Name), ".")
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// A late (older) query never overwrites a newer bucket.
 	s := &r.series[(bs/10)%seriesLen]
-	if s.start != bs {
+	if s.start > bs {
+		s = &slot{}
+	} else if s.start != bs {
 		*s = slot{start: bs}
 	}
 	s.queries++
 	h := r.hours[(hs/3600)%hours]
+	if h != nil && h.start > hs {
+		return
+	}
 	if h == nil || h.start != hs {
 		h = &hourly{start: hs, domains: map[string]uint64{}, clients: map[string]uint64{}, blockedNames: map[string]uint64{}}
 		r.hours[(hs/3600)%hours] = h
