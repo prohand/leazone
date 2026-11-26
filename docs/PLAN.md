@@ -470,7 +470,7 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 ### Publication (phase 6)
 - `docker buildx` amd64 + arm64, tags `1.2.3`, `1.2`, `latest`.
 - SBOM (attestation BuildKit `--sbom=true`) + signature `cosign` (keyless via GitHub Actions OIDC).
-- Docker Hub `leazone/leazone` et `ghcr.io/leazone/leazone`.
+- Registre GitHub uniquement : `ghcr.io/prohand/leazone` (publié par GitHub Actions, pas de Docker Hub).
 
 ---
 
@@ -498,9 +498,9 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 | # | Sujet | Décision |
 |---|---|---|
 | 1 | Récursion | Redirecteurs seulement en v1 (UDP/TCP/DoT/DoH). Résolution depuis la racine possible plus tard. |
-| 2 | VIP | ARP gratuit seulement (à confirmer). |
-| 3 | Témoin | En attente : 3e machine disponible ? |
+| 2 | VIP | ARP gratuit seulement. |
+| 3 | Témoin | Les deux options : conteneur témoin (recommandé) et IP à pinger (avec avertissement). |
 | 4 | Port UI | 8443, nginx devant (voir § 9 « Derrière nginx »). |
 | 5 | Let's Encrypt | Non. Import de certificat + auto-signé. |
 | 6 | Config gelée pendant une mise à jour HA | Oui. |
-| 7 | Publication de l'image | En attente. |
+| 7 | Publication de l'image | `ghcr.io/prohand/leazone` seulement. |
