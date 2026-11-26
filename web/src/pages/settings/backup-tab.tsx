@@ -223,7 +223,9 @@ function RestoreCard() {
     mutationFn: (v: { content: string; password: string }) => api.post("/restore", { body: { ...v, dryRun: false } }),
     meta: { silent: true },
     onSuccess: () => {
-      toast.success("Configuration restaurée.", { description: "Toutes les pages sont rechargées avec la nouvelle configuration." })
+      toast.success("Configuration restaurée.", {
+        description: "Toutes les sessions et tous les jetons d'API ont été révoqués : reconnectez-vous.",
+      })
       setFile(null)
       setPassword("")
       setChecked(null)
@@ -357,8 +359,9 @@ function RestoreCard() {
           <RotateCcw className="size-5 text-muted-foreground" /> Restaurer
         </CardTitle>
         <CardDescription>
-          Remplace toute la configuration par celle du fichier. Les sessions ouvertes restent ouvertes ; les utilisateurs, passkeys et TOTP viennent de la
-          sauvegarde. Le fichier est d'abord vérifié, rien n'est changé avant votre confirmation.
+          Remplace toute la configuration par celle du fichier. Les utilisateurs, passkeys et TOTP viennent de la sauvegarde
+          (sans faire revivre un second facteur supprimé depuis) ; toutes les sessions et tous les jetons d'API sont révoqués. Le
+          fichier est d'abord vérifié, rien n'est changé avant votre confirmation.
         </CardDescription>
       </CardHeader>
       <CardContent>{perms.can("admin") ? body : <WriteGuard block>{body}</WriteGuard>}</CardContent>

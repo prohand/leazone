@@ -133,6 +133,13 @@ func (s *Service) RevokeToken(ctx context.Context, userID, id string) error {
 	return nil
 }
 
+// RevokeUserTokens revokes all the tokens of a user (new password, MFA reset).
+func (s *Service) RevokeUserTokens(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+		s.Now().UnixMilli(), userID)
+	return err
+}
+
 func optTime(v sql.NullInt64) *time.Time {
 	if !v.Valid {
 		return nil

@@ -53,6 +53,8 @@ func TestBackupRestore(t *testing.T) {
 	if _, err := h.auth.CreateUser(t.Context(), "lecteur", auth.RoleReadonly, adminPass); err != nil {
 		t.Fatal(err)
 	}
+	admin, _ := h.auth.GetUserByName(t.Context(), "admin")
+	token, tk, _ := h.auth.CreateToken(t.Context(), admin.ID, "script", "read", nil)
 
 	c.expect("POST", "/api/v1/backup", map[string]string{"password": "court"}, 422, TValidation)
 	status, file := downloadBackup(t, c, pw)
@@ -66,6 +68,13 @@ func TestBackupRestore(t *testing.T) {
 	// Changes after the backup.
 	c.do("DELETE", "/api/v1/dns/zones/"+z.ID, nil, nil)
 	c.do("POST", "/api/v1/dns/zones", map[string]any{"name": "apres.lan"}, nil)
+	// Revoked token and regenerated recovery codes must not come back.
+	if err := h.auth.RevokeToken(t.Context(), admin.ID, tk.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s := c.do("POST", "/api/v1/me/recovery-codes", nil, nil); s != 200 {
+		t.Fatalf("regenerate recovery codes: %d", s)
+	}
 
 	// Wrong password, tampered file, dry run.
 	c.expect("POST", "/api/v1/restore", map[string]any{"password": "mauvais mot de passe", "content": file}, 422, TValidation)
@@ -83,6 +92,21 @@ func TestBackupRestore(t *testing.T) {
 	}
 	if s := c.do("POST", "/api/v1/restore", map[string]any{"password": pw, "content": file}, &res); s != 200 || res.DryRun {
 		t.Fatalf("restore: %d", s)
+	}
+	// Every session and token is revoked: log in again. Old recovery codes
+	// stay invalid; the TOTP (unchanged since the backup) works.
+	c.expect("GET", "/api/v1/dns/zones", nil, 401, TUnauthenticated)
+	tc := h.client()
+	tc.origin, tc.token = "", token
+	tc.expect("GET", "/api/v1/users", nil, 401, TUnauthenticated)
+	c = h.client()
+	if st := c.login("admin", adminPass); st.State != "mfa_required" {
+		t.Fatalf("login after restore: %+v", st)
+	}
+	c.expect("POST", "/api/v1/auth/mfa/recovery", map[string]string{"code": codes[1]}, 401, TUnauthenticated)
+	h.clock = 31 * time.Second
+	if s := c.do("POST", "/api/v1/auth/mfa/totp", map[string]string{"code": totpCode(t, secret, time.Now().Add(h.clock))}, nil); s != 200 {
+		t.Fatalf("TOTP after restore: %d", s)
 	}
 	var zl struct{ Items []struct{ Name string } }
 	c.do("GET", "/api/v1/dns/zones", nil, &zl)
@@ -123,4 +147,29 @@ func TestBackupRestore(t *testing.T) {
 	ro := h2.client()
 	ro.login("lecteur", adminPass)
 	ro.expect("POST", "/api/v1/backup", map[string]string{"password": pw}, 403, TForbidden)
+}
+
+// A backup without an active admin would lock everyone out: refused, even
+// as a dry run.
+func TestRestoreNeedsAnAdmin(t *testing.T) {
+	const pw = "sauvegarde très secrète"
+	h := newHarness(t, nil)
+	c, _, _ := adminWithSecret(t, h)
+	ctx := context.Background()
+	if _, err := h.srv.db.ExecContext(ctx, `UPDATE users SET disabled = 1`); err != nil {
+		t.Fatal(err)
+	}
+	file, err := h.srv.backup.Create(ctx, pw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.srv.db.ExecContext(ctx, `UPDATE users SET disabled = 0`); err != nil {
+		t.Fatal(err)
+	}
+	for _, dry := range []bool{true, false} {
+		c.expect("POST", "/api/v1/restore", map[string]any{"password": pw, "content": string(file), "dryRun": dry}, 422, TValidation)
+	}
+	if s := c.do("GET", "/api/v1/users", nil, nil); s != 200 {
+		t.Fatalf("admin session after the refused restore: %d", s)
+	}
 }

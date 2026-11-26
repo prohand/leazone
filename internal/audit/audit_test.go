@@ -40,3 +40,21 @@ func TestChainDetectsTampering(t *testing.T) {
 		t.Fatal("tampering not detected")
 	}
 }
+
+// The entry of an action is kept when the client went away (canceled request).
+func TestRecordWithCanceledContext(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	db, _ := store.Open(filepath.Join(t.TempDir(), "a.db"))
+	defer db.Close()
+	if err := db.Migrate(ctx, t.TempDir(), log); err != nil {
+		t.Fatal(err)
+	}
+	l := New(db, "n1", log)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	l.Record(canceled, Entry{Actor: "admin", Action: "backup.restore", Target: "n1"})
+	if items, _, _ := l.List(ctx, Query{}); len(items) != 1 {
+		t.Fatalf("audit entry lost: %+v", items)
+	}
+}

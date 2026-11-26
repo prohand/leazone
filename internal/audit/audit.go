@@ -55,8 +55,10 @@ func New(db *store.DB, nodeID string, log *slog.Logger) *Log {
 
 // Record appends an entry. Errors are logged, never returned: auditing must
 // not break the action being audited, but a failure is visible in the logs.
+// The entry is written even if ctx is canceled (client gone): the action
+// it describes may already be done.
 func (l *Log) Record(ctx context.Context, e Entry) {
-	if err := l.record(ctx, e); err != nil {
+	if err := l.record(context.WithoutCancel(ctx), e); err != nil {
 		l.log.Error("audit write failed", "action", e.Action, "err", err)
 	}
 }

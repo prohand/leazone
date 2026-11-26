@@ -208,6 +208,12 @@ func (s *Service) LoginLevel(u *User, m MFAStatus) Level {
 	}
 }
 
+// CanStepUp reports whether the user has a factor accepted by the step-up
+// (a passkey, or TOTP when the policy allows it).
+func (s *Service) CanStepUp(m MFAStatus) bool {
+	return m.PasskeyCount > 0 || (m.TOTPEnabled && s.Security().TOTPAllowed())
+}
+
 // SecondFactors lists what the user can use right now as a second factor.
 func (s *Service) SecondFactors(m MFAStatus) []string {
 	out := []string{}

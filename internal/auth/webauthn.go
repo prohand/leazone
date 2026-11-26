@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"container/list"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -139,7 +140,7 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, rp RP, u *User) 
 	if err != nil {
 		return "", nil, err
 	}
-	id := s.ceremonies.put(CeremonyRegister, u.ID, *sd)
+	id := s.ceremonies.put(u.ID, CeremonyRegister, u.ID, *sd)
 	return id, opts, nil
 }
 
@@ -187,7 +188,8 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, rp RP, u *User,
 
 // BeginPasskeyLogin starts an assertion. With u == nil it is a passwordless
 // (discoverable) login, otherwise it is limited to the user's passkeys.
-func (s *Service) BeginPasskeyLogin(ctx context.Context, rp RP, u *User, kind string) (string, any, error) {
+// clientIP bounds the number of pending passwordless logins per client.
+func (s *Service) BeginPasskeyLogin(ctx context.Context, rp RP, u *User, kind, clientIP string) (string, any, error) {
 	wa, err := s.webAuthn(rp)
 	if err != nil {
 		return "", nil, err
@@ -197,7 +199,7 @@ func (s *Service) BeginPasskeyLogin(ctx context.Context, rp RP, u *User, kind st
 		if err != nil {
 			return "", nil, err
 		}
-		return s.ceremonies.put(kind, "", *sd), opts, nil
+		return s.ceremonies.put(ipKey(clientIP), kind, "", *sd), opts, nil
 	}
 	w, err := s.waUser(ctx, u)
 	if err != nil {
@@ -210,7 +212,7 @@ func (s *Service) BeginPasskeyLogin(ctx context.Context, rp RP, u *User, kind st
 	if err != nil {
 		return "", nil, err
 	}
-	return s.ceremonies.put(kind, u.ID, *sd), opts, nil
+	return s.ceremonies.put(u.ID, kind, u.ID, *sd), opts, nil
 }
 
 // FinishPasskeyLogin verifies an assertion and returns the authenticated user.
@@ -310,12 +312,19 @@ func (s *Service) DeletePasskey(ctx context.Context, userID, id string) error {
 
 // ceremonyStore keeps WebAuthn challenges in memory for 5 minutes. Each
 // challenge is single use and bound to a kind and (when known) a user.
+// Anonymous callers can fill it (passwordless login), so it is bounded per
+// owner (client network or user) and globally; when full, the oldest
+// challenges go first.
 type ceremonyStore struct {
-	mu    sync.Mutex
-	items map[string]ceremony
+	mu      sync.Mutex
+	items   map[string]*list.Element // id -> element of order
+	order   *list.List               // *ceremony, oldest first
+	byOwner map[string][]string      // owner -> ids, oldest first
 }
 
 type ceremony struct {
+	id      string
+	owner   string
 	kind    string
 	userID  string
 	data    webauthn.SessionData
@@ -323,40 +332,65 @@ type ceremony struct {
 }
 
 const (
-	ceremonyTTL = 5 * time.Minute
-	ceremonyMax = 10000
+	ceremonyTTL      = 5 * time.Minute
+	ceremonyMax      = 10000
+	ceremonyPerOwner = 20
 )
 
-func newCeremonyStore() *ceremonyStore { return &ceremonyStore{items: map[string]ceremony{}} }
+func newCeremonyStore() *ceremonyStore {
+	return &ceremonyStore{items: map[string]*list.Element{}, order: list.New(), byOwner: map[string][]string{}}
+}
 
-func (c *ceremonyStore) put(kind, userID string, sd webauthn.SessionData) string {
+// put stores a challenge for owner ("ip:..." for anonymous callers, else
+// the user id) and returns its id.
+func (c *ceremonyStore) put(owner, kind, userID string, sd webauthn.SessionData) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
-	if len(c.items) >= ceremonyMax {
-		for k, v := range c.items {
-			if now.After(v.expires) {
-				delete(c.items, k)
-			}
-		}
-		if len(c.items) >= ceremonyMax { // still full: drop an arbitrary entry
-			for k := range c.items {
-				delete(c.items, k)
-				break
-			}
-		}
+	// Same TTL for all: the oldest are the expired ones.
+	for e := c.order.Front(); e != nil && now.After(e.Value.(*ceremony).expires); e = c.order.Front() {
+		c.remove(e.Value.(*ceremony).id)
+	}
+	if pending := c.byOwner[owner]; len(pending) >= ceremonyPerOwner {
+		c.remove(pending[0])
+	}
+	if c.order.Len() >= ceremonyMax {
+		c.remove(c.order.Front().Value.(*ceremony).id)
 	}
 	id := ids.New()
-	c.items[id] = ceremony{kind: kind, userID: userID, data: sd, expires: now.Add(ceremonyTTL)}
+	c.items[id] = c.order.PushBack(&ceremony{id: id, owner: owner, kind: kind, userID: userID, data: sd, expires: now.Add(ceremonyTTL)})
+	c.byOwner[owner] = append(c.byOwner[owner], id)
 	return id
+}
+
+// remove deletes one challenge (c.mu held).
+func (c *ceremonyStore) remove(id string) *ceremony {
+	e, ok := c.items[id]
+	if !ok {
+		return nil
+	}
+	delete(c.items, id)
+	v := c.order.Remove(e).(*ceremony)
+	owned := c.byOwner[v.owner]
+	for i, x := range owned {
+		if x == id {
+			owned = append(owned[:i:i], owned[i+1:]...)
+			break
+		}
+	}
+	if len(owned) == 0 {
+		delete(c.byOwner, v.owner)
+	} else {
+		c.byOwner[v.owner] = owned
+	}
+	return v
 }
 
 func (c *ceremonyStore) take(id, kind, userID string) (webauthn.SessionData, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v, ok := c.items[id]
-	delete(c.items, id)
-	if !ok || v.kind != kind || v.userID != userID || time.Now().After(v.expires) {
+	v := c.remove(id)
+	if v == nil || v.kind != kind || v.userID != userID || time.Now().After(v.expires) {
 		return webauthn.SessionData{}, false
 	}
 	return v.data, true
