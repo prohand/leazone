@@ -279,26 +279,38 @@ func (s *Store) Zone(ctx context.Context, id string) (*ZoneInfo, error) {
 	return info, nil
 }
 
-// newKey generates a key for a zone and stores it.
-func (s *Store) newKey(ctx context.Context, q execer, z zoneRow, role, state string, activeAt time.Time) error {
-	k := &dns.DNSKEY{Hdr: dns.RR_Header{Name: dns.Fqdn(z.name), Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: DNSKEYTTL},
-		Flags: 256, Protocol: 3, Algorithm: z.alg}
+// Generate creates a key pair for a zone (not stored).
+func Generate(zone, role string, alg uint8) (*Key, error) {
+	k := &dns.DNSKEY{Hdr: dns.RR_Header{Name: dns.Fqdn(strings.ToLower(zone)), Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: DNSKEYTTL},
+		Flags: 256, Protocol: 3, Algorithm: alg}
 	if role == KSK {
 		k.Flags = 257
 	}
 	priv, err := k.Generate(256)
 	if err != nil {
+		return nil, err
+	}
+	signer, ok := priv.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("dnssec: unsupported private key")
+	}
+	return &Key{ID: ids.New(), Role: role, Algorithm: alg, KeyTag: k.KeyTag(), DNSKEY: k, DNSKEYStr: k.String(),
+		Signer: signer, private: k.PrivateKeyString(priv), CreatedAt: time.Now().UTC()}, nil
+}
+
+// newKey generates a key for a zone and stores it.
+func (s *Store) newKey(ctx context.Context, q execer, z zoneRow, role, state string, activeAt time.Time) error {
+	k, err := Generate(z.name, role, z.alg)
+	if err != nil {
 		return err
 	}
-	id := ids.New()
-	now := s.Now()
 	var act any
 	if !activeAt.IsZero() {
 		act = ms(activeAt)
 	}
 	_, err = q.ExecContext(ctx, `INSERT INTO dnssec_keys(id, zone_id, role, algorithm, key_tag, public, private_enc, state, created_at, active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, z.id, role, z.alg, k.KeyTag(), k.String(),
-		s.box.Seal([]byte(k.PrivateKeyString(priv)), aad(id)), state, ms(now), act)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, k.ID, z.id, role, z.alg, k.KeyTag, k.DNSKEYStr,
+		s.box.Seal([]byte(k.private), aad(k.ID)), state, ms(s.Now()), act)
 	return err
 }
 

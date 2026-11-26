@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/prohand/leazone/internal/dnsconf"
+	"github.com/prohand/leazone/internal/dnssec"
 )
 
 // Sources of an answer (for the lookup tool and, later, query logs).
@@ -27,8 +28,21 @@ const (
 	SourceCache     = "cache"
 	SourceForwarder = "forwarder"
 	SourceRefused   = "refused"
+	SourceBlocked   = "blocked"
 	SourceError     = "error"
 )
+
+// Blocker decides whether a recursive query is blocked (ad blocking).
+type Blocker interface {
+	Filter(name string, client, local netip.Addr, count bool) (blocked, nullIP bool)
+}
+
+// DNSSECConfig is the DNSSEC input of the engine.
+type DNSSECConfig struct {
+	Keys     map[string][]*dnssec.Key // signing keys by zone id (empty = no signing)
+	NSECMode map[string]string        // "nsec" or "nsec3" by zone id
+	Validate bool                     // validate forwarded answers
+}
 
 // state is the immutable configuration used to answer queries.
 type state struct {
@@ -50,18 +64,43 @@ type Engine struct {
 	mu        sync.Mutex
 	listeners map[string]*listener // by IP
 
-	queries, local, forwarded, refused, failed atomic.Uint64
+	blocker   Blocker
+	dnssecCfg atomic.Pointer[DNSSECConfig]
+	sigs      *sigCache
+	anchors   []*dns.DS
+	validator atomic.Pointer[validator]
+	signedWin atomic.Uint64 // inception of the signatures in use (0 = none)
+
+	queries, local, forwarded, refused, failed, blocked, bogus atomic.Uint64
 }
 
 // New creates an engine listening on the given port (53 in production).
 func New(log *slog.Logger, port int) *Engine {
-	e := &Engine{log: log, port: port, cache: newCache(), listeners: map[string]*listener{}}
+	e := &Engine{log: log, port: port, cache: newCache(), listeners: map[string]*listener{}, sigs: newSigCache()}
+	e.anchors, _ = ParseAnchors(RootAnchors)
 	e.st.Store(&state{zones: &zoneSet{zones: map[string]*zoneData{}}, fwd: &forwarders{}})
 	return e
 }
 
 // SetRootCAs replaces the trusted roots for DoT/DoH (tests only).
 func (e *Engine) SetRootCAs(p *x509.CertPool) { e.roots = p }
+
+// SetBlocker installs the ad blocker (before serving).
+func (e *Engine) SetBlocker(b Blocker) { e.blocker = b }
+
+// SetTrustAnchors replaces the root trust anchors (tests only).
+func (e *Engine) SetTrustAnchors(a []*dns.DS) { e.anchors = a }
+
+// SetDNSSEC sets the DNSSEC configuration used by the next Load.
+func (e *Engine) SetDNSSEC(c DNSSECConfig) { e.dnssecCfg.Store(&c) }
+
+// NeedsResign reports whether signed zones should be reloaded to renew
+// their signatures (the validity window moves every day).
+func (e *Engine) NeedsResign(now time.Time) bool {
+	w := e.signedWin.Load()
+	inc, _ := sigWindow(now)
+	return w != 0 && w != uint64(inc)
+}
 
 // Port is the DNS port.
 func (e *Engine) Port() int { return e.port }
@@ -77,14 +116,34 @@ func (e *Engine) Load(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record, 
 		}
 	}
 	e.cache.configure(st.CacheSize, st.CacheMinTTL, st.CacheMaxTTL, st.CacheNegativeMaxTTL)
-	e.st.Store(&state{zones: buildZones(zones, recs), fwd: buildForwarders(fwd, old.fwd, e.roots), recursion: nets})
+	var sg *signing
+	c := e.dnssecCfg.Load()
+	if c != nil && len(c.Keys) > 0 {
+		now := time.Now()
+		sg = &signing{keys: c.Keys, nsec: c.NSECMode, now: now, cache: e.sigs}
+		e.sigs.begin()
+		defer e.sigs.end()
+		inc, _ := sigWindow(now)
+		e.signedWin.Store(uint64(inc))
+	} else {
+		e.signedWin.Store(0)
+	}
+	e.st.Store(&state{zones: buildZones(zones, recs, sg), fwd: buildForwarders(fwd, old.fwd, e.roots), recursion: nets})
+	if c != nil && c.Validate {
+		e.validator.Store(newValidator(e.anchors, func(ctx context.Context, name string, qtype uint16) (*dns.Msg, error) {
+			m, _, err := e.forward(ctx, e.st.Load(), dns.Question{Name: name, Qtype: qtype, Qclass: dns.ClassINET}, true, true)
+			return m, err
+		}))
+	} else {
+		e.validator.Store(nil)
+	}
 }
 
 // ServeDNS implements dns.Handler.
 func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	e.queries.Add(1)
 	client := addrOf(w.RemoteAddr())
-	resp, _ := e.handle(context.Background(), r, client)
+	resp, _ := e.handleFrom(context.Background(), r, client, addrOf(w.LocalAddr()))
 	if resp == nil {
 		return
 	}
@@ -112,6 +171,11 @@ func addrOf(a net.Addr) netip.Addr {
 
 // handle builds the response for a query from client. It returns the source.
 func (e *Engine) handle(ctx context.Context, r *dns.Msg, client netip.Addr) (*dns.Msg, string) {
+	return e.handleFrom(ctx, r, client, netip.Addr{})
+}
+
+// handleFrom is handle for a query received on the local address local.
+func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip.Addr) (*dns.Msg, string) {
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.RecursionAvailable = true
@@ -124,9 +188,14 @@ func (e *Engine) handle(ctx context.Context, r *dns.Msg, client netip.Addr) (*dn
 			return m, SourceError
 		}
 	}
+	var ede *dns.EDNS0_EDE
 	finish := func(src string) (*dns.Msg, string) {
 		if r.IsEdns0() != nil && m.IsEdns0() == nil {
 			m.SetEdns0(ednsSize, do)
+			if ede != nil {
+				o := m.IsEdns0()
+				o.Option = append(o.Option, ede)
+			}
 		}
 		return m, src
 	}
@@ -151,11 +220,17 @@ func (e *Engine) handle(ctx context.Context, r *dns.Msg, client netip.Addr) (*dn
 		m.Authoritative = res.msg.Authoritative
 		m.Rcode = res.msg.Rcode
 		m.Answer, m.Ns, m.Extra = res.msg.Answer, res.msg.Ns, res.msg.Extra
+		if do {
+			st.zones.addDNSSEC(m, q.Name, q.Qtype)
+		}
 		if res.cnameOut == "" || !e.mayRecurse(st, client) {
 			return finish(SourceLocal)
 		}
 		// A local CNAME points outside: resolve the target upstream.
 		up, _, err := e.forward(ctx, st, dns.Question{Name: res.cnameOut, Qtype: q.Qtype, Qclass: q.Qclass}, do, r.CheckingDisabled)
+		if err == nil && !do {
+			up.Answer = stripDNSSEC(up.Answer, q.Qtype)
+		}
 		if err == nil {
 			m.Answer = append(m.Answer, up.Answer...)
 			m.Rcode = up.Rcode
@@ -171,11 +246,53 @@ func (e *Engine) handle(ctx context.Context, r *dns.Msg, client netip.Addr) (*dn
 		m.RecursionAvailable = false
 		return finish(SourceRefused)
 	}
-	up, src, err := e.forward(ctx, st, q, do, r.CheckingDisabled)
+	// 3. Ad blocking.
+	if e.blocker != nil {
+		if blocked, null := e.blocker.Filter(q.Name, client, local, true); blocked {
+			e.blocked.Add(1)
+			ede = blockedReply(m, q, null)
+			return finish(SourceBlocked)
+		}
+	}
+
+	// 4. Cache or forwarders, with DNSSEC validation when enabled.
+	v := e.validator.Load()
+	cd := r.CheckingDisabled
+	if v != nil {
+		cd = true // get the signed data even if the forwarder finds it bogus
+	}
+	up, src, err := e.forward(ctx, st, q, do || v != nil, cd)
 	if err != nil {
 		e.failed.Add(1)
 		m.Rcode = dns.RcodeServerFailure
 		return finish(SourceError)
+	}
+	secure := false
+	if v != nil && !r.CheckingDisabled {
+		status, why := v.checkCached(ctx, q, up)
+		if status == vBogus {
+			e.bogus.Add(1)
+			e.log.Info("DNSSEC: bogus answer", "name", q.Name, "type", dns.TypeToString[q.Qtype], "reason", why)
+			m.Rcode = dns.RcodeServerFailure
+			ede = &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeDNSBogus, ExtraText: why}
+			return finish(SourceError)
+		}
+		secure = status == vSecure
+	}
+	if e.blocker != nil {
+		// CNAME cloaking: a tracker hidden behind a CNAME is blocked too.
+		for _, rr := range up.Answer {
+			if c, ok := rr.(*dns.CNAME); ok {
+				if blocked, null := e.blocker.Filter(c.Target, client, local, false); blocked {
+					e.blocked.Add(1)
+					ede = blockedReply(m, q, null)
+					return finish(SourceBlocked)
+				}
+			}
+		}
+	}
+	if !do {
+		up.Answer, up.Ns = stripDNSSEC(up.Answer, q.Qtype), stripDNSSEC(up.Ns, q.Qtype)
 	}
 	if src == SourceForwarder {
 		e.forwarded.Add(1)
@@ -187,9 +304,30 @@ func (e *Engine) handle(ctx context.Context, r *dns.Msg, client netip.Addr) (*dn
 			m.Extra = append(m.Extra, rr)
 		}
 	}
-	// We do not validate DNSSEC yet (phase 5): never claim authenticated data.
-	m.AuthenticatedData = false
+	// AD only when we validated it ourselves (RFC 6840 §5.8).
+	m.AuthenticatedData = secure && (do || r.AuthenticatedData)
 	return finish(src)
+}
+
+// blockedReply turns m into the answer for a blocked name.
+func blockedReply(m *dns.Msg, q dns.Question, nullIP bool) *dns.EDNS0_EDE {
+	m.Answer, m.Ns, m.Extra = nil, nil, nil
+	m.AuthenticatedData = false
+	if !nullIP {
+		m.Rcode = dns.RcodeNameError
+	} else {
+		m.Rcode = dns.RcodeSuccess
+		hdr := dns.RR_Header{Name: q.Name, Class: dns.ClassINET, Ttl: 60}
+		switch q.Qtype {
+		case dns.TypeA:
+			hdr.Rrtype = dns.TypeA
+			m.Answer = []dns.RR{&dns.A{Hdr: hdr, A: net.IPv4zero}}
+		case dns.TypeAAAA:
+			hdr.Rrtype = dns.TypeAAAA
+			m.Answer = []dns.RR{&dns.AAAA{Hdr: hdr, AAAA: net.IPv6zero}}
+		}
+	}
+	return &dns.EDNS0_EDE{InfoCode: dns.ExtendedErrorCodeBlocked, ExtraText: "bloqué par Leazone"}
 }
 
 func (e *Engine) mayRecurse(st *state, client netip.Addr) bool {
@@ -267,7 +405,12 @@ func (e *Engine) Lookup(ctx context.Context, name string, qtype uint16) LookupRe
 }
 
 // FlushCache empties the cache (name == "") or one name and its sub-names.
-func (e *Engine) FlushCache(name string) int { return e.cache.flush(name) }
+func (e *Engine) FlushCache(name string) int {
+	if v := e.validator.Load(); v != nil {
+		v.flush()
+	}
+	return e.cache.flush(name)
+}
 
 // TestForwarder tests a forwarder configuration with the engine's roots.
 func (e *Engine) TestForwarder(ctx context.Context, f dnsconf.Forwarder) TestResult {
@@ -297,6 +440,7 @@ func (e *Engine) TestForwarder(ctx context.Context, f dnsconf.Forwarder) TestRes
 // Stats summarizes the engine counters.
 type Stats struct {
 	Queries, Local, Forwarded, Refused, Failed uint64
+	Blocked, Bogus                             uint64
 	CacheEntries                               int
 	CacheHits, CacheMisses                     uint64
 }
@@ -304,7 +448,8 @@ type Stats struct {
 // Stats returns the counters.
 func (e *Engine) Stats() Stats {
 	return Stats{Queries: e.queries.Load(), Local: e.local.Load(), Forwarded: e.forwarded.Load(),
-		Refused: e.refused.Load(), Failed: e.failed.Load(), CacheEntries: e.cache.len(),
+		Refused: e.refused.Load(), Failed: e.failed.Load(),
+		Blocked: e.blocked.Load(), Bogus: e.bogus.Load(), CacheEntries: e.cache.len(),
 		CacheHits: e.cache.hits.Load(), CacheMisses: e.cache.misses.Load()}
 }
 

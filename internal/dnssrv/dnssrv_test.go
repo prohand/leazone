@@ -119,14 +119,22 @@ func (h *upstreamHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 func startUDPTCP(t *testing.T, h dns.Handler) int {
 	t.Helper()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := pc.LocalAddr().(*net.UDPAddr).Port
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-	if err != nil {
-		t.Fatal(err)
+	var pc net.PacketConn
+	var ln net.Listener
+	var port int
+	for try := 0; ; try++ {
+		var err error
+		if pc, err = net.ListenPacket("udp", "127.0.0.1:0"); err != nil {
+			t.Fatal(err)
+		}
+		port = pc.LocalAddr().(*net.UDPAddr).Port
+		if ln, err = net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port)); err == nil {
+			break
+		}
+		pc.Close() // TCP port taken: try another one
+		if try == 20 {
+			t.Fatal(err)
+		}
 	}
 	su := &dns.Server{PacketConn: pc, Handler: h}
 	st := &dns.Server{Listener: ln, Handler: h}

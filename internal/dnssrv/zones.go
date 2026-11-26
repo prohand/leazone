@@ -5,10 +5,12 @@ package dnssrv
 
 import (
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 
 	"github.com/prohand/leazone/internal/dnsconf"
+	"github.com/prohand/leazone/internal/dnssec"
 )
 
 // zoneData is the in-memory content of one authoritative zone.
@@ -17,6 +19,7 @@ type zoneData struct {
 	soa   *dns.SOA
 	rrs   map[string]map[uint16][]dns.RR // owner FQDN -> type -> records
 	names map[string]bool                // existing names, including empty non-terminals
+	sec   *signedZone                    // nil = not signed
 }
 
 // zoneSet is an immutable snapshot of all local zones.
@@ -24,7 +27,15 @@ type zoneSet struct {
 	zones map[string]*zoneData
 }
 
-func buildZones(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record) *zoneSet {
+// signing is the DNSSEC input of buildZones (nil = no signing).
+type signing struct {
+	keys  map[string][]*dnssec.Key // by zone id
+	nsec  map[string]string        // NSEC mode by zone id
+	now   time.Time
+	cache *sigCache
+}
+
+func buildZones(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record, sg *signing) *zoneSet {
 	zs := &zoneSet{zones: map[string]*zoneData{}}
 	for _, z := range zones {
 		zd := &zoneData{name: dns.Fqdn(z.Name), soa: dnsconf.SOARecord(z), rrs: map[string]map[uint16][]dns.RR{}, names: map[string]bool{}}
@@ -38,6 +49,9 @@ func buildZones(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record) *zoneS
 			if err == nil {
 				zd.add(rr)
 			}
+		}
+		if sg != nil && len(sg.keys[z.ID]) > 0 {
+			zd.sign(sg.keys[z.ID], sg.nsec[z.ID] != "nsec", sg.now, sg.cache)
 		}
 		zs.zones[zd.name] = zd
 	}
@@ -128,7 +142,7 @@ func (zs *zoneSet) answer(qname string, qtype uint16) authResult {
 			return authResult{msg: m, cnameOut: name, authorized: true}
 		}
 		// Delegation below the apex: referral, not authoritative.
-		if ref := z.referral(name); ref != nil {
+		if ref := z.referral(name, qtype); ref != nil {
 			if hop == 0 {
 				ref.Authoritative = false
 				return authResult{msg: ref, authorized: true}
@@ -196,9 +210,10 @@ func (z *zoneData) wildcard(name string) (map[uint16][]dns.RR, bool) {
 }
 
 // referral returns a referral when name is at or below a delegation point.
-func (z *zoneData) referral(name string) *dns.Msg {
+func (z *zoneData) referral(name string, qtype uint16) *dns.Msg {
 	for n := name; n != z.name; {
-		if ns := z.rrs[n][dns.TypeNS]; len(ns) > 0 {
+		// The DS set of a delegation lives in the parent zone.
+		if ns := z.rrs[n][dns.TypeNS]; len(ns) > 0 && !(n == name && qtype == dns.TypeDS) {
 			m := new(dns.Msg)
 			m.Ns = copyRRs(ns, "")
 			for _, rr := range ns {
