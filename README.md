@@ -2,9 +2,9 @@
 
 Serveur **DNS + DHCP** léger, avec haute disponibilité, interface web moderne, conçu pour Docker.
 
-> **État : phase 1 sur 6.** Disponible : l'application, l'interface web, l'authentification complète
-> (mots de passe, passkeys, TOTP, codes de secours, sessions, rôles, jetons d'API, audit) et l'image Docker.
-> DNS (phase 2), DHCP (phase 3), HA (phase 4), blocage et DNSSEC (phase 5) arrivent ensuite.
+> **État : phase 2 sur 6.** Disponible : l'authentification complète (mots de passe, passkeys, TOTP,
+> codes de secours, sessions, rôles, jetons d'API, audit), l'image Docker, et le **DNS** (zones, redirecteurs
+> UDP/TCP/DoT/DoH, cache, écoute par interface). DHCP (phase 3), HA (phase 4), blocage et DNSSEC (phase 5) arrivent ensuite.
 > Le plan complet est dans [docs/PLAN.md](docs/PLAN.md).
 
 ---
@@ -117,6 +117,64 @@ dans `/data/tls/` puis redémarrez. Le certificat auto-signé créé au premier 
 
 ---
 
+## DNS
+
+### 1. Choisir où Leazone écoute
+
+*Interfaces* liste les interfaces de l'hôte (physiques, VLAN 802.1Q, bonds, bridges) avec leurs IP.
+Activez **DNS** sur les interfaces voulues : Leazone écoute en UDP et TCP sur **leurs IP seulement**
+(jamais sur `0.0.0.0`). Une IP ou une interface ajoutée sur l'hôte est prise en compte sans redémarrer.
+
+Les VLAN se créent **sur l'hôte** (netplan, systemd-networkd), pas dans Leazone. Exemple netplan :
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    eno1: {}
+  vlans:
+    eno1.20:
+      id: 20
+      link: eno1
+      addresses: [192.168.20.2/24]
+```
+
+Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*.
+
+### 2. Zones
+
+- **Zone directe** : `maison.lan` → enregistrements A, AAAA, CNAME, MX, TXT, SRV, PTR, NS. Le SOA est géré par la zone
+  (numéro de série mis à jour tout seul).
+- **Zone inverse** : tapez simplement le réseau, ex. `192.168.20.0/24` → `20.168.192.in-addr.arpa`.
+- Import / export au format BIND (fichier `.zone`), pratique pour migrer.
+- Les zones locales répondent à **tous** les clients ; la récursion (noms externes) est limitée aux
+  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, CGNAT, loopback, ULA IPv6).
+
+### 3. Redirecteurs
+
+- **Globaux** : utilisés pour tout nom qui n'est pas dans une zone locale.
+- **Conditionnels** : pour un domaine précis (ex : `corp.local` → le DNS de l'Active Directory).
+- Protocoles : UDP, TCP, **DoT** (DNS over TLS, port 853), **DoH** (DNS over HTTPS).
+- Ordre = priorité. Si un redirecteur ne répond pas, Leazone passe au suivant et le met de côté quelques secondes.
+- Bouton **Tester** : vraie requête, avec la latence ou l'erreur en clair (certificat invalide, délai dépassé…).
+- DoT/DoH : la vérification du certificat est active par défaut. Pour DoH, donnez l'**IP de démarrage**
+  (Leazone ne peut pas résoudre le nom du serveur DoH avant d'avoir un redirecteur).
+
+Exemples :
+
+| Fournisseur | Protocole | Adresse | Nom TLS / URL |
+|---|---|---|---|
+| Quad9 | DoT | 9.9.9.9 | dns.quad9.net |
+| Cloudflare | DoH | 1.1.1.1 | https://cloudflare-dns.com/dns-query |
+| Google | DoT | 8.8.8.8 | dns.google |
+
+### 4. Cache
+
+TTL minimum / maximum, TTL négatif maximum et taille dans *Paramètres > DNS*. Bouton **Vider le cache**
+(tout, ou un seul nom et ses sous-domaines).
+
+---
+
 ## Comptes et sécurité
 
 - **Rôles** : `admin` (tout), `operator` (baux, réservations, enregistrements DNS), `readonly` (lecture seule).
@@ -156,6 +214,7 @@ Tout se règle par variables d'environnement (prioritaires) ou dans `/config/lea
 | `LEAZONE_PUBLIC_URL` | vide | URL tapée dans le navigateur (`https://…`) |
 | `LEAZONE_TRUSTED_PROXIES` | vide | IP/réseaux des reverse proxies de confiance |
 | `LEAZONE_HTTP_LISTEN` | `:8443` | Adresse de l'interface web / API |
+| `LEAZONE_DNS_PORT` | `53` | Port du serveur DNS (à changer seulement pour des tests) |
 | `LEAZONE_ADMIN_USER` | `admin` | Nom du premier compte |
 | `LEAZONE_ADMIN_PASSWORD_FILE` | vide | Fichier (secret Docker) du mot de passe initial |
 | `LEAZONE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -212,10 +271,27 @@ docker run --rm -v leazone_leazone-data:/d -v leazone_leazone-logs:/l alpine cho
 **« le port de l'interface web … est déjà utilisé »**
 Un autre service écoute sur 8443. Changez `LEAZONE_HTTP_LISTEN` (ex : `:9443`).
 
-**Port 53 déjà pris (systemd-resolved)** — concerne la phase 2.
-Leazone n'écoute que sur les IP choisies, donc pas sur `127.0.0.53` : pas de conflit dans le cas normal.
-Si un service écoute en `0.0.0.0:53`, désactivez-le, ou pour systemd-resolved :
-`DNSStubListener=no` dans `/etc/systemd/resolved.conf`, puis `systemctl restart systemd-resolved`.
+**Port 53 déjà pris (systemd-resolved, dnsmasq…)**
+La page *Interfaces* affiche l'erreur en rouge sous l'interface concernée (« le port 53 est déjà utilisé sur … »).
+Leazone n'écoute que sur les IP choisies, donc pas sur `127.0.0.53` : pas de conflit avec systemd-resolved dans le cas normal.
+Si un service écoute sur toutes les adresses (`0.0.0.0:53`), trouvez-le :
+
+```bash
+sudo ss -lntup | grep ':53 '
+```
+
+Pour systemd-resolved : `DNSStubListener=no` dans `/etc/systemd/resolved.conf`, puis `systemctl restart systemd-resolved`.
+Leazone réessaie tout seul toutes les 20 secondes : pas besoin de le redémarrer.
+
+**Un VLAN n'apparaît pas dans *Interfaces***
+- Vérifiez sur l'hôte : `ip -d link show` doit montrer l'interface (ex : `eno1.20`, `vlan protocol 802.1Q id 20`).
+- Le conteneur doit être en `network_mode: host` (sinon il ne voit que ses propres interfaces).
+- Le module noyau `8021q` doit être chargé : `sudo modprobe 8021q`.
+- Sans IP sur le VLAN, Leazone le voit mais ne peut pas y écouter : ajoutez une adresse dans netplan.
+
+**Le DNS ne répond pas aux clients d'un autre réseau**
+Les noms locaux répondent à tous. Pour les noms externes, ajoutez le réseau des clients dans
+*Paramètres > DNS > réseaux autorisés pour la récursion* (sinon réponse REFUSED).
 
 **Les passkeys sont refusées ou le bouton est grisé**
 - Ouvrez l'interface par un **nom de domaine**, pas par une IP.
@@ -244,6 +320,10 @@ go test ./...
 
 ```bash
 test/integration/phase1.sh
+```
+
+```bash
+sudo go test -tags integration -v ./test/integration/
 ```
 
 Le binaire seul fonctionne aussi hors Docker (`go build ./cmd/leazone`), avec `LEAZONE_DATA_DIR`,

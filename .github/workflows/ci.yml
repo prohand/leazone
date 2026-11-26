@@ -38,5 +38,10 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: Phase 1 integration test (image, non-root, read-only, capabilities)
         run: test/integration/phase1.sh
+      - name: Docker scenarios (DNS on test interfaces, hot add, forwarding, port conflict)
+        run: sudo -E env "PATH=$PATH" LEAZONE_TEST_IMAGE=leazone:phase1-test go test -tags integration -count=1 -v ./test/integration/
