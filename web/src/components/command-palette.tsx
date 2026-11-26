@@ -5,6 +5,7 @@ import {
   ArrowLeftRight,
   BookmarkPlus,
   CirclePause,
+  DatabaseBackup,
   Download,
   Eraser,
   FlaskConical,
@@ -15,7 +16,9 @@ import {
   Moon,
   Network,
   Plus,
+  Radio,
   RefreshCw,
+  ScrollText,
   SearchCheck,
   SlidersHorizontal,
   Sun,
@@ -261,6 +264,36 @@ function CommandPalette({ open, setOpen }: Ctx) {
                 onSelect={() => run(() => navigate("/blocking?test=1"), true)}
               >
                 <FlaskConical /> Tester un domaine
+              </CommandItem>
+            </CommandGroup>
+          </>
+        )}
+        <CommandSeparator />
+        <CommandGroup heading="Journaux">
+          <CommandItem value="Journaux DNS" keywords={["logs", "requêtes", "historique", "query log"]} onSelect={() => run(() => navigate("/logs?tab=dns"))}>
+            <ScrollText /> Journaux DNS
+          </CommandItem>
+          <CommandItem value="Journaux DHCP" keywords={["logs", "baux", "événements", "ack", "nak"]} onSelect={() => run(() => navigate("/logs?tab=dhcp"))}>
+            <ScrollText /> Journaux DHCP
+          </CommandItem>
+          <CommandItem
+            value="Suivre les requêtes en direct"
+            keywords={["live", "temps réel", "logs", "dns", "journaux"]}
+            onSelect={() => run(() => navigate("/logs?tab=dns&live=1"))}
+          >
+            <Radio /> Suivre les requêtes en direct
+          </CommandItem>
+        </CommandGroup>
+        {allowed("admin") && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Sauvegarde">
+              <CommandItem
+                value="Télécharger une sauvegarde"
+                keywords={["backup", "export", "configuration", "yaml", "restaurer"]}
+                onSelect={() => run(() => navigate("/settings?tab=backup&download=1"), true)}
+              >
+                <DatabaseBackup /> Télécharger une sauvegarde
               </CommandItem>
             </CommandGroup>
           </>

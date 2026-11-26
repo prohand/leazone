@@ -196,13 +196,15 @@ async function parseError(res: Response): Promise<ApiError> {
 // "auth lost" handler or a step-up for them.
 const AUTH_FLOW = /^\/auth\//
 
-export async function request<P extends Path, M extends Method>(
+/** Sends the request; on error runs the global handlers (step-up + retry once, auth lost, read-only). */
+async function send<P extends Path, M extends Method>(
   method: M,
   path: P,
-  options: Options<Op<P, M>> = {},
-): Promise<ApiResponse<P, M>> {
+  options: Options<Op<P, M>>,
+  accept: string,
+): Promise<Response> {
   const url = buildUrl(path, options.params as object | undefined, options.query as object | undefined)
-  const headers: Record<string, string> = { Accept: "application/json, text/plain;q=0.9" }
+  const headers: Record<string, string> = { Accept: accept }
   if (method !== "get" && csrfToken) headers["X-CSRF-Token"] = csrfToken
   let body: string | undefined
   if (options.body !== undefined) {
@@ -234,7 +236,7 @@ export async function request<P extends Path, M extends Method>(
 
     if (err.is(ProblemType.stepUpRequired) && !options.noStepUp && stepUpHandler && !inAuthFlow) {
       const ok = await stepUpHandler()
-      if (ok) return request(method, path, { ...options, noStepUp: true })
+      if (ok) return send(method, path, { ...options, noStepUp: true }, accept)
     }
 
     if (
@@ -250,13 +252,53 @@ export async function request<P extends Path, M extends Method>(
     }
     throw err
   }
+  return res
+}
 
+export async function request<P extends Path, M extends Method>(
+  method: M,
+  path: P,
+  options: Options<Op<P, M>> = {},
+): Promise<ApiResponse<P, M>> {
+  const res = await send(method, path, options, "application/json, text/plain;q=0.9")
   if (res.status === 204) return undefined as ApiResponse<P, M>
   const text = await res.text()
   // Non-JSON bodies (e.g. a zone export in text/plain) are returned as a string.
   const ctype = res.headers.get("Content-Type") ?? ""
   if (ctype && !/[/+]json\b/i.test(ctype)) return text as ApiResponse<P, M>
   return (text ? JSON.parse(text) : undefined) as ApiResponse<P, M>
+}
+
+/** File name from a Content-Disposition header (filename* first), else undefined. */
+export function dispositionFilename(header: string | null): string | undefined {
+  if (!header) return undefined
+  const star = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(header)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ""))
+    } catch {
+      // fall through to the plain form
+    }
+  }
+  const plain = /filename\s*=\s*("([^"]*)"|[^;]+)/.exec(header)
+  const name = plain ? (plain[2] ?? plain[1]).trim() : ""
+  // Never trust a path from the server: keep the last part only.
+  return name ? name.split(/[\\/]/).pop() || undefined : undefined
+}
+
+/**
+ * Downloads a file answer (backup, automatic backup...): same error handling
+ * as `request` (step-up dialog then one retry), but returns the raw body and
+ * the file name given by the server.
+ */
+export async function requestFile<P extends Path, M extends Method>(
+  method: M,
+  path: P,
+  options: Options<Op<P, M>> = {},
+): Promise<{ blob: Blob; filename?: string }> {
+  const res = await send(method, path, options, "application/yaml, application/octet-stream, */*;q=0.8")
+  const blob = await res.blob()
+  return { blob, filename: dispositionFilename(res.headers.get("Content-Disposition")) }
 }
 
 export const api = {

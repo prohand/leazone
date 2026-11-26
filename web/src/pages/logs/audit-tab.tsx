@@ -1,12 +1,10 @@
 import * as React from "react"
 import { useInfiniteQuery } from "@tanstack/react-query"
-import { useSearchParams } from "react-router"
-import { Globe, Info, Loader2, Lock, Network, Search } from "lucide-react"
+import { Info, Loader2, Lock, Search } from "lucide-react"
 import { api } from "@/api/client"
 import { qk } from "@/api/queries"
 import type { AuditEntry } from "@/api/types"
 import { EmptyState } from "@/components/empty-state"
-import { PageHeader } from "@/components/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,7 +12,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useDebounced } from "@/hooks/use-debounced"
 import { useCurrentUser } from "@/hooks/use-session"
 import { errorMessage } from "@/lib/errors"
@@ -29,35 +26,7 @@ const actionFilters = [
   { value: "settings.", label: "Paramètres (settings.)" },
 ]
 
-export default function LogsPage() {
-  const [params, setParams] = useSearchParams()
-  const tab = ["audit", "dns", "dhcp"].includes(params.get("tab") ?? "") ? params.get("tab")! : "audit"
-  return (
-    <>
-      <PageHeader title="Journaux" description="Historique des actions et du trafic." />
-      <Tabs value={tab} onValueChange={(v) => setParams({ tab: v }, { replace: true })}>
-        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <TabsList>
-            <TabsTrigger value="audit">Audit</TabsTrigger>
-            <TabsTrigger value="dns">Requêtes DNS</TabsTrigger>
-            <TabsTrigger value="dhcp">Événements DHCP</TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent value="audit" className="mt-4">
-          <AuditTab />
-        </TabsContent>
-        <TabsContent value="dns" className="mt-4">
-          <EmptyState icon={Globe} title="Disponible dans une prochaine version" description="Le journal des requêtes DNS arrivera avec le module DNS." />
-        </TabsContent>
-        <TabsContent value="dhcp" className="mt-4">
-          <EmptyState icon={Network} title="Disponible dans une prochaine version" description="Le journal DHCP arrivera avec le module DHCP." />
-        </TabsContent>
-      </Tabs>
-    </>
-  )
-}
-
-function AuditTab() {
+export function AuditTab() {
   const user = useCurrentUser()
   const [q, setQ] = React.useState("")
   const [action, setAction] = React.useState("all")

@@ -61,9 +61,9 @@ export const navGroups: NavGroup[] = [
     label: "Système",
     items: [
       { title: "Cluster", path: "/cluster", icon: Server, keywords: ["HA", "haute disponibilité", "témoin"] },
-      { title: "Journaux", path: "/logs", icon: ScrollText, keywords: ["audit", "logs"] },
+      { title: "Journaux", path: "/logs", icon: ScrollText, keywords: ["audit", "logs", "requêtes", "DHCP", "historique"] },
       { title: "Utilisateurs", path: "/users", icon: Users, adminOnly: true, keywords: ["comptes"] },
-      { title: "Paramètres", path: "/settings", icon: Settings, adminOnly: true, keywords: ["sécurité", "HTTPS", "certificat"] },
+      { title: "Paramètres", path: "/settings", icon: Settings, adminOnly: true, keywords: ["sécurité", "HTTPS", "certificat", "sauvegarde", "restaurer"] },
     ],
   },
 ]

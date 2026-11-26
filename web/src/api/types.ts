@@ -89,3 +89,19 @@ export type BlockTargetKind = BlockPolicyInput["targetKind"]
 export type DnssecKey = S["DnssecKey"]
 export type DnssecKeyState = NonNullable<DnssecKey["state"]>
 export type DnssecZone = S["DnssecZone"]
+
+// ---- Phase 6: dashboard, logs, backup/restore ----
+export type Dashboard = S["Dashboard"]
+export type DashboardDns = NonNullable<Dashboard["dns"]>
+export type SeriesPoint = NonNullable<DashboardDns["series"]>[number]
+export type DashboardScope = NonNullable<NonNullable<Dashboard["dhcp"]>["scopes"]>[number]
+export type DashboardHa = NonNullable<Dashboard["ha"]>
+export type DashboardBlocking = NonNullable<Dashboard["blocking"]>
+export type TopCount = S["TopCount"]
+export type DnsLogEntry = S["DnsLogEntry"]
+export type DnsLogSource = NonNullable<DnsLogEntry["source"]>
+export type DhcpLogEntry = S["DhcpLogEntry"]
+export type DhcpLogEvent = NonNullable<DhcpLogEntry["event"]>
+export type LogSettings = S["LogSettings"]
+export type LogStatus = S["LogStatus"]
+export type RestoreResult = S["RestoreResult"]

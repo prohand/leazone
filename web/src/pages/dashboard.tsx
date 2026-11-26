@@ -1,37 +1,178 @@
 import { Link } from "react-router"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRight, CircleCheck, Circle, CirclePause, DatabaseZap, HeartPulse, Radio, ShieldBan, Timer, TriangleAlert, type LucideIcon } from "lucide-react"
-import { blockingStatusQuery, dnsStatusQuery, meQuery, systemInfoQuery, vlansQuery } from "@/api/queries"
-import type { ScopeUsage } from "@/api/types"
-import { clusterRoleLabel } from "@/components/cluster"
-import { UsageBar } from "@/components/dhcp"
-import { StatusDot } from "@/components/status-dot"
+import {
+  ArrowRight,
+  Circle,
+  CircleCheck,
+  CirclePause,
+  DatabaseZap,
+  Gauge,
+  HeartPulse,
+  ShieldBan,
+  Timer,
+  TriangleAlert,
+  Activity,
+  type LucideIcon,
+} from "lucide-react"
+import { dnsStatusQuery, meQuery, systemInfoQuery } from "@/api/queries"
+import type { Dashboard, DashboardBlocking, DashboardHa, DashboardScope, TopCount } from "@/api/types"
+import { ClusterRoleBadge } from "@/components/cluster"
 import { PageHeader } from "@/components/page-header"
+import { QueryChart } from "@/components/query-chart"
+import { StatusDot } from "@/components/status-dot"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { useClusterView } from "@/hooks/use-cluster"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useDashboard } from "@/hooks/use-dashboard"
 import { useCurrentUser } from "@/hooks/use-session"
-import { fmtInt, formatPercent } from "@/lib/dhcp"
-import { blockedPercent, fmtInt as fmtCount, formatUntil } from "@/lib/blocking"
-import { hitRate, percent } from "@/lib/dns"
-import { useModules } from "@/lib/modules"
+import { humanDuration } from "@/lib/dns"
+import { fmtInt, fmtOneDecimal, formatPct } from "@/lib/logs"
 import { can } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
+import type { ClusterRole } from "@/api/types"
 
-function StatCard({
+/* Dashboard of this node: live figures from the /events stream (polling as a fallback). */
+
+export default function DashboardPage() {
+  const dash = useDashboard()
+  const d = dash.data
+  const blocking = d?.blocking ?? null
+
+  return (
+    <>
+      <PageHeader
+        title="Tableau de bord"
+        description={
+          d ? (
+            <span data-testid="node-note">
+              Statistiques de ce nœud ({d.node || "?"}), depuis {humanDuration(d.uptimeSeconds ?? 0) || "quelques secondes"}
+            </span>
+          ) : (
+            "État général du serveur DNS et DHCP."
+          )
+        }
+        actions={<LiveIndicator live={dash.live} hasData={!!d} error={dash.isError && !d} />}
+      />
+      <ListenerAlert />
+      <div className={cn("grid gap-4 sm:grid-cols-2", blocking ? "lg:grid-cols-5" : "lg:grid-cols-4")} data-testid="kpis">
+        <Kpi title="Requêtes/s" icon={Gauge} value={d ? fmtOneDecimal.format(d.dns?.qps ?? 0) : undefined} hint="sur la dernière minute" />
+        <Kpi
+          title="Requêtes 24 h"
+          icon={Activity}
+          value={d ? fmtInt.format(d.dns?.queries24h ?? 0) : undefined}
+          hint={d?.dns?.failed24h ? `dont ${fmtInt.format(d.dns.failed24h)} en échec` : "dernières 24 heures"}
+          tone={(d?.dns?.failed24h ?? 0) > 0 ? "warning" : undefined}
+        />
+        <Kpi title="Taux de cache" icon={DatabaseZap} value={d ? formatPct(d.dns?.cacheHitRate) : undefined} hint="réponses depuis le cache (1 h)" />
+        {blocking && (
+          <Kpi title="Bloquées 24 h" icon={ShieldBan} value={fmtInt.format(d?.dns?.blocked24h ?? 0)} hint="publicités et traqueurs" to="/blocking" />
+        )}
+        <Kpi
+          title="Baux actifs"
+          icon={Timer}
+          value={d ? fmtInt.format(d.dhcp?.activeLeases ?? 0) : undefined}
+          hint={d ? scopesHint(d) : ""}
+          to="/dhcp/leases"
+        />
+      </div>
+
+      <Card className="mt-6 gap-4" data-testid="queries-chart">
+        <CardHeader>
+          <CardTitle>Requêtes DNS (dernière heure)</CardTitle>
+          <CardDescription>Une valeur par minute.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {d ? (
+            <div className={cn("transition-opacity", dash.isFetching && !dash.live && "opacity-90")}>
+              <QueryChart points={d.dns?.series ?? []} showBlocked={!!blocking} />
+            </div>
+          ) : (
+            <Skeleton className="h-[240px] w-full" />
+          )}
+        </CardContent>
+      </Card>
+
+      <div className={cn("mt-6 grid gap-4", blocking ? "lg:grid-cols-3" : "lg:grid-cols-2")}>
+        <TopCard
+          testId="top-domains"
+          title="Top domaines"
+          items={d?.dns?.topDomains}
+          mono
+          linkOf={(t) => `/logs?tab=dns&q=${encodeURIComponent(t.name ?? "")}`}
+          linkLabel={(t) => `Voir les requêtes pour ${t.name}`}
+          loading={!d}
+        />
+        <TopCard
+          testId="top-clients"
+          title="Top clients"
+          items={d?.dns?.topClients}
+          mono
+          linkOf={(t) => `/logs?tab=dns&client=${encodeURIComponent(t.name ?? "")}`}
+          linkLabel={(t) => `Voir les requêtes de ${t.name}`}
+          loading={!d}
+        />
+        {blocking && (
+          <TopCard
+            testId="top-blocked"
+            title="Top bloqués"
+            items={d?.dns?.topBlocked}
+            mono
+            barClass="bg-series-2"
+            linkOf={(t) => `/logs?tab=dns&source=blocked&q=${encodeURIComponent(t.name ?? "")}`}
+            linkLabel={(t) => `Voir les requêtes bloquées pour ${t.name}`}
+            loading={!d}
+          />
+        )}
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <ScopesCard scopes={d?.dhcp?.scopes} loading={!d} />
+        <div className="grid content-start gap-4">
+          {d?.ha && <HaCard ha={d.ha} />}
+          {blocking && <BlockingCard b={blocking} />}
+        </div>
+      </div>
+
+      <GettingStarted dashboard={d} />
+    </>
+  )
+}
+
+function scopesHint(d: Dashboard): string {
+  const n = d.dhcp?.scopes?.length ?? 0
+  if (n === 0) return "aucune étendue DHCP"
+  const full = (d.dhcp?.scopes ?? []).filter((s) => (s.percent ?? 0) > 90).length
+  if (full > 0) return `${full} étendue${full > 1 ? "s" : ""} presque pleine${full > 1 ? "s" : ""}`
+  return `dans ${n} étendue${n > 1 ? "s" : ""}`
+}
+
+function LiveIndicator({ live, hasData, error }: { live: boolean; hasData: boolean; error: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-2 text-xs text-muted-foreground" data-testid="live-indicator" data-live={live}>
+      <span className="relative flex size-2">
+        {live && <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60 motion-reduce:hidden" />}
+        <span className={cn("relative inline-flex size-2 rounded-full", live ? "bg-success" : error ? "bg-destructive" : "bg-muted-foreground/40")} />
+      </span>
+      {live ? "en direct" : error ? "indisponible" : hasData ? "mise à jour toutes les 5 s" : "connexion…"}
+    </span>
+  )
+}
+
+function Kpi({
   title,
   icon: Icon,
+  value,
   hint,
-  value = "—",
   to,
   tone,
 }: {
   title: string
   icon: LucideIcon
-  hint: string
   value?: string
+  hint: string
   to?: string
-  tone?: "error"
+  tone?: "warning"
 }) {
   const card = (
     <Card className={cn("h-full gap-2 py-5", to && "transition-colors hover:bg-muted/40")}>
@@ -40,8 +181,14 @@ function StatCard({
         <Icon className="size-4 text-muted-foreground" />
       </CardHeader>
       <CardContent className="px-5">
-        <div className="text-3xl font-semibold tracking-tight tabular-nums">{value}</div>
-        <p className={cn("mt-1 text-xs", tone === "error" ? "text-destructive" : "text-muted-foreground")}>{hint}</p>
+        {value === undefined ? (
+          <Skeleton className="h-9 w-20" />
+        ) : (
+          <div className="text-3xl font-semibold tracking-tight" data-testid={`kpi-${title}`}>
+            {value}
+          </div>
+        )}
+        <p className={cn("mt-1 text-xs", tone === "warning" ? "text-warning" : "text-muted-foreground")}>{hint || " "}</p>
       </CardContent>
     </Card>
   )
@@ -54,311 +201,281 @@ function StatCard({
   )
 }
 
-type Step = { label: string; done: boolean; to?: string; note?: string }
-
-function Checklist({ steps }: { steps: Step[] }) {
+/** Ranked list with an inline bar proportional to the count (the first one is the longest). */
+function TopCard({
+  title,
+  items,
+  linkOf,
+  linkLabel,
+  mono,
+  barClass = "bg-series-1",
+  loading,
+  testId,
+}: {
+  title: string
+  items?: TopCount[]
+  linkOf: (t: TopCount) => string
+  linkLabel: (t: TopCount) => string
+  mono?: boolean
+  barClass?: string
+  loading?: boolean
+  testId: string
+}) {
+  const list = (items ?? []).slice(0, 10)
+  const max = Math.max(1, ...list.map((t) => t.count ?? 0))
   return (
-    <ul className="divide-y rounded-lg border">
-      {steps.map((s) => {
-        const Icon = s.done ? CircleCheck : Circle
-        const body = (
-          <>
-            <Icon className={cn("size-5 shrink-0", s.done ? "text-success" : "text-muted-foreground")} />
-            <span className={cn("flex-1 text-sm", s.done && "text-muted-foreground line-through")}>{s.label}</span>
-            {s.note && <Badge variant="secondary">{s.note}</Badge>}
-            {s.to && !s.done && <ArrowRight className="size-4 text-muted-foreground" />}
-          </>
-        )
-        return (
-          <li key={s.label}>
-            {s.to && !s.done ? (
-              <Link to={s.to} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
-                {body}
-              </Link>
-            ) : (
-              <div className="flex items-center gap-3 px-4 py-3">{body}</div>
-            )}
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
-
-export default function DashboardPage() {
-  const user = useCurrentUser()
-  const me = useQuery(meQuery)
-  const info = useQuery(systemInfoQuery)
-  const dns = useQuery(dnsStatusQuery)
-  const vlans = useQuery(vlansQuery)
-  const isAdmin = can(user?.role, "admin")
-  const modules = useModules()
-
-  // All scopes with their VLAN label, fullest first.
-  const scopes: (ScopeUsage & { vlan: string })[] = [
-    ...(vlans.data?.items ?? []).flatMap((v) => (v.scopes ?? []).map((s) => ({ ...s, vlan: `VLAN ${v.vlanId}` }))),
-    ...(vlans.data?.untaggedScopes ?? []).map((s) => ({ ...s, vlan: "Sans VLAN" })),
-  ].sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))
-  const activeLeases = scopes.reduce((n, s) => n + (s.activeLeases ?? 0), 0)
-  const alerts = scopes.filter((s) => s.alert).length
-
-  const listeners = dns.data?.listeners ?? []
-  const listening = listeners.filter((l) => l.state === "listening")
-  const failed = listeners.length - listening.length
-  const addresses = new Set(listening.map((l) => l.address)).size
-  const rate = hitRate(dns.data?.cache?.hits, dns.data?.cache?.misses)
-  const forwarderCount = dns.data?.forwarders?.length ?? 0
-
-  const mfaDone = !!me.data && (me.data.totpEnabled || (me.data.passkeyCount ?? 0) > 0)
-  const certDone = info.data ? !info.data.selfSignedCertificate : false
-
-  const steps: Step[] = [
-    { label: "Configurer le MFA", done: mfaDone, to: "/account?tab=passkeys" },
-    {
-      label: "Importer un certificat",
-      done: certDone,
-      to: isAdmin ? "/settings?tab=https" : undefined,
-      note: !isAdmin && !certDone ? "Administrateur" : undefined,
-    },
-    {
-      label: "Activer le DNS sur une interface",
-      done: listening.length > 0,
-      to: isAdmin ? "/interfaces" : undefined,
-      note: !isAdmin && listening.length === 0 ? "Administrateur" : undefined,
-    },
-    {
-      label: "Ajouter un redirecteur (ex. : Quad9)",
-      done: forwarderCount > 0,
-      to: isAdmin ? "/dns/forwarders?new=1" : undefined,
-      note: !isAdmin && forwarderCount === 0 ? "Administrateur" : undefined,
-    },
-    {
-      label: "Créer une étendue DHCP",
-      done: scopes.length > 0,
-      to: isAdmin ? "/dhcp/scopes?new=1" : undefined,
-      note: !isAdmin && scopes.length === 0 ? "Administrateur" : undefined,
-    },
-  ]
-
-  return (
-    <>
-      <PageHeader title="Tableau de bord" description="État général du serveur DNS et DHCP." />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          title="Écoute DNS"
-          icon={Radio}
-          to="/interfaces"
-          value={dns.data ? String(addresses) : "—"}
-          tone={failed > 0 ? "error" : undefined}
-          hint={
-            !dns.data
-              ? dns.isError ? "Indisponible" : "Chargement…"
-              : failed > 0
-                ? `${failed} écoute(s) en erreur`
-                : addresses === 0
-                  ? "Aucune adresse : activez une interface"
-                  : `${addresses > 1 ? "adresses" : "adresse"} · port ${dns.data.port ?? 53}`
-          }
-        />
-        <StatCard
-          title="Taux de cache"
-          icon={DatabaseZap}
-          value={rate === null ? "—" : percent(rate)}
-          hint={dns.data ? `${new Intl.NumberFormat("fr-FR").format(dns.data.cache?.entries ?? 0)} entrées en cache` : dns.isError ? "Indisponible" : "Chargement…"}
-        />
-        <StatCard
-          title="Baux actifs"
-          icon={Timer}
-          to="/dhcp/leases"
-          value={vlans.data ? fmtInt.format(activeLeases) : "—"}
-          tone={alerts > 0 ? "error" : undefined}
-          hint={
-            !vlans.data
-              ? vlans.isError ? "Indisponible" : "Chargement…"
-              : scopes.length === 0
-                ? "Aucune étendue DHCP"
-                : alerts > 0
-                  ? `${alerts} étendue(s) presque pleine(s)`
-                  : `dans ${scopes.length} étendue${scopes.length > 1 ? "s" : ""}`
-          }
-        />
-        <HaCard />
-      </div>
-      {modules.blocking && <BlockingCard />}
-      {scopes.length > 0 && <ScopeFillCard scopes={scopes} />}
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>Bienvenue{user?.username ? `, ${user.username}` : ""}</CardTitle>
-          <CardDescription>Quelques étapes pour bien démarrer avec Leazone.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Checklist steps={steps} />
-        </CardContent>
-      </Card>
-    </>
-  )
-}
-
-/** Compact list of the fullest scopes (from /vlans). */
-function ScopeFillCard({ scopes }: { scopes: (ScopeUsage & { vlan: string })[] }) {
-  const top = scopes.slice(0, 6)
-  return (
-    <Card className="mt-6 gap-4">
-      <CardHeader className="flex flex-row items-start justify-between gap-2">
-        <div className="space-y-1.5">
-          <CardTitle>Remplissage des étendues</CardTitle>
-          <CardDescription>Les plus remplies d'abord. En rouge au-dessus du seuil d'alerte.</CardDescription>
-        </div>
-        <Link to="/vlans" className="inline-flex shrink-0 items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          Vue VLAN <ArrowRight className="size-4" />
-        </Link>
+    <Card className="min-w-0 gap-3" data-testid={testId}>
+      <CardHeader>
+        <CardTitle className="text-base">{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <ul className="grid gap-x-8 gap-y-3 md:grid-cols-2">
-          {top.map((s) => (
-            <li key={s.id}>
-              <Link
-                to={`/dhcp/leases?scope=${encodeURIComponent(s.id ?? "")}`}
-                className="block space-y-1.5 rounded-md p-1 -m-1 transition-colors hover:bg-muted/50"
-              >
-                <div className="flex items-center gap-2 text-sm">
-                  {s.alert && <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-label="Alerte" />}
-                  <span className="min-w-0 flex-1 truncate font-medium">{s.name}</span>
-                  <span className="hidden text-xs text-muted-foreground sm:inline">{s.vlan}</span>
-                  <span className={cn("w-12 text-right text-sm tabular-nums", s.alert ? "font-medium text-destructive" : "text-muted-foreground")}>
-                    {formatPercent(s.percent)}
+        {loading ? (
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-5 w-full" />
+            ))}
+          </div>
+        ) : list.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Rien pour l'instant.</p>
+        ) : (
+          <ol className="-mx-2 space-y-0.5">
+            {list.map((t, i) => (
+              <li key={t.name ?? i}>
+                <Link
+                  to={linkOf(t)}
+                  aria-label={linkLabel(t)}
+                  className="group flex items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  <span className="w-4 shrink-0 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className={cn("block truncate", mono && "font-mono text-xs")} title={t.name}>
+                      {t.name}
+                    </span>
+                    <span className="mt-0.5 block h-1 w-full rounded-full bg-muted" aria-hidden>
+                      <span className={cn("block h-1 rounded-full", barClass)} style={{ width: `${((t.count ?? 0) / max) * 100}%` }} />
+                    </span>
                   </span>
-                </div>
-                <UsageBar percent={s.percent} alert={s.alert} label={`Remplissage de ${s.name}`} />
-              </Link>
-            </li>
-          ))}
-        </ul>
-        {scopes.length > top.length && (
-          <p className="mt-3 text-xs text-muted-foreground">et {scopes.length - top.length} autre(s) étendue(s)</p>
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{fmtInt.format(t.count ?? 0)}</span>
+                </Link>
+              </li>
+            ))}
+          </ol>
         )}
       </CardContent>
     </Card>
   )
 }
 
-/** Compact high availability state (from the shared /cluster query). */
-function HaCard() {
-  const { data: v, isError } = useClusterView()
-  const other = v?.nodes?.find((n) => !n.self)
-  const gaps = v?.gaps?.length ?? 0
-  const conflicts = v?.conflicts ?? 0
-  const mode = v?.witness?.mode ?? "none"
-  const roleTone =
-    v?.role === "primary" ? "text-success" : v?.role === "secondary" ? "text-brand" : v?.role === "isolated" || v?.role === "incompatible" ? "text-warning" : ""
-  const label = v ? (v.enabled ? clusterRoleLabel[v.role ?? "joining"] : "nœud seul") : "—"
+const fillClass = (p: number) => (p > 90 ? "bg-destructive" : p >= 70 ? "bg-warning" : "bg-success")
+
+function ScopesCard({ scopes, loading }: { scopes?: DashboardScope[]; loading: boolean }) {
+  const list = [...(scopes ?? [])].sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))
   return (
-    <Link
-      to="/cluster"
-      data-testid="ha-card"
-      className="rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-    >
-      <Card className="h-full gap-2 py-5 transition-colors hover:bg-muted/40">
-        <CardHeader className="flex flex-row items-center justify-between px-5">
-          <CardDescription className="text-sm font-medium">Haute disponibilité</CardDescription>
-          <HeartPulse className="size-4 text-muted-foreground" />
+    <Card className="min-w-0 gap-4" data-testid="scopes-card">
+      <CardHeader className="flex flex-row items-start justify-between gap-2">
+        <div className="space-y-1.5">
+          <CardTitle>Étendues DHCP</CardTitle>
+          <CardDescription>Remplissage : vert sous 70 %, orange jusqu'à 90 %, rouge au-delà.</CardDescription>
+        </div>
+        <Link to="/dhcp/scopes" className="inline-flex shrink-0 items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          Étendues <ArrowRight className="size-4" />
+        </Link>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : list.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Aucune étendue DHCP pour l'instant.</p>
+        ) : (
+          <ul className="-mx-2 space-y-1">
+            {list.map((s) => {
+              const p = Math.max(0, Math.min(100, s.percent ?? 0))
+              return (
+                <li key={s.id}>
+                  <Link
+                    to={`/dhcp/leases?scope=${encodeURIComponent(s.id ?? "")}`}
+                    className="block space-y-1.5 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/50 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                    data-testid={`scope-${s.id}`}
+                  >
+                    <div className="flex items-center gap-2 text-sm">
+                      {p > 90 && <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-label="Presque pleine" />}
+                      <span className="min-w-0 truncate font-medium">{s.name}</span>
+                      {s.vlanId != null && (
+                        <Badge variant="outline" className="shrink-0">
+                          VLAN {s.vlanId}
+                        </Badge>
+                      )}
+                      <span className="hidden min-w-0 truncate font-mono text-xs text-muted-foreground sm:inline">{s.network}</span>
+                      <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {fmtInt.format(s.used ?? 0)} / {fmtInt.format(s.size ?? 0)}
+                      </span>
+                      <span className={cn("w-11 shrink-0 text-right text-sm tabular-nums", p > 90 ? "font-medium text-destructive" : "text-muted-foreground")}>
+                        {formatPct(s.percent)}
+                      </span>
+                    </div>
+                    <div
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(p)}
+                      aria-label={`Remplissage de ${s.name}`}
+                      className="h-2 w-full overflow-hidden rounded-full bg-muted"
+                    >
+                      <div className={cn("h-full rounded-full transition-[width]", fillClass(p))} style={{ width: `${p}%` }} />
+                    </div>
+                  </Link>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function HaCard({ ha }: { ha: DashboardHa }) {
+  const gaps = ha.gaps ?? 0
+  return (
+    <Link to="/cluster" data-testid="ha-card" className="block rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none">
+      <Card className="gap-3 transition-colors hover:bg-muted/40">
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <HeartPulse className="size-4 text-muted-foreground" /> Haute disponibilité
+          </CardTitle>
+          <ClusterRoleBadge role={(ha.role as ClusterRole) || undefined} />
         </CardHeader>
-        <CardContent className="px-5">
-          <div className={cn("text-3xl font-semibold tracking-tight first-letter:uppercase", roleTone)}>{label}</div>
-          {!v ? (
-            <p className="mt-1 text-xs text-muted-foreground">{isError ? "Indisponible" : "Chargement…"}</p>
-          ) : !v.enabled ? (
-            <p className="mt-1 text-xs text-muted-foreground">Non configurée : un seul serveur</p>
-          ) : (
-            <ul className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
-              <li>
-                <StatusDot
-                  tone={other?.online ? "ok" : "error"}
-                  label={other ? `${other.name} ${other.online ? "en ligne" : "hors ligne"}` : "Autre nœud jamais vu"}
-                />
-              </li>
-              <li>
-                <StatusDot
-                  tone={mode === "none" ? "warning" : v.witness?.reachable ? "ok" : "error"}
-                  label={mode === "none" ? "Sans témoin" : v.witness?.reachable ? "Témoin joignable" : "Témoin injoignable"}
-                />
-              </li>
-              <li className={cn((gaps > 0 || conflicts > 0) && "text-warning")}>
-                <StatusDot
-                  tone={gaps > 0 || conflicts > 0 ? "warning" : "ok"}
-                  label={
-                    gaps === 0 && conflicts === 0
-                      ? "Aucun écart"
-                      : [gaps > 0 && `${gaps} écart${gaps > 1 ? "s" : ""}`, conflicts > 0 && `${conflicts} conflit${conflicts > 1 ? "s" : ""}`]
-                          .filter(Boolean)
-                          .join(" · ")
-                  }
-                />
-              </li>
-            </ul>
-          )}
+        <CardContent>
+          <ul className="space-y-1 text-sm">
+            <li>
+              <StatusDot tone={ha.peerOnline ? "ok" : "error"} label={ha.peerOnline ? "Autre nœud en ligne" : "Autre nœud hors ligne"} />
+            </li>
+            <li>
+              <StatusDot tone={ha.witnessReachable ? "ok" : "error"} label={ha.witnessReachable ? "Témoin joignable" : "Témoin injoignable"} />
+            </li>
+            <li className={cn(gaps > 0 && "text-warning")}>
+              <StatusDot tone={gaps > 0 ? "warning" : "ok"} label={gaps === 0 ? "Aucun écart" : `${gaps} écart${gaps > 1 ? "s" : ""}`} />
+            </li>
+          </ul>
         </CardContent>
       </Card>
     </Link>
   )
 }
 
-/** Ad blocking summary (only when the module is on). */
-function BlockingCard() {
-  const { data: s, isError } = useQuery(blockingStatusQuery)
-  const top = (s?.top ?? []).slice(0, 3)
-  const paused = !!s?.paused
+function BlockingCard({ b }: { b: DashboardBlocking }) {
   return (
-    <Link
-      to="/blocking"
-      data-testid="blocking-card"
-      className="mt-6 block rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-    >
-      <Card className="gap-4 transition-colors hover:bg-muted/40">
-        <CardHeader className="flex flex-row items-start justify-between gap-2">
-          <div className="space-y-1.5">
-            <CardTitle>Blocage</CardTitle>
-            <CardDescription>Publicités et traqueurs bloqués par ce nœud.</CardDescription>
-          </div>
-          {s &&
-            (paused ? (
-              <Badge variant="outline" className="border-warning/50 text-warning">
-                <CirclePause /> en pause{formatUntil(s.pausedUntil) ? ` jusqu'à ${formatUntil(s.pausedUntil)}` : ""}
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="border-success/40 text-success">
-                <ShieldBan /> actif
-              </Badge>
-            ))}
+    <Link to="/blocking" data-testid="blocking-card" className="block rounded-xl focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none">
+      <Card className="gap-3 transition-colors hover:bg-muted/40">
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldBan className="size-4 text-muted-foreground" /> Blocage
+          </CardTitle>
+          {b.paused ? (
+            <Badge variant="outline" className="border-warning/50 text-warning">
+              <CirclePause /> en pause
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="border-success/40 text-success">
+              <ShieldBan /> actif
+            </Badge>
+          )}
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-[auto_1fr] sm:gap-10">
-          <div>
-            <div className="text-3xl font-semibold tracking-tight tabular-nums">{s ? blockedPercent(s) : "—"}</div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {s
-                ? `${fmtCount.format(s.blocked ?? 0)} bloquées sur ${fmtCount.format(s.queries ?? 0)} requêtes`
-                : isError
-                  ? "Indisponible"
-                  : "Chargement…"}
-            </p>
-          </div>
-          <div className="min-w-0 sm:max-w-sm">
-            <p className="mb-1.5 text-xs font-medium text-muted-foreground">Les plus bloqués</p>
-            {top.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Rien de bloqué pour l'instant.</p>
-            ) : (
-              <ol className="space-y-1 text-sm">
-                {top.map((t) => (
-                  <li key={t.domain} className="flex items-center gap-3">
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{t.domain}</span>
-                    <span className="text-xs text-muted-foreground tabular-nums">{fmtCount.format(t.count ?? 0)}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
+        <CardContent>
+          <div className="text-3xl font-semibold tracking-tight">{formatPct(b.percent)}</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {fmtInt.format(b.blocked ?? 0)} bloquées sur {fmtInt.format(b.queries ?? 0)} requêtes
+          </p>
         </CardContent>
       </Card>
     </Link>
+  )
+}
+
+/** Red line when some DNS listening addresses failed (port already used...). */
+function ListenerAlert() {
+  const dns = useQuery(dnsStatusQuery)
+  const failed = (dns.data?.listeners ?? []).filter((l) => l.state !== "listening")
+  if (failed.length === 0) return null
+  return (
+    <Alert variant="destructive" className="mb-4" data-testid="listener-alert">
+      <TriangleAlert />
+      <AlertTitle>
+        {failed.length} écoute{failed.length > 1 ? "s" : ""} DNS en erreur
+      </AlertTitle>
+      <AlertDescription>
+        <p>
+          {failed[0].error || `${failed[0].address} (${failed[0].protocol})`}{" "}
+          <Link to="/interfaces" className="underline underline-offset-4">
+            Voir les interfaces
+          </Link>
+        </p>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+type Step = { label: string; done: boolean; to?: string; note?: string }
+
+/** First steps checklist; hidden once everything is done. */
+function GettingStarted({ dashboard }: { dashboard?: Dashboard }) {
+  const user = useCurrentUser()
+  const me = useQuery(meQuery)
+  const info = useQuery(systemInfoQuery)
+  const dns = useQuery(dnsStatusQuery)
+  const isAdmin = can(user?.role, "admin")
+  if (!me.data || !info.data || !dns.data || !dashboard) return null
+
+  const listening = (dns.data.listeners ?? []).some((l) => l.state === "listening")
+  const forwarders = (dns.data.forwarders?.length ?? 0) > 0
+  const scopes = (dashboard.dhcp?.scopes?.length ?? 0) > 0
+  const adminStep = (label: string, done: boolean, to: string): Step => ({
+    label,
+    done,
+    to: isAdmin ? to : undefined,
+    note: !isAdmin && !done ? "Administrateur" : undefined,
+  })
+  const steps: Step[] = [
+    { label: "Configurer le MFA", done: !!me.data.totpEnabled || (me.data.passkeyCount ?? 0) > 0, to: "/account?tab=passkeys" },
+    adminStep("Importer un certificat", !info.data.selfSignedCertificate, "/settings?tab=https"),
+    adminStep("Activer le DNS sur une interface", listening, "/interfaces"),
+    adminStep("Ajouter un redirecteur (ex. : Quad9)", forwarders, "/dns/forwarders?new=1"),
+    adminStep("Créer une étendue DHCP", scopes, "/dhcp/scopes?new=1"),
+  ]
+  if (steps.every((s) => s.done)) return null
+
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <CardTitle>Bien démarrer{user?.username ? `, ${user.username}` : ""}</CardTitle>
+        <CardDescription>Quelques étapes pour finir l'installation de Leazone.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="divide-y rounded-lg border">
+          {steps.map((s) => {
+            const Icon = s.done ? CircleCheck : Circle
+            const body = (
+              <>
+                <Icon className={cn("size-5 shrink-0", s.done ? "text-success" : "text-muted-foreground")} />
+                <span className={cn("flex-1 text-sm", s.done && "text-muted-foreground line-through")}>{s.label}</span>
+                {s.note && <Badge variant="secondary">{s.note}</Badge>}
+                {s.to && !s.done && <ArrowRight className="size-4 text-muted-foreground" />}
+              </>
+            )
+            return (
+              <li key={s.label}>
+                {s.to && !s.done ? (
+                  <Link to={s.to} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/50">
+                    {body}
+                  </Link>
+                ) : (
+                  <div className="flex items-center gap-3 px-4 py-3">{body}</div>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      </CardContent>
+    </Card>
   )
 }

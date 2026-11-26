@@ -2,6 +2,7 @@ import { useSearchParams } from "react-router"
 import { PageHeader } from "@/components/page-header"
 import { WriteGuard } from "@/components/read-only"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { BackupTab } from "./backup-tab"
 import { DnsTab } from "./dns-tab"
 import { HttpsTab } from "./https-tab"
 import { ImportTab } from "./import-tab"
@@ -11,7 +12,7 @@ import { SecurityTab } from "./security-tab"
 export default function SettingsPage() {
   const [params, setParams] = useSearchParams()
   const t = params.get("tab")
-  const tab = t === "https" || t === "dns" || t === "modules" || t === "import" ? t : "security"
+  const tab = t === "https" || t === "dns" || t === "modules" || t === "import" || t === "backup" ? t : "security"
   return (
     <>
       <PageHeader title="Paramètres" description="Réglages du serveur. Réservé aux administrateurs." />
@@ -23,6 +24,7 @@ export default function SettingsPage() {
             <TabsTrigger value="dns">DNS</TabsTrigger>
             <TabsTrigger value="modules">Modules</TabsTrigger>
             <TabsTrigger value="import">Import</TabsTrigger>
+            <TabsTrigger value="backup">Sauvegarde</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="security" className="mt-4">
@@ -47,6 +49,10 @@ export default function SettingsPage() {
           <WriteGuard block>
             <ImportTab />
           </WriteGuard>
+        </TabsContent>
+        <TabsContent value="backup" className="mt-4">
+          {/* Not guarded as a whole: a backup works on every node, only the restore needs the primary. */}
+          <BackupTab />
         </TabsContent>
       </Tabs>
     </>

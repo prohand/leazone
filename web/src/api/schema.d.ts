@@ -4273,6 +4273,489 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dashboard of this node (any role) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Dashboard"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Server-sent events (text/event-stream). Event "dashboard" every 2 s (Dashboard JSON), "leases" when DHCP leases change (no body), "ping" every 15 s. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Event stream */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/logs/dns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** DNS query log of this node, newest first */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Part of the name */
+                    q?: string;
+                    /** @description Client IP or network (CIDR) */
+                    client?: string;
+                    /** @description A, AAAA, MX... */
+                    type?: string;
+                    /** @description NOERROR, NXDOMAIN, SERVFAIL, REFUSED */
+                    rcode?: string;
+                    source?: "local" | "cache" | "forwarder" | "blocked" | "refused" | "error";
+                    from?: string;
+                    to?: string;
+                    /** @description Cursor: id of the last item of the previous page */
+                    before?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["DnsLogEntry"][];
+                            nextCursor?: number | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/logs/dhcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** DHCP event log of this node, newest first */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Part of MAC, IP or hostname */
+                    q?: string;
+                    event?: "offer" | "ack" | "nak" | "release" | "decline" | "expire" | "ignored";
+                    /** @description Scope id */
+                    scope?: string;
+                    from?: string;
+                    to?: string;
+                    before?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items?: components["schemas"]["DhcpLogEntry"][];
+                            nextCursor?: number | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/logs/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Log settings (replicated) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LogSettings"];
+                    };
+                };
+            };
+        };
+        /** Update log settings (config.write) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["LogSettings"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LogSettings"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/logs/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Size and content of the log database of this node */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LogStatus"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/logs/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Empty the DNS and DHCP logs of this node (admin, step-up) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["LogStatus"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/backup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Download the whole configuration as one YAML file (admin, step-up). Secrets stay encrypted; their key is encrypted with the password. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        password: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description The backup file (Content-Disposition attachment leazone-backup-YYYYMMDD-HHMM.yaml) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/yaml": string;
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replace the whole configuration with a backup (admin, step-up, primary only). Users, passkeys and TOTP come from the backup; current sessions stay open. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        password: string;
+                        /** @description The YAML file content (32 MB max) */
+                        content: string;
+                        /**
+                         * @description Check the file and the password, write nothing
+                         * @default false
+                         */
+                        dryRun?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RestoreResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Automatic daily backups kept in /data/backups (admin). Needs LEAZONE_BACKUP_PASSWORD_FILE. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @description A backup password is configured */
+                            enabled?: boolean;
+                            items?: {
+                                name?: string;
+                                size?: number;
+                                /** Format: date-time */
+                                createdAt?: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/backups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        /** Download an automatic backup (admin, step-up) */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The file */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/yaml": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5060,6 +5543,127 @@ export interface components {
             dsPending?: boolean;
             /** Format: date-time */
             nextZskRollover?: string | null;
+        };
+        Dashboard: {
+            /** Format: date-time */
+            generatedAt?: string;
+            node?: string;
+            uptimeSeconds?: number;
+            dns?: {
+                /** @description Queries per second over the last minute */
+                qps?: number;
+                queries24h?: number;
+                /** @description 0..100, over the last hour */
+                cacheHitRate?: number;
+                blocked24h?: number;
+                failed24h?: number;
+                /** @description Last hour, one point per minute (oldest first) */
+                series?: {
+                    /** Format: date-time */
+                    t?: string;
+                    queries?: number;
+                    cached?: number;
+                    blocked?: number;
+                }[];
+                topDomains?: components["schemas"]["TopCount"][];
+                topClients?: components["schemas"]["TopCount"][];
+                topBlocked?: components["schemas"]["TopCount"][];
+            };
+            dhcp?: {
+                activeLeases?: number;
+                scopes?: {
+                    id?: string;
+                    name?: string;
+                    network?: string;
+                    vlanId?: number | null;
+                    size?: number;
+                    used?: number;
+                    percent?: number;
+                }[];
+            };
+            /** @description null on a single node */
+            ha?: {
+                role?: string;
+                peerOnline?: boolean;
+                witnessReachable?: boolean;
+                gaps?: number;
+            } | null;
+            /** @description null when the module is off */
+            blocking?: {
+                percent?: number;
+                blocked?: number;
+                queries?: number;
+                paused?: boolean;
+            } | null;
+        };
+        TopCount: {
+            name?: string;
+            count?: number;
+        };
+        DnsLogEntry: {
+            id?: number;
+            /** Format: date-time */
+            time?: string;
+            client?: string;
+            name?: string;
+            type?: string;
+            rcode?: string;
+            /** @enum {string} */
+            source?: "local" | "cache" | "forwarder" | "blocked" | "refused" | "error";
+            latencyMs?: number;
+            /** @description First answer (short), if any */
+            answer?: string;
+        };
+        DhcpLogEntry: {
+            id?: number;
+            /** Format: date-time */
+            time?: string;
+            /** @enum {string} */
+            event?: "offer" | "ack" | "nak" | "release" | "decline" | "expire" | "ignored";
+            mac?: string;
+            ip?: string;
+            hostname?: string;
+            scopeId?: string;
+            scopeName?: string;
+            interface?: string;
+            /** @description Relay agent address (giaddr), empty when direct */
+            relay?: string;
+            /** @description e.g. reason of a NAK */
+            detail?: string;
+        };
+        LogSettings: {
+            /** @default true */
+            dnsQueries?: boolean;
+            /** @default true */
+            dhcpEvents?: boolean;
+            /** @default 7 */
+            retentionDays?: number;
+            /** @default 500 */
+            maxSizeMb?: number;
+        };
+        LogStatus: {
+            dnsEntries?: number;
+            dhcpEntries?: number;
+            sizeBytes?: number;
+            /** Format: date-time */
+            oldest?: string | null;
+            /** @description Entries not written (too many at once) since start */
+            dropped?: number;
+        };
+        RestoreResult: {
+            dryRun?: boolean;
+            /**
+             * Format: date-time
+             * @description When the backup was made
+             */
+            createdAt?: string;
+            /** @description Leazone version that made it */
+            version?: string;
+            node?: string;
+            /** @description Rows per table */
+            tables?: {
+                [key: string]: number;
+            };
         };
     };
     responses: {

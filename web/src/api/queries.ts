@@ -44,6 +44,13 @@ export const qk = {
   dnssec: ["dnssec"] as const,
   dnssecZones: ["dnssec", "zones"] as const,
   dnssecZone: (id: string) => ["dnssec", "zones", id] as const,
+  dashboard: ["dashboard"] as const,
+  logs: ["logs"] as const,
+  dnsLogs: (f: object) => ["logs", "dns", f] as const,
+  dhcpLogs: (f: object) => ["logs", "dhcp", f] as const,
+  logSettings: ["logs", "settings"] as const,
+  logStatus: ["logs", "status"] as const,
+  backups: ["backups"] as const,
 }
 
 export type LeaseFilters = {
@@ -236,3 +243,27 @@ export const dnssecZoneQuery = (id: string) =>
     queryKey: qk.dnssecZone(id),
     queryFn: () => api.get("/dnssec/zones/{id}", { params: { id } }),
   })
+
+// ---- Phase 6: dashboard, logs, backups ----
+
+/** Dashboard of this node. Fed by the SSE stream (hooks/use-dashboard); polled only as a fallback. */
+export const dashboardQuery = queryOptions({
+  queryKey: qk.dashboard,
+  queryFn: () => api.get("/dashboard"),
+})
+
+export const logStatusQuery = queryOptions({
+  queryKey: qk.logStatus,
+  queryFn: () => api.get("/logs/status"),
+  refetchInterval: 30_000,
+})
+
+export const logSettingsQuery = queryOptions({
+  queryKey: qk.logSettings,
+  queryFn: () => api.get("/logs/settings"),
+})
+
+export const backupsQuery = queryOptions({
+  queryKey: qk.backups,
+  queryFn: () => api.get("/backups"),
+})
