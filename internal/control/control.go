@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -34,13 +35,9 @@ type Handler func(ctx context.Context, req Request) Response
 // Serve listens on path until ctx is done.
 func Serve(ctx context.Context, path string, h Handler, log *slog.Logger) error {
 	_ = os.Remove(path) // stale socket from a previous run
-	ln, err := net.Listen("unix", path)
+	ln, err := listenPrivate(path)
 	if err != nil {
 		return fmt.Errorf("control socket %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
-		return err
 	}
 	go func() {
 		<-ctx.Done()
@@ -61,6 +58,33 @@ func Serve(ctx context.Context, path string, h Handler, log *slog.Logger) error 
 		}
 	}()
 	return nil
+}
+
+// listenPrivate creates the socket with mode 0600 from the start: it is
+// bound in a fresh 0700 directory, restricted, then moved to path. Binding
+// at path directly would leave it open to other users (umask) until a chmod.
+func listenPrivate(path string) (net.Listener, error) {
+	dir, err := os.MkdirTemp(filepath.Dir(path), ".leazone-control-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	tmp := filepath.Join(dir, "sock")
+	ln, err := net.Listen("unix", tmp)
+	if err != nil {
+		return nil, err
+	}
+	// The socket is removed by Serve at shutdown (it is no longer at tmp).
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 func handle(ctx context.Context, conn net.Conn, h Handler) {
