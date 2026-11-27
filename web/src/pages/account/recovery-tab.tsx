@@ -4,6 +4,7 @@ import { RefreshCw, TriangleAlert } from "lucide-react"
 import { api } from "@/api/client"
 import { qk } from "@/api/queries"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { LoadError } from "@/components/form-field"
 import { RecoveryCodesDialog } from "@/components/recovery-codes-dialog"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -38,13 +39,15 @@ export function RecoveryTab() {
       <CardContent className="space-y-4">
         {status.isPending ? (
           <Skeleton className="h-10 w-40" />
+        ) : status.isError ? (
+          <LoadError error={status.error} onRetry={() => void status.refetch()} retrying={status.isFetching} />
         ) : (
           <div>
             <div className="text-3xl font-semibold tabular-nums">{remaining}</div>
             <p className="text-sm text-muted-foreground">code{remaining > 1 ? "s" : ""} restant{remaining > 1 ? "s" : ""} sur 10</p>
           </div>
         )}
-        {!status.isPending && remaining < 3 && (
+        {status.isSuccess && remaining < 3 && (
           <Alert>
             <TriangleAlert />
             <AlertDescription>Il vous reste peu de codes. Générez-en de nouveaux.</AlertDescription>

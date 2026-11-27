@@ -11,6 +11,9 @@ import type { paths } from "./schema"
  * - On `urn:leazone:not-primary` / `urn:leazone:read-only` (config change on a
  *   cluster secondary, or while the config is frozen), tells the registered
  *   read-only handler (a toast with a link to the primary), then throws.
+ * - GET requests sent while the user is idle (automatic refreshes) carry
+ *   `X-Leazone-Background: 1`: they do not count as activity for the session
+ *   idle timeout, so an open tab that polls does not keep the session alive.
  */
 
 export const API_BASE = "/api/v1"
@@ -36,6 +39,8 @@ export class ApiError extends Error {
   readonly detail?: string
   readonly retryAfter?: number
   readonly errors?: Record<string, string>
+  /** Extra hint on some problems (csrf: "origin" when the request origin is refused). */
+  readonly reason?: string
   /** UI address of the cluster primary (not-primary problems). */
   readonly primaryUrl?: string
   /** Set when a global handler already told the user (no second toast). */
@@ -48,6 +53,7 @@ export class ApiError extends Error {
     detail?: string
     retryAfter?: number
     errors?: Record<string, string>
+    reason?: string
     primaryUrl?: string
   }) {
     super(init.detail || init.title || `HTTP ${init.status}`)
@@ -58,6 +64,7 @@ export class ApiError extends Error {
     this.detail = init.detail
     this.retryAfter = init.retryAfter
     this.errors = init.errors
+    this.reason = init.reason
     this.primaryUrl = init.primaryUrl
   }
 
@@ -66,8 +73,38 @@ export class ApiError extends Error {
   }
 }
 
+/** CSRF problem caused by the request origin (not by a stale session token). */
+export function isOriginRefused(err: unknown): boolean {
+  return err instanceof ApiError && err.is(ProblemType.csrf) && err.reason === "origin"
+}
+
 export function isApiError(err: unknown, type?: string): err is ApiError {
   return err instanceof ApiError && (type === undefined || err.type === type)
+}
+
+// ---- User activity (session idle timeout) ----
+
+/** A request counts as a user action only this long after the last input. */
+const ACTIVE_WINDOW_MS = 60_000
+export const BACKGROUND_HEADER = "X-Leazone-Background"
+
+let lastActivity = Date.now()
+if (typeof window !== "undefined") {
+  const mark = () => {
+    lastActivity = Date.now()
+  }
+  const opts = { capture: true, passive: true } as const
+  for (const ev of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "focus"]) {
+    window.addEventListener(ev, mark, opts)
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") mark()
+  })
+}
+
+/** True when the user did something (keyboard, mouse, focus) in the last minute. */
+export function userActive(): boolean {
+  return Date.now() - lastActivity < ACTIVE_WINDOW_MS
 }
 
 // ---- Global hooks set by the app (session cache, step-up dialog) ----
@@ -142,6 +179,8 @@ type Options<O> = {
   signal?: AbortSignal
   /** Internal: set on the retry after a successful step-up. */
   noStepUp?: boolean
+  /** Automatic refresh: never extends the session (default: GET while the user is idle). */
+  background?: boolean
 }
 
 export type ApiResponse<P extends Path, M extends Method> = ResponseOf<Op<P, M>>
@@ -165,6 +204,18 @@ function buildUrl(path: string, params?: object, query?: object) {
   return API_BASE + url
 }
 
+/**
+ * Server messages may start with a lower-case word ("la zone maison.lan
+ * existe déjà"): capitalize it for display. Words that look like a name
+ * (eno1, maison.lan, dhcp_x...) are kept as they are.
+ */
+export function capitalizeMessage(msg: string): string
+export function capitalizeMessage(msg: string | undefined): string | undefined
+export function capitalizeMessage(msg: string | undefined): string | undefined {
+  if (!msg) return msg
+  return /^\p{Ll}[\p{L}'’]*(?=[\s,;:]|$)/u.test(msg) ? msg.charAt(0).toLocaleUpperCase("fr-FR") + msg.slice(1) : msg
+}
+
 async function parseError(res: Response): Promise<ApiError> {
   let body: Record<string, unknown> = {}
   try {
@@ -182,12 +233,18 @@ async function parseError(res: Response): Promise<ApiError> {
     type: typeof body.type === "string" ? body.type : undefined,
     status: typeof body.status === "number" ? body.status : res.status,
     title: typeof body.title === "string" ? body.title : undefined,
-    detail: typeof body.detail === "string" ? body.detail : undefined,
+    detail: typeof body.detail === "string" ? capitalizeMessage(body.detail) : undefined,
     retryAfter,
     errors:
       body.errors && typeof body.errors === "object"
-        ? (body.errors as Record<string, string>)
+        ? Object.fromEntries(
+            Object.entries(body.errors as Record<string, unknown>).map(([k, v]) => [
+              k,
+              typeof v === "string" ? capitalizeMessage(v) : String(v),
+            ]),
+          )
         : undefined,
+    reason: typeof body.reason === "string" ? body.reason : undefined,
     primaryUrl: typeof body.primaryUrl === "string" && body.primaryUrl ? body.primaryUrl : undefined,
   })
 }
@@ -206,6 +263,7 @@ async function send<P extends Path, M extends Method>(
   const url = buildUrl(path, options.params as object | undefined, options.query as object | undefined)
   const headers: Record<string, string> = { Accept: accept }
   if (method !== "get" && csrfToken) headers["X-CSRF-Token"] = csrfToken
+  if (method === "get" && (options.background ?? !userActive())) headers[BACKGROUND_HEADER] = "1"
   let body: string | undefined
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json"
@@ -239,10 +297,13 @@ async function send<P extends Path, M extends Method>(
       if (ok) return send(method, path, { ...options, noStepUp: true }, accept)
     }
 
-    if (
-      !inAuthFlow &&
-      (err.is(ProblemType.unauthenticated) || err.is(ProblemType.mfaRequired) || err.is(ProblemType.csrf))
-    ) {
+    // A refused origin (proxy or address mismatch) is not a lost session:
+    // logging in again would not help, the message says what is wrong.
+    const sessionLost =
+      err.is(ProblemType.unauthenticated) ||
+      err.is(ProblemType.mfaRequired) ||
+      (err.is(ProblemType.csrf) && !isOriginRefused(err))
+    if (!inAuthFlow && sessionLost) {
       authLostHandler?.(err)
     }
 

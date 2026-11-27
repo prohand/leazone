@@ -7,6 +7,7 @@ import { qk } from "@/api/queries"
 import type { ApiToken } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
+import { LoadError } from "@/components/form-field"
 import { SecretOnceDialog } from "@/components/secret-once-dialog"
 import { BlockSpinner } from "@/components/spinner"
 import { Badge } from "@/components/ui/badge"
@@ -64,6 +65,8 @@ export function TokensTab() {
       <CardContent>
         {list.isPending ? (
           <BlockSpinner />
+        ) : list.isError ? (
+          <LoadError error={list.error} onRetry={() => void list.refetch()} retrying={list.isFetching} />
         ) : items.length === 0 ? (
           <EmptyState icon={KeySquare} title="Aucun jeton" description="Créez un jeton pour utiliser l'API depuis un script." />
         ) : (
@@ -72,24 +75,37 @@ export function TokensTab() {
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead>Nom</TableHead>
-                  <TableHead>Préfixe</TableHead>
-                  <TableHead>Droits</TableHead>
-                  <TableHead>Créé le</TableHead>
-                  <TableHead>Expire le</TableHead>
-                  <TableHead>Dernière utilisation</TableHead>
-                  <TableHead />
+                  <TableHead className="hidden md:table-cell">Préfixe</TableHead>
+                  <TableHead className="hidden sm:table-cell">Droits</TableHead>
+                  <TableHead className="hidden lg:table-cell">Créé le</TableHead>
+                  <TableHead className="hidden md:table-cell">Expire le</TableHead>
+                  <TableHead className="hidden lg:table-cell">Dernière utilisation</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {items.map((t) => (
                   <TableRow key={t.id}>
-                    <TableCell className="font-medium">{t.name}</TableCell>
-                    <TableCell className="font-mono text-xs">lz_{t.prefix}_…</TableCell>
-                    <TableCell>
+                    <TableCell className="font-medium">
+                      {t.name}
+                      {/* Small screens: the hidden columns that matter, under the name. */}
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-normal text-muted-foreground md:hidden">
+                        <span className="sm:hidden">{t.scope ? scopeLabel[t.scope] : "—"}</span>
+                        <span className="sm:hidden" aria-hidden>
+                          ·
+                        </span>
+                        <span>Expire : {t.expiresAt ? formatDate(t.expiresAt) : "jamais"}</span>
+                        {expired(t) && <Badge variant="destructive">Expiré</Badge>}
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden font-mono text-xs md:table-cell">lz_{t.prefix}_…</TableCell>
+                    <TableCell className="hidden sm:table-cell">
                       <Badge variant={t.scope === "write" ? "default" : "secondary"}>{t.scope ? scopeLabel[t.scope] : "—"}</Badge>
                     </TableCell>
-                    <TableCell>{formatDate(t.createdAt)}</TableCell>
-                    <TableCell>
+                    <TableCell className="hidden lg:table-cell">{formatDate(t.createdAt)}</TableCell>
+                    <TableCell className="hidden md:table-cell">
                       {t.expiresAt ? formatDate(t.expiresAt) : "Jamais"}
                       {expired(t) && (
                         <Badge variant="destructive" className="ml-2">
@@ -97,7 +113,7 @@ export function TokensTab() {
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell>{formatRelative(t.lastUsedAt)}</TableCell>
+                    <TableCell className="hidden lg:table-cell">{formatRelative(t.lastUsedAt)}</TableCell>
                     <TableCell className="text-right">
                       <Button variant="outline" size="sm" onClick={() => setRevoking(t)}>
                         Révoquer
@@ -151,14 +167,6 @@ function CreateTokenDialog({
   const [scope, setScope] = React.useState<"read" | "write">("read")
   const [expires, setExpires] = React.useState("")
 
-  React.useEffect(() => {
-    if (open) {
-      setName("")
-      setScope("read")
-      setExpires("")
-    }
-  }, [open])
-
   const create = useMutation({
     mutationFn: () =>
       api.post("/me/tokens", {
@@ -172,6 +180,17 @@ function CreateTokenDialog({
     meta: { silent: true },
     onSuccess: (r) => onCreated(r.token ?? ""),
   })
+
+  // Fresh form on every opening (no error left from the previous attempt).
+  const resetCreate = create.reset
+  React.useEffect(() => {
+    if (open) {
+      setName("")
+      setScope("read")
+      setExpires("")
+      resetCreate()
+    }
+  }, [open, resetCreate])
 
   const tomorrow = new Date(Date.now() + 86400_000).toISOString().slice(0, 10)
 
@@ -202,9 +221,9 @@ function CreateTokenDialog({
             {fieldError(create.error, "name") && <p className="text-sm text-destructive">{fieldError(create.error, "name")}</p>}
           </div>
           <div className="space-y-2">
-            <Label>Droits</Label>
+            <Label htmlFor="token-scope">Droits</Label>
             <Select value={scope} onValueChange={(v) => setScope(v as "read" | "write")}>
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="token-scope" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

@@ -1,4 +1,4 @@
-import type * as React from "react"
+import * as React from "react"
 import { Navigate, useLocation, useSearchParams } from "react-router"
 import { RefreshCw, WifiOff } from "lucide-react"
 import type { SessionStateName } from "@/api/types"
@@ -31,6 +31,38 @@ function targetFor(state: SessionStateName, next: string): string {
   }
 }
 
+// ---- Redirect hold ----
+// While a page shows something that must not vanish (recovery codes right
+// after the forced MFA enrollment: the session is already "authenticated"
+// on the server, and any session refresh would redirect), the gate keeps
+// rendering its children instead of redirecting.
+
+let holds = 0
+const holdListeners = new Set<() => void>()
+function setHolds(n: number) {
+  holds = n
+  holdListeners.forEach((l) => l())
+}
+function subscribeHolds(l: () => void) {
+  holdListeners.add(l)
+  return () => {
+    holdListeners.delete(l)
+  }
+}
+
+/** Keeps the current auth page on screen while `active` is true (no redirect on session change). */
+export function useHoldAuthRedirect(active: boolean) {
+  React.useEffect(() => {
+    if (!active) return
+    setHolds(holds + 1)
+    return () => setHolds(holds - 1)
+  }, [active])
+}
+
+function useAuthRedirectHeld() {
+  return React.useSyncExternalStore(subscribeHolds, () => holds > 0)
+}
+
 /**
  * Renders children only when the session is in the `allow` state.
  * Otherwise redirects to the page matching the current state, keeping
@@ -40,6 +72,9 @@ export function AuthGate({ allow, children }: { allow: SessionStateName; childre
   const session = useSession()
   const location = useLocation()
   const [params] = useSearchParams()
+  // A hold is set by a mounted page, i.e. by this gate's children: keep them.
+  const held = useAuthRedirectHeld()
+  if (held) return <>{children}</>
 
   if (session.isPending) return <FullScreenSpinner />
   if (session.isError && !session.data) {

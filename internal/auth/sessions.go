@@ -95,6 +95,18 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 // LookupSession validates a cookie value: unknown, revoked, expired or idle
 // sessions return ErrNoSession. last_seen is refreshed at most once a minute.
 func (s *Service) LookupSession(ctx context.Context, token string) (*Session, error) {
+	return s.lookupSession(ctx, token, true)
+}
+
+// PeekSession validates a cookie value like LookupSession but never
+// refreshes last_seen. It serves background requests (automatic polling,
+// event streams) that must not keep an idle session alive: the idle timeout
+// counts from the user's last real action.
+func (s *Service) PeekSession(ctx context.Context, token string) (*Session, error) {
+	return s.lookupSession(ctx, token, false)
+}
+
+func (s *Service) lookupSession(ctx context.Context, token string, touch bool) (*Session, error) {
 	if token == "" {
 		return nil, ErrNoSession
 	}
@@ -112,7 +124,7 @@ func (s *Service) LookupSession(ctx context.Context, token string) (*Session, er
 		_ = s.revokeHash(ctx, se.IDHash)
 		return nil, ErrNoSession
 	}
-	if now.Sub(se.LastSeenAt) > touchEvery {
+	if touch && now.Sub(se.LastSeenAt) > touchEvery {
 		se.LastSeenAt = now
 		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id_hash = ?`, now.UnixMilli(), se.IDHash); err != nil {
 			return nil, err

@@ -22,8 +22,10 @@ function Tabs({
   )
 }
 
+// Small screens: a horizontal list wraps onto several rows (h-auto) instead of
+// overflowing with its last tabs out of sight. Unchanged from 640 px up.
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-[orientation=horizontal]/tabs:h-9 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-[orientation=horizontal]/tabs:h-9 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none max-sm:group-data-[orientation=horizontal]/tabs:h-auto max-sm:group-data-[orientation=horizontal]/tabs:flex-wrap max-sm:group-data-[orientation=horizontal]/tabs:justify-start",
   {
     variants: {
       variant: {

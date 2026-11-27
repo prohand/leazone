@@ -10,7 +10,11 @@ import {
 } from "@/components/ui/dialog"
 import { CopyButton } from "./copy-button"
 
-/** Displays a secret (temporary password, API token) that the server returns only once. */
+/**
+ * Displays a secret (temporary password, API token) that the server returns
+ * only once. Like the recovery codes, it closes only with « J'ai copié »:
+ * Escape, a click outside or a close cross would lose the secret.
+ */
 export function SecretOnceDialog({
   title,
   description,
@@ -23,8 +27,13 @@ export function SecretOnceDialog({
   onClose: () => void
 }) {
   return (
-    <Dialog open={!!secret} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent onInteractOutside={(e) => e.preventDefault()} className="sm:max-w-lg">
+    <Dialog open={!!secret}>
+      <DialogContent
+        showCloseButton={false}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.preventDefault()}
+        className="sm:max-w-lg"
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}

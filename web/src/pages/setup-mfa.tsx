@@ -1,8 +1,9 @@
 import * as React from "react"
 import { Fingerprint, ShieldCheck, Smartphone } from "lucide-react"
 import type { EnrollMethod, MfaEnrollResult } from "@/api/types"
+import { useHoldAuthRedirect } from "@/components/auth-gate"
 import { AuthShell } from "@/components/auth-shell"
-import { PasskeyRegister } from "@/components/passkey-register"
+import { PasskeyRegister, usePasskeyBlocker } from "@/components/passkey-register"
 import { RecoveryCodesDialog } from "@/components/recovery-codes-dialog"
 import { TotpSetup } from "@/components/totp-setup"
 import { Badge } from "@/components/ui/badge"
@@ -17,9 +18,17 @@ export default function SetupMfaPage() {
   const applySession = useApplySession()
   const logout = useLogout()
   const allowed: EnrollMethod[] = session?.allowedMfaMethods?.length ? session.allowedMfaMethods : ["passkey"]
-  const [method, setMethod] = React.useState<EnrollMethod>(allowed[0])
+  // Passkeys unusable here (browser, IP address, RP ID...): suggest TOTP first.
+  const passkeyBlocker = usePasskeyBlocker()
+  const preferred: EnrollMethod = passkeyBlocker && allowed.includes("totp") ? "totp" : allowed[0]
+  const [chosen, setChosen] = React.useState<EnrollMethod | null>(null)
+  const method = chosen ?? preferred
+  const setMethod = setChosen
   const [totpStarted, setTotpStarted] = React.useState(false)
   const [pending, setPending] = React.useState<MfaEnrollResult | null>(null)
+  // The session is already "authenticated" on the server: a session refresh
+  // (window focus...) must not leave this page before the codes are saved.
+  useHoldAuthRedirect(pending !== null)
 
   const onEnrolled = (r: MfaEnrollResult) => {
     if (r.recoveryCodes && r.recoveryCodes.length > 0) setPending(r)
@@ -48,7 +57,7 @@ export default function SetupMfaPage() {
                 icon={Fingerprint}
                 title="Passkey"
                 text="Empreinte, visage, code de l'appareil ou clé de sécurité."
-                badge="Conseillé"
+                badge={passkeyBlocker ? "Indisponible ici" : "Conseillé"}
               />
               <MethodCard
                 active={method === "totp"}

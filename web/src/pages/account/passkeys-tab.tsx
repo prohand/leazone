@@ -7,6 +7,7 @@ import { qk } from "@/api/queries"
 import type { MfaEnrollResult, Passkey } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { EmptyState } from "@/components/empty-state"
+import { LoadError } from "@/components/form-field"
 import { PasskeyRegister } from "@/components/passkey-register"
 import { RecoveryCodesDialog } from "@/components/recovery-codes-dialog"
 import { BlockSpinner } from "@/components/spinner"
@@ -74,6 +75,8 @@ export function PasskeysTab() {
         <CardContent>
           {list.isPending ? (
             <BlockSpinner />
+          ) : list.isError ? (
+            <LoadError error={list.error} onRetry={() => void list.refetch()} retrying={list.isFetching} />
           ) : items.length === 0 ? (
             <EmptyState icon={Fingerprint} title="Aucune passkey" description="Ajoutez-en une ci-dessus." />
           ) : (

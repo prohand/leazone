@@ -163,6 +163,8 @@ function DnsSettingsForm() {
     return settings.isError ? <p className="text-sm text-destructive">{errorMessage(settings.error)}</p> : <BlockSpinner />
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v })
+  // Save / Cancel only make sense once something changed.
+  const dirty = !!settings.data && JSON.stringify(form) !== JSON.stringify(toForm(settings.data))
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -190,7 +192,7 @@ function DnsSettingsForm() {
   const cacheOff = form.cacheSize.trim() === "0"
 
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} noValidate>
       <Card>
         <CardHeader>
           <CardTitle>Réglages DNS</CardTitle>
@@ -276,6 +278,7 @@ function DnsSettingsForm() {
           <Button
             type="button"
             variant="ghost"
+            disabled={!dirty || save.isPending}
             onClick={() => {
               if (settings.data) setForm(toForm(settings.data))
               setErrors({})
@@ -283,7 +286,7 @@ function DnsSettingsForm() {
           >
             Annuler
           </Button>
-          <Button type="submit" disabled={save.isPending}>
+          <Button type="submit" disabled={!dirty || save.isPending}>
             {save.isPending && <Loader2 className="animate-spin" />}
             Enregistrer
           </Button>

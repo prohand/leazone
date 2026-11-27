@@ -166,13 +166,15 @@ export const leasesQuery = (f: LeaseFilters) =>
 // ---- Phase 4: high availability ----
 
 /**
- * Cluster state. Shared by the read-only banner (every page, 10 s) and the
- * Cluster page, which adds its own faster refresh while it is open.
+ * Cluster state. Shared by the read-only banner (every page, 10 s; 60 s
+ * without HA) and the Cluster page, which adds its own faster refresh (HA on)
+ * while it is open.
  */
 export const clusterQuery = queryOptions({
   queryKey: qk.cluster,
   queryFn: () => api.get("/cluster"),
-  refetchInterval: 10_000,
+  // Single node (HA not configured): the state hardly changes, poll slowly.
+  refetchInterval: (q) => (q.state.data && !q.state.data.enabled ? 60_000 : 10_000),
   // An old backend without /cluster must not break the app (treated as a single node).
   retry: false,
 })

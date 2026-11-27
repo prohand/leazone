@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Fingerprint, Loader2, ShieldCheck } from "lucide-react"
+import { Fingerprint, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
 import { api, isApiError, ProblemType, setStepUpHandler } from "@/api/client"
 import { meQuery, qk, systemInfoQuery } from "@/api/queries"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -68,7 +68,8 @@ function StepUpBody({ onDone }: { onDone: (ok: boolean) => void }) {
   const [error, setError] = React.useState<string | null>(null)
 
   const hasPasskey = (me.data?.passkeyCount ?? 0) > 0 && info.data?.passkeysAvailable !== false && webauthnSupported()
-  const hasTotp = !!me.data?.totpEnabled
+  // A TOTP enabled before the policy switched to "passkey only" is refused by the server.
+  const hasTotp = !!me.data?.totpEnabled && me.data?.totpAllowed !== false
 
   const succeed = (s: unknown) => {
     if (s && typeof s === "object" && "state" in s) qc.setQueryData(qk.session, s)
@@ -117,6 +118,18 @@ function StepUpBody({ onDone }: { onDone: (ok: boolean) => void }) {
       {me.isPending ? (
         <div className="flex justify-center py-6">
           <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : me.isError ? (
+        <div className="space-y-3">
+          <Alert variant="destructive">
+            <AlertDescription>
+              Impossible de charger vos méthodes de vérification : {errorMessage(me.error)}
+            </AlertDescription>
+          </Alert>
+          <Button variant="outline" className="w-full" onClick={() => void me.refetch()} disabled={me.isFetching}>
+            {me.isFetching ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            Réessayer
+          </Button>
         </div>
       ) : (
         <div className="space-y-4">

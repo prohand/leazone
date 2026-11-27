@@ -1,7 +1,10 @@
 import { toast } from "sonner"
-import { ApiError, ProblemType } from "@/api/client"
+import { ApiError, isOriginRefused, ProblemType } from "@/api/client"
 
-/** Human readable French message for any error thrown by the API layer or WebAuthn. */
+/**
+ * Human readable French message for any error thrown by the API layer or
+ * WebAuthn. Server messages are already capitalized by the API client.
+ */
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.type) {
@@ -16,6 +19,8 @@ export function errorMessage(err: unknown): string {
       case ProblemType.unauthenticated:
         return err.detail || "Session expirée. Reconnectez-vous."
       case ProblemType.csrf:
+        // Refused origin (proxy or address problem): the server explains it.
+        if (isOriginRefused(err)) return err.detail || "Origine de la requête refusée."
         return "Session expirée. Rechargez la page."
       case ProblemType.notFound:
         return err.detail || "Élément introuvable."

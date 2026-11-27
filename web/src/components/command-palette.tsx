@@ -101,7 +101,10 @@ function CommandPalette({ open, setOpen }: Ctx) {
   const scopes = useQuery({ ...scopesQuery, enabled: open, staleTime: 30_000, refetchInterval: false })
   const flush = useMutation({
     mutationFn: () => api.post("/dns/cache/flush", { body: {} }),
-    onSuccess: (r) => toast.success(`Cache DNS vidé : ${r?.removed ?? 0} entrée(s) supprimée(s).`),
+    onSuccess: (r) => {
+      const n = r?.removed ?? 0
+      toast.success(`Cache DNS vidé : ${n} entrée${n > 1 ? "s" : ""} supprimée${n > 1 ? "s" : ""}.`)
+    },
   })
 
   // Set when an action opens another dialog: the palette must not give the
@@ -170,7 +173,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
           </CommandGroup>
         )}
         <CommandSeparator />
-        <CommandGroup heading="DHCP">
+        <CommandGroup heading="Actions DHCP">
           <CommandItem
             value="Rechercher un bail"
             keywords={["lease", "client", "IP", "MAC", "trouver", "appareil"]}
@@ -208,7 +211,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
           )}
         </CommandGroup>
         <CommandSeparator />
-        <CommandGroup heading="DNS">
+        <CommandGroup heading="Actions DNS">
           <CommandItem
             value="Tester une résolution DNS"
             keywords={["lookup", "dig", "nslookup", "résoudre", "nom"]}

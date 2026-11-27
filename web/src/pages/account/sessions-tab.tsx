@@ -6,6 +6,7 @@ import { api } from "@/api/client"
 import { qk } from "@/api/queries"
 import type { Session } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { LoadError } from "@/components/form-field"
 import { BlockSpinner } from "@/components/spinner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -37,17 +38,21 @@ export function SessionsTab() {
       <CardContent>
         {list.isPending ? (
           <BlockSpinner />
+        ) : list.isError ? (
+          <LoadError error={list.error} onRetry={() => void list.refetch()} retrying={list.isFetching} />
         ) : (
           <div className="rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead>Appareil</TableHead>
-                  <TableHead>Adresse IP</TableHead>
-                  <TableHead>Ouverte le</TableHead>
-                  <TableHead>Dernière activité</TableHead>
-                  <TableHead>Expire le</TableHead>
-                  <TableHead />
+                  <TableHead className="hidden sm:table-cell">Adresse IP</TableHead>
+                  <TableHead className="hidden lg:table-cell">Ouverte le</TableHead>
+                  <TableHead className="hidden md:table-cell">Dernière activité</TableHead>
+                  <TableHead className="hidden lg:table-cell">Expire le</TableHead>
+                  <TableHead>
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -59,11 +64,16 @@ export function SessionsTab() {
                         <span title={s.userAgent}>{describeUserAgent(s.userAgent)}</span>
                         {s.current && <Badge variant="secondary">Cette session</Badge>}
                       </div>
+                      {/* Small screens: the hidden columns that matter, under the device. */}
+                      <div className="mt-1 pl-6 text-xs text-muted-foreground md:hidden">
+                        <span className="font-mono sm:hidden">{s.ip} · </span>
+                        {formatRelative(s.lastSeenAt)}
+                      </div>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{s.ip}</TableCell>
-                    <TableCell>{formatDateTime(s.createdAt)}</TableCell>
-                    <TableCell>{formatRelative(s.lastSeenAt)}</TableCell>
-                    <TableCell>{formatDateTime(s.expiresAt)}</TableCell>
+                    <TableCell className="hidden font-mono text-xs sm:table-cell">{s.ip}</TableCell>
+                    <TableCell className="hidden lg:table-cell">{formatDateTime(s.createdAt)}</TableCell>
+                    <TableCell className="hidden md:table-cell">{formatRelative(s.lastSeenAt)}</TableCell>
+                    <TableCell className="hidden lg:table-cell">{formatDateTime(s.expiresAt)}</TableCell>
                     <TableCell className="text-right">
                       {!s.current && (
                         <Button variant="outline" size="sm" onClick={() => setRevoking(s)}>
