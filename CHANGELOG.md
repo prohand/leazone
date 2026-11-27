@@ -1,5 +1,50 @@
 # Changements
 
+## 1.0.2
+
+Version de correction de l'interface web : une soixantaine de bugs et défauts trouvés par une revue de l'interface,
+vérifiés dans un navigateur (ordinateur et mobile, thèmes clair et sombre).
+
+### À savoir avant la mise à jour
+- La déconnexion après inactivité s'applique vraiment : un onglet ouvert qui se rafraîchit tout seul ne garde plus
+  la session ouverte. Les requêtes avec l'en-tête `X-Leazone-Background: 1` ne comptent pas comme une activité.
+- API : `/me` renvoie `totpAllowed` ; le tableau de bord renvoie `alertThreshold` et `alert` pour chaque étendue ;
+  la source `blocked` est documentée pour le test de résolution.
+
+### Connexion et compte
+- Les codes de secours ne disparaissent plus pendant le premier enrôlement MFA.
+- Une origine refusée (proxy mal réglé) affiche la vraie cause au lieu de « Session expirée ».
+- Le cache est vidé quand un autre utilisateur se connecte dans le même onglet.
+- Un code TOTP collé avec un espace est accepté ; le TOTP est présélectionné quand les passkeys sont impossibles.
+- Jetons d'API et mots de passe temporaires : la fenêtre ne se ferme qu'avec « J'ai copié ».
+- La reconfirmation d'identité ne propose plus le TOTP si la politique l'interdit.
+- Les erreurs de chargement s'affichent au lieu de faux états vides ; les anciennes erreurs ne reviennent plus.
+
+### DHCP
+- Modifier une réservation garde à la fois la MAC et l'identifiant client.
+- Formulaire d'étendue validé comme le serveur : options gérées par Leazone, adresses réseau et broadcast,
+  préfixe, exclusions, durée de bail, passerelle dans la plage, DNS automatique sans domaine.
+- Aperçu des zones inverses correct pour les préfixes non alignés (/20, /23).
+- Désactiver une étendue demande confirmation ; le numéro d'un VLAN est verrouillé au renommage.
+- Pas de « Convertir en réservation » sur les lignes sans MAC ; liens Ctrl+K vers les baux suivis sur la page.
+- Bandeau « DHCP n'écoute pas » seulement quand une étendue est active.
+
+### DNS, blocage et journaux
+- La table des enregistrements ne déborde plus avec un nom long.
+- Test de résolution : source « Bloqué » et recherche inverse IPv6.
+- Validation IPv6 stricte ; TTL et SOA bornés comme le serveur.
+- « Bloquer ce domaine » demande confirmation et refuse un nom à un seul label.
+- Audit : tous les types d'action dans le filtre, avec des libellés en français.
+- Tableau de bord : liens des tops sur 24 h, données périmées signalées, mêmes seuils d'usage DHCP partout.
+- Taille des journaux en Mio, comme la limite appliquée par le serveur.
+
+### Interface
+- Contraste du orange et du vert corrigé en thème clair, badge TOTP lisible en thème sombre.
+- Mobile : onglets à la ligne, colonnes secondaires masquées, filtres et messages vides non coupés.
+- Accessibilité : un seul `<main>`, erreurs reliées aux champs, libellés et en-têtes d'actions.
+- Réglages : validation en français, boutons actifs seulement après une modification.
+- Cluster interrogé seulement si la haute disponibilité est configurée.
+
 ## 1.0.1
 
 Version de correction : plus de 40 bugs trouvés par une revue du code, chacun avec un test de régression.
