@@ -24,7 +24,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { WriteGuard } from "@/components/read-only"
 import { usePermissions } from "@/hooks/use-cluster"
-import { fmtInt, scopeInputOf } from "@/lib/dhcp"
+import { activeLeasesLabel, fmtInt, scopeInputOf } from "@/lib/dhcp"
 import { errorMessage } from "@/lib/errors"
 import { ScopeDialog } from "./scope-dialog"
 
@@ -46,6 +46,7 @@ export default function ScopesPage() {
   const list = useQuery(scopesQuery)
   const [editing, setEditing] = React.useState<{ scope: Scope | null; vlanId?: number } | null>(null)
   const [deleting, setDeleting] = React.useState<Scope | null>(null)
+  const [disabling, setDisabling] = React.useState<Scope | null>(null)
 
   // ⌘K "Nouvelle étendue" and the VLAN cards land here with ?new=1 (&vlan=20).
   React.useEffect(() => {
@@ -61,8 +62,13 @@ export default function ScopesPage() {
     void qc.invalidateQueries({ queryKey: qk.vlans })
   }
   const toggle = useMutation({
-    mutationFn: (v: { s: Scope; enabled: boolean }) =>
-      api.put("/dhcp/scopes/{id}", { params: { id: v.s.id ?? "" }, body: scopeInputOf(v.s, { enabled: v.enabled }) }),
+    // The API only replaces a whole scope (PUT): start from its current state on the server, not from the
+    // list as last refreshed, so a change made meanwhile (other tab, other admin) is not overwritten.
+    mutationFn: async (v: { s: Scope; enabled: boolean }) => {
+      const id = v.s.id ?? ""
+      const fresh = await api.get("/dhcp/scopes/{id}", { params: { id } })
+      return api.put("/dhcp/scopes/{id}", { params: { id }, body: scopeInputOf(fresh, { enabled: v.enabled }) })
+    },
     onSuccess: (_, v) => toast.success(v.enabled ? `Étendue « ${v.s.name} » activée.` : `Étendue « ${v.s.name} » désactivée.`),
     onSettled: refresh,
   })
@@ -151,7 +157,8 @@ export default function ScopesPage() {
             <Switch
               checked={s.enabled !== false}
               disabled={pendingId === s.id}
-              onCheckedChange={(v) => mutateToggle({ s, enabled: v })}
+              // Turning a scope off stops the DHCP of a whole network: ask first.
+              onCheckedChange={(v) => (v ? mutateToggle({ s, enabled: true }) : setDisabling(s))}
               aria-label={`Étendue ${s.name} activée`}
             />
           ) : s.enabled === false ? (
@@ -269,13 +276,29 @@ export default function ScopesPage() {
           title={`Supprimer l'étendue « ${deleting.name} » ?`}
           description={
             <>
-              Ses réservations et ses baux sont supprimés aussi ({fmtInt.format(deleting.usage?.activeLeases ?? 0)} bail(s) actif(s)). Les
+              Ses réservations et ses baux sont supprimés aussi ({activeLeasesLabel(deleting.usage?.activeLeases ?? 0)}). Les
               clients perdront leur adresse au prochain renouvellement. Une confirmation d'identité est demandée.
             </>
           }
           confirmLabel="Supprimer"
           destructive
           onConfirm={() => remove.mutateAsync(deleting.id ?? "")}
+        />
+      )}
+      {disabling && (
+        <ConfirmDialog
+          open={!!disabling}
+          onOpenChange={(o) => !o && setDisabling(null)}
+          title={`Désactiver l'étendue « ${disabling.name} » ?`}
+          description={
+            <>
+              Leazone ne répondra plus aux clients du réseau {disabling.network} : ils ne pourront plus obtenir ni renouveler
+              d'adresse ({activeLeasesLabel(disabling.usage?.activeLeases ?? 0)} en ce moment). Les réservations sont conservées.
+            </>
+          }
+          confirmLabel="Désactiver"
+          destructive
+          onConfirm={() => toggle.mutateAsync({ s: disabling, enabled: false })}
         />
       )}
     </>

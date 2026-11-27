@@ -22,19 +22,28 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import {
   checkOptionValue,
+  fmtInt,
   ipToInt,
+  MAX_LEASE_SECONDS,
+  MAX_SCOPE_SIZE,
+  MIN_LEASE_SECONDS,
   modeHelp,
   net4String,
   netContains,
+  netHostContains,
   optionTypes,
   parseNet4,
-  reverseZoneOf,
+  reservedOptionMessage,
+  reverseZonesOf,
+  reverseZonesSummary,
+  SCOPE_MAX_PREFIX,
+  SCOPE_MIN_PREFIX,
   suggestRange,
+  vlanLabel,
   type Net4,
 } from "@/lib/dhcp"
 import { fieldError, formError } from "@/lib/errors"
 import { isIPv4 } from "@/lib/net"
-import { cn } from "@/lib/utils"
 
 type Unit = "min" | "h" | "j"
 const unitSeconds: Record<Unit, number> = { min: 60, h: 3600, j: 86400 }
@@ -85,7 +94,8 @@ const emptyForm = (): Form => ({
   interface: "",
   relay: false,
   relayAgents: [],
-  ddnsEnabled: true,
+  // Off until a domain is typed (see setDomain): DDNS without a domain is refused by the server.
+  ddnsEnabled: false,
   ddnsDomain: "",
   pingCheck: false,
   alertThreshold: "80",
@@ -167,50 +177,95 @@ function toInput(f: Form): ScopeInput {
 
 const domainRe = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.?$/
 
+/** Gateway inside the distributed range and not excluded (the server refuses it). */
+function gatewayInRange(f: Form): boolean {
+  const g = ipToInt(f.gateway.trim())
+  const a = ipToInt(f.rangeStart.trim())
+  const b = ipToInt(f.rangeEnd.trim())
+  if (g === null || a === null || b === null || g < a || g > b) return false
+  return !f.exclusions.some((r) => {
+    const x = ipToInt(r.start.trim())
+    const y = ipToInt((r.end || r.start).trim())
+    return x !== null && y !== null && g >= x && g <= y
+  })
+}
+
+/** Client-side mirror of dhcpconf.validate (scopes.go): same rules, so the server rarely answers 422. */
 function validate(f: Form): Record<string, string> {
   const e: Record<string, string> = {}
-  const net = parseNet4(f.network)
-  const inNet = (ip: string) => netContains(net, ip)
-  if (!f.name.trim()) e.name = "Obligatoire."
+  const parsed = parseNet4(f.network)
+  const prefixOk = !!parsed && parsed.prefix >= SCOPE_MIN_PREFIX && parsed.prefix <= SCOPE_MAX_PREFIX
+  const net = prefixOk ? parsed : null
+  const host = (ip: string) => netHostContains(net, ip)
+  const name = f.name.trim()
+  if (!name) e.name = "Obligatoire."
+  else if (name.length > 64) e.name = "64 caractères au plus."
   if (f.vlanId.trim()) {
     const v = Number(f.vlanId)
     if (!/^\d+$/.test(f.vlanId.trim()) || v < 1 || v > 4094) e.vlanId = "Numéro entre 1 et 4094."
   }
   if (!f.network.trim()) e.network = "Obligatoire."
-  else if (!net) e.network = "Réseau IPv4 non valide (ex. : 192.168.20.0/24)."
+  else if (!parsed) e.network = "Réseau IPv4 non valide (ex. : 192.168.20.0/24)."
+  else if (!prefixOk) e.network = `Préfixe entre /${SCOPE_MIN_PREFIX} et /${SCOPE_MAX_PREFIX}.`
   for (const k of ["rangeStart", "rangeEnd"] as const) {
     const v = f[k].trim()
     if (!v) e[k] = "Obligatoire."
     else if (!isIPv4(v)) e[k] = "Adresse IPv4 non valide."
-    else if (net && !inNet(v)) e[k] = `Hors du réseau ${net4String(net)}.`
+    else if (net && !host(v))
+      e[k] = netContains(net, v)
+        ? "Ni l'adresse du réseau, ni celle de broadcast."
+        : `Hors du réseau ${net4String(net)}.`
   }
-  if (!e.rangeStart && !e.rangeEnd && (ipToInt(f.rangeStart) ?? 0) > (ipToInt(f.rangeEnd) ?? 0))
-    e.rangeEnd = "La fin doit être après le début."
+  const start = ipToInt(f.rangeStart.trim())
+  const end = ipToInt(f.rangeEnd.trim())
+  if (!e.rangeStart && !e.rangeEnd && start !== null && end !== null) {
+    if (start > end) e.rangeEnd = "La fin doit être après le début."
+    else if (end - start + 1 > MAX_SCOPE_SIZE) e.rangeEnd = `Plage trop grande (${fmtInt.format(MAX_SCOPE_SIZE)} adresses au plus).`
+  }
+  const rangeOk = !e.rangeStart && !e.rangeEnd && start !== null && end !== null
   f.exclusions.forEach((r, i) => {
-    if (!isIPv4(r.start) || !isIPv4(r.end)) e[`exclusions[${i}]`] = "Adresses IPv4 attendues."
-    else if ((ipToInt(r.start) ?? 0) > (ipToInt(r.end) ?? 0)) e[`exclusions[${i}]`] = "La fin doit être après le début."
-    else if (net && (!inNet(r.start) || !inNet(r.end))) e[`exclusions[${i}]`] = "Hors du réseau de l'étendue."
+    const a = ipToInt(r.start)
+    const b = ipToInt(r.end)
+    if (a === null || b === null) e[`exclusions[${i}]`] = "Adresses IPv4 attendues."
+    else if (a > b) e[`exclusions[${i}]`] = "La fin doit être après le début."
+    else if (rangeOk && (a < start || b > end)) e[`exclusions[${i}]`] = "L'exclusion doit être dans la plage."
   })
   const lease = Number(f.leaseValue.replace(",", "."))
+  const leaseSeconds = lease * unitSeconds[f.leaseUnit]
   if (!(lease > 0)) e.leaseTime = "Durée positive."
-  else if (lease * unitSeconds[f.leaseUnit] < 60) e.leaseTime = "Au moins 1 minute."
-  if (f.gateway.trim()) {
-    if (!isIPv4(f.gateway.trim())) e.gateway = "Adresse IPv4 non valide."
-    else if (net && !inNet(f.gateway.trim())) e.gateway = "La passerelle doit être dans le réseau."
+  else if (leaseSeconds < MIN_LEASE_SECONDS) e.leaseTime = "Au moins 1 minute."
+  else if (leaseSeconds > MAX_LEASE_SECONDS) e.leaseTime = "365 jours au plus."
+  const gw = f.gateway.trim()
+  if (gw) {
+    if (!isIPv4(gw)) e.gateway = "Adresse IPv4 non valide."
+    else if (net && !host(gw))
+      e.gateway = netContains(net, gw)
+        ? "La passerelle ne peut pas être l'adresse du réseau ni celle de broadcast."
+        : "La passerelle doit être dans le réseau."
+    else if (gatewayInRange(f)) e.gateway = "La passerelle est dans la plage distribuée : ajoutez une exclusion."
   }
   f.dnsServers.forEach((v, i) => !isIPv4(v) && (e[`dnsServers[${i}]`] = "Adresse IPv4 non valide."))
   f.ntpServers.forEach((v, i) => !isIPv4(v) && (e[`ntpServers[${i}]`] = "Adresse IPv4 non valide."))
   f.relayAgents.forEach((v, i) => !isIPv4(v) && (e[`relayAgents[${i}]`] = "Adresse IPv4 non valide."))
   if (f.domain.trim() && !domainRe.test(f.domain.trim())) e.domain = "Nom de domaine non valide."
+  const seen = new Set<number>()
   f.options.forEach((o, i) => {
     const c = Number(o.code)
     if (!/^\d+$/.test(o.code.trim()) || c < 1 || c > 254) e[`options[${i}].code`] = "Code entre 1 et 254."
+    else if (reservedOptionMessage(c)) e[`options[${i}].code`] = reservedOptionMessage(c)!
+    else if (seen.has(c)) e[`options[${i}].code`] = "Option en double."
+    seen.add(c)
     const m = checkOptionValue(o.type, o.value)
     if (m) e[`options[${i}].value`] = m
   })
   if (f.direct && !f.interface) e.interface = "Choisissez l'interface du VLAN, ou désactivez le mode direct."
-  if (f.ddnsEnabled && f.ddnsDomain.trim() && !domainRe.test(f.ddnsDomain.trim()))
-    e.ddnsDomain = "Nom de domaine non valide (ex. : invites.lan)."
+  // Server rule: the DDNS domain defaults to the scope domain; one of them is required when DDNS is on.
+  if (f.ddnsEnabled) {
+    const d = f.ddnsDomain.trim()
+    if (d && !domainRe.test(d)) e.ddnsDomain = "Nom de domaine non valide (ex. : invites.lan)."
+    else if (!d && !f.domain.trim())
+      e.ddnsDomain = "Indiquez le domaine DNS (ou le domaine de l'étendue), ou désactivez l'enregistrement dans le DNS."
+  }
   const t = Number(f.alertThreshold)
   if (!/^\d+$/.test(f.alertThreshold.trim()) || t < 1 || t > 100) e.alertThreshold = "Entre 1 et 100."
   return e
@@ -225,16 +280,6 @@ const shownKey = (k: string) =>
 /** IPv4 addresses of an interface that fall inside `net`. */
 function addressesIn(i: NetInterface, net: Net4 | null) {
   return (i.addresses ?? []).filter((a) => a.family !== "ipv6" && netContains(net, a.address ?? ""))
-}
-
-// Codes already set by the dedicated fields above.
-const managedCodes: Record<number, string> = {
-  1: "masque (déduit du réseau)",
-  3: "Passerelle",
-  6: "Serveurs DNS",
-  15: "Domaine",
-  42: "Serveurs NTP",
-  51: "Durée du bail",
 }
 
 function Section({ title, description, children }: { title: string; description?: React.ReactNode; children: React.ReactNode }) {
@@ -270,6 +315,8 @@ export function ScopeDialog({
   const [vlanChoice, setVlanChoice] = React.useState("none")
   // The range follows the network until the user types one.
   const [rangeTouched, setRangeTouched] = React.useState(false)
+  // On a new scope, DNS registration follows the domain until the user flips the switch.
+  const [ddnsTouched, setDdnsTouched] = React.useState(false)
   const bodyRef = React.useRef<HTMLDivElement>(null)
 
   const save = useMutation({
@@ -281,7 +328,10 @@ export function ScopeDialog({
       void qc.invalidateQueries({ queryKey: qk.vlans })
       void qc.invalidateQueries({ queryKey: qk.zones })
       toast.success(scope ? "Étendue modifiée." : `Étendue « ${s.name} » créée.`, {
-        description: !scope && (s.reverseZones ?? []).length > 0 ? `Zone inverse : ${(s.reverseZones ?? []).join(", ")}` : undefined,
+        description:
+          !scope && (s.reverseZones ?? []).length > 0
+            ? `${(s.reverseZones ?? []).length > 1 ? "Zones inverses" : "Zone inverse"} : ${reverseZonesSummary(s.reverseZones ?? [])}`
+            : undefined,
       })
       onOpenChange(false)
     },
@@ -302,6 +352,7 @@ export function ScopeDialog({
     setForm(f)
     setLocal({})
     setRangeTouched(!!scope)
+    setDdnsTouched(!!scope)
     setVlanChoice(f.vlanId ? f.vlanId : "none")
     save.reset()
     // Reset only when the dialog opens.
@@ -398,6 +449,11 @@ export function ScopeDialog({
     })
   }
 
+  const setDomain = (v: string) => {
+    if (ddnsTouched) set({ domain: v })
+    else set({ domain: v, ddnsEnabled: !!v.trim() })
+  }
+
   const pickIface = (name: string) => {
     const iface = hostIfaces.find((i) => i.name === name)
     let next: Form = { ...form, interface: name }
@@ -426,7 +482,10 @@ export function ScopeDialog({
 
   const mode: ScopeMode = form.direct && form.interface ? (form.relay ? "both" : "direct") : form.relay ? "relay" : "none"
   const suggestion = suggestRange(form.network)
-  const reverse = reverseZoneOf(form.network)
+  const prefixOk = !!net && net.prefix >= SCOPE_MIN_PREFIX && net.prefix <= SCOPE_MAX_PREFIX
+  const savedZones = scope && form.network === scope.network ? (scope.reverseZones ?? []) : []
+  const reverseZones = savedZones.length > 0 ? savedZones : prefixOk ? reverseZonesOf(form.network) : []
+  const gwInRange = !!net && isIPv4(form.gateway.trim()) && netHostContains(net, form.gateway.trim()) && gatewayInRange(form)
   const pingUnavailable = status.data?.pingAvailable === false
   const hasLocalErrors = Object.keys(local).length > 0
   const placeholderIp = (last: number) => (net ? `${form.network.split(".").slice(0, 3).join(".")}.${last}` : `192.168.20.${last}`)
@@ -464,7 +523,7 @@ export function ScopeDialog({
                         <SelectItem value="none">Aucun VLAN</SelectItem>
                         {knownVlans.map((v) => (
                           <SelectItem key={v.id} value={String(v.id)}>
-                            {v.name ? `${v.id} - ${v.name}` : `VLAN ${v.id}`}
+                            {vlanLabel(v.id, v.name)}
                           </SelectItem>
                         ))}
                         <SelectItem value="other">Autre numéro…</SelectItem>
@@ -491,7 +550,18 @@ export function ScopeDialog({
 
             {/* ---- Réseau ---- */}
             <Section title="Réseau" description="Adresses que les clients peuvent recevoir.">
-              <Field label="Réseau" htmlFor="sc-network" error={err("network")} help={net ? `${net.size - 2} adresses utilisables.` : "Ex. : 192.168.20.0/24"}>
+              <Field
+                label="Réseau"
+                htmlFor="sc-network"
+                error={err("network")}
+                help={
+                  net && prefixOk
+                    ? `${fmtInt.format(net.size - 2)} adresses utilisables.`
+                    : net
+                      ? `Préfixe entre /${SCOPE_MIN_PREFIX} et /${SCOPE_MAX_PREFIX}.`
+                      : "Ex. : 192.168.20.0/24"
+                }
+              >
                 <Input
                   id="sc-network"
                   className="font-mono sm:max-w-64"
@@ -617,6 +687,28 @@ export function ScopeDialog({
                     onChange={(e) => set({ gateway: e.target.value })}
                     placeholder={placeholderIp(1)}
                   />
+                  {gwInRange && (
+                    <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-warning">
+                      {!err("gateway") && (
+                        <>
+                          <TriangleAlert className="size-3.5 shrink-0" />
+                          <span>Dans la plage distribuée : à exclure.</span>
+                        </>
+                      )}
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-auto px-0 text-xs"
+                        onClick={() => {
+                          const g = form.gateway.trim()
+                          set({ exclusions: [...form.exclusions, { start: g, end: g }], gateway: g })
+                        }}
+                      >
+                        Exclure {form.gateway.trim()}
+                      </Button>
+                    </p>
+                  )}
                 </Field>
                 <Field label="Durée du bail" htmlFor="sc-lease" error={err("leaseTime")} help="Les clients renouvellent à mi-parcours.">
                   <div className="flex gap-2">
@@ -641,9 +733,15 @@ export function ScopeDialog({
                 </Field>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Serveurs DNS" htmlFor="sc-dns" error={err("dnsServers")} help="En général l'adresse de Leazone sur ce réseau.">
+                <Field
+                  label="Serveurs DNS"
+                  htmlFor={form.dnsServers.length > 0 ? "sc-dns" : undefined}
+                  error={err("dnsServers")}
+                  help="En général l'adresse de Leazone sur ce réseau."
+                >
                   <ListInput
                     id="sc-dns"
+                    label="Serveurs DNS"
                     values={form.dnsServers}
                     onChange={(v) => set({ dnsServers: v })}
                     placeholder={chosenInNet[0]?.address ?? placeholderIp(1)}
@@ -651,9 +749,15 @@ export function ScopeDialog({
                     errorAt={(i) => err(`dnsServers[${i}]`)}
                   />
                 </Field>
-                <Field label="Serveurs NTP" htmlFor="sc-ntp" error={err("ntpServers")} help="Facultatif : serveurs d'heure.">
+                <Field
+                  label="Serveurs NTP"
+                  htmlFor={form.ntpServers.length > 0 ? "sc-ntp" : undefined}
+                  error={err("ntpServers")}
+                  help="Facultatif : serveurs d'heure."
+                >
                   <ListInput
                     id="sc-ntp"
+                    label="Serveurs NTP"
                     values={form.ntpServers}
                     onChange={(v) => set({ ntpServers: v })}
                     placeholder={placeholderIp(1)}
@@ -669,7 +773,7 @@ export function ScopeDialog({
                   autoCapitalize="none"
                   spellCheck={false}
                   value={form.domain}
-                  onChange={(e) => set({ domain: e.target.value })}
+                  onChange={(e) => setDomain(e.target.value)}
                   placeholder="invites.lan"
                 />
               </Field>
@@ -756,12 +860,13 @@ export function ScopeDialog({
                 {form.relay && (
                   <Field
                     label="Agents relais supplémentaires"
-                    htmlFor="sc-relays"
+                    htmlFor={form.relayAgents.length > 0 ? "sc-relays" : undefined}
                     error={err("relayAgents")}
                     help="Facultatif : adresses de relais (giaddr) hors du réseau de l'étendue. Celles du réseau sont acceptées d'office."
                   >
                     <ListInput
                       id="sc-relays"
+                      label="Agents relais supplémentaires"
                       values={form.relayAgents}
                       onChange={(v) => set({ relayAgents: v })}
                       placeholder="10.255.0.2"
@@ -781,10 +886,22 @@ export function ScopeDialog({
             {/* ---- DNS automatique ---- */}
             <Section title="DNS automatique" description="Les clients reçoivent un nom dans le DNS, ex. : pc-marie.invites.lan.">
               <SwitchRow id="sc-ddns" title="Enregistrer les clients dans le DNS">
-                <Switch id="sc-ddns" checked={form.ddnsEnabled} onCheckedChange={(v) => set({ ddnsEnabled: v })} />
+                <Switch
+                  id="sc-ddns"
+                  checked={form.ddnsEnabled}
+                  onCheckedChange={(v) => {
+                    setDdnsTouched(true)
+                    set({ ddnsEnabled: v })
+                  }}
+                />
               </SwitchRow>
               {form.ddnsEnabled && (
-                <Field label="Domaine DNS" htmlFor="sc-ddns-domain" error={err("ddnsDomain")} help="La zone est créée si besoin.">
+                <Field
+                  label="Domaine DNS"
+                  htmlFor="sc-ddns-domain"
+                  error={err("ddnsDomain")}
+                  help={form.domain.trim() ? "Vide : le domaine de l'étendue. La zone est créée si besoin." : "Obligatoire. La zone est créée si besoin."}
+                >
                   <Input
                     id="sc-ddns-domain"
                     className="sm:max-w-64"
@@ -799,13 +916,14 @@ export function ScopeDialog({
               <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
                 <Info className="mt-px size-3.5 shrink-0" />
                 <span>
-                  La zone inverse
-                  {(scope?.reverseZones ?? []).length > 0 ? (
-                    <span className="font-mono"> {(scope?.reverseZones ?? []).join(", ")}</span>
-                  ) : reverse ? (
-                    <span className="font-mono"> {reverse}</span>
-                  ) : null}{" "}
-                  est créée automatiquement avec l'étendue.
+                  {reverseZones.length > 1 ? "Les zones inverses" : "La zone inverse"}
+                  {reverseZones.length > 0 && (
+                    <span className="font-mono" title={reverseZones.length > 2 ? reverseZones.join("\n") : undefined}>
+                      {" "}
+                      {reverseZonesSummary(reverseZones)}
+                    </span>
+                  )}{" "}
+                  {reverseZones.length > 1 ? "sont créées" : "est créée"} automatiquement avec l'étendue.
                 </span>
               </p>
             </Section>
@@ -887,7 +1005,7 @@ function CustomOptions({
           {form.options.map((o, i) => {
             const codeErr = err(`options[${i}].code`)
             const valueErr = err(`options[${i}].value`) ?? err(`options[${i}].type`) ?? err(`options[${i}]`)
-            const managed = managedCodes[Number(o.code)]
+            const reserved = /^\d+$/.test(o.code.trim()) ? reservedOptionMessage(Number(o.code)) : undefined
             const ph = optionTypes.find((t) => t.value === o.type)?.placeholder
             return (
               <div key={i} className="space-y-1 rounded-lg border p-2 sm:rounded-none sm:border-0 sm:p-0">
@@ -941,8 +1059,8 @@ function CustomOptions({
                     {valueErr}
                   </p>
                 )}
-                {managed && !codeErr && (
-                  <p className={cn("text-xs text-warning")}>Option {o.code} déjà réglée par « {managed} » : celle-ci la remplace.</p>
+                {reserved && !codeErr && (
+                  <p className="text-sm text-destructive">{reserved}</p>
                 )}
               </div>
             )

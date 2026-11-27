@@ -61,10 +61,22 @@ export default function InterfacesPage() {
   const lockHint = !perms.allowed("config.write") ? "Réservé aux administrateurs" : canEdit ? undefined : perms.hint
   const list = useQuery(interfacesQuery)
   const [typeFilter, setTypeFilter] = React.useState<"all" | InterfaceType>("all")
+  // Names whose DNS / DHCP switch has a request in flight (several can run at once).
+  const [pendingDns, setPendingDns] = React.useState<ReadonlySet<string>>(() => new Set())
+  const [pendingDhcp, setPendingDhcp] = React.useState<ReadonlySet<string>>(() => new Set())
+  const addPending = (set: typeof setPendingDns, name: string) => set((s) => new Set(s).add(name))
+  const dropPending = (set: typeof setPendingDns, name: string) =>
+    set((s) => {
+      const n = new Set(s)
+      n.delete(name)
+      return n
+    })
 
   const toggleDns = useMutation({
     mutationFn: (v: { name: string; enabled: boolean }) =>
       api.patch("/interfaces/{name}", { params: { name: v.name }, body: { dnsEnabled: v.enabled } }),
+    onMutate: (v) => addPending(setPendingDns, v.name),
+    onSettled: (_, __, v) => dropPending(setPendingDns, v.name),
     onSuccess: (iface, v) => {
       qc.setQueryData(qk.interfaces, (old: { items?: NetInterface[] } | undefined) =>
         old ? { ...old, items: (old.items ?? []).map((i) => (i.name === v.name ? iface : i)) } : old,
@@ -91,6 +103,8 @@ export default function InterfacesPage() {
   const toggleDhcp = useMutation({
     mutationFn: (v: { name: string; enabled: boolean }) =>
       api.patch("/interfaces/{name}", { params: { name: v.name }, body: { dhcpEnabled: v.enabled } }),
+    onMutate: (v) => addPending(setPendingDhcp, v.name),
+    onSettled: (_, __, v) => dropPending(setPendingDhcp, v.name),
     onSuccess: (iface, v) => {
       qc.setQueryData(qk.interfaces, (old: { items?: NetInterface[] } | undefined) =>
         old ? { ...old, items: (old.items ?? []).map((i) => (i.name === v.name ? iface : i)) } : old,
@@ -108,9 +122,7 @@ export default function InterfacesPage() {
     },
   })
 
-  const pendingName = toggleDns.isPending ? toggleDns.variables?.name : undefined
   const mutate = toggleDns.mutate
-  const pendingDhcp = toggleDhcp.isPending ? toggleDhcp.variables?.name : undefined
   const mutateDhcp = toggleDhcp.mutate
 
   const columns = React.useMemo<ColumnDef<NetInterface, unknown>[]>(
@@ -194,7 +206,7 @@ export default function InterfacesPage() {
             <WithTooltip text={lockHint}>
               <Switch
                 checked={!!i.dnsEnabled}
-                disabled={!canEdit || pendingName === i.name}
+                disabled={!canEdit || (!!i.name && pendingDns.has(i.name))}
                 onCheckedChange={(v) => i.name && mutate({ name: i.name, enabled: v })}
                 aria-label={`DNS sur ${i.name}`}
               />
@@ -213,7 +225,7 @@ export default function InterfacesPage() {
             <WithTooltip text={lockHint}>
               <Switch
                 checked={!!i.dhcpEnabled}
-                disabled={!canEdit || pendingDhcp === i.name || i.type === "loopback"}
+                disabled={!canEdit || (!!i.name && pendingDhcp.has(i.name)) || i.type === "loopback"}
                 onCheckedChange={(v) => i.name && mutateDhcp({ name: i.name, enabled: v })}
                 aria-label={`DHCP sur ${i.name}`}
               />
@@ -243,14 +255,19 @@ export default function InterfacesPage() {
         },
       },
     ],
-    [canEdit, lockHint, pendingName, mutate, pendingDhcp, mutateDhcp],
+    [canEdit, lockHint, pendingDns, mutate, pendingDhcp, mutateDhcp],
   )
 
   const all = list.data?.items
   const types = React.useMemo(() => [...new Set((all ?? []).map((i) => i.type ?? "other"))].sort(), [all])
+  // A filter on a type that no longer exists (interface removed) falls back to "all".
+  const filter = typeFilter !== "all" && all && !types.includes(typeFilter) ? "all" : typeFilter
+  React.useEffect(() => {
+    if (filter !== typeFilter) setTypeFilter(filter)
+  }, [filter, typeFilter])
   const data = React.useMemo(
-    () => (all ?? []).filter((i) => typeFilter === "all" || (i.type ?? "other") === typeFilter),
-    [all, typeFilter],
+    () => (all ?? []).filter((i) => filter === "all" || (i.type ?? "other") === filter),
+    [all, filter],
   )
 
   return (
@@ -271,7 +288,7 @@ export default function InterfacesPage() {
         empty="Aucune interface détectée."
         rowClassName={(i) => (i.present === false ? "opacity-60" : undefined)}
         toolbar={
-          <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as "all" | InterfaceType)}>
+          <Select value={filter} onValueChange={(v) => setTypeFilter(v as "all" | InterfaceType)}>
             <SelectTrigger className="w-44" aria-label="Filtrer par type">
               <SelectValue />
             </SelectTrigger>
