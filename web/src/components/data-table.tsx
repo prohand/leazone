@@ -129,7 +129,7 @@ export function DataTable<T>({
             {table.getHeaderGroups().map((hg) => (
               <TableRow key={hg.id} className="hover:bg-transparent">
                 {hg.headers.map((h) => (
-                  <TableHead key={h.id} className={cn("text-xs text-muted-foreground", h.column.columnDef.meta?.className)}>
+                  <TableHead key={h.id} className={cn("text-sm text-muted-foreground", h.column.columnDef.meta?.className)}>
                     {h.isPlaceholder ? null : flexRender(h.column.columnDef.header, h.getContext())}
                   </TableHead>
                 ))}

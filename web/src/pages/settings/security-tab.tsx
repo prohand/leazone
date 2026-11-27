@@ -142,10 +142,10 @@ export function SecurityTab() {
           </div>
 
           <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Durée maximale d'une session (heures)" htmlFor="max-h" help="Entre 1 et 720." error={errors.sessionMaxHours}>
+            <Field label="Durée maximale d'une session (heures)" htmlFor="max-h" help={errors.sessionMaxHours ? undefined : "Entre 1 et 720."} error={errors.sessionMaxHours}>
               <Input id="max-h" type="number" inputMode="numeric" min={1} max={720} value={form.sessionMaxHours} onChange={(e) => set("sessionMaxHours", e.target.value)} />
             </Field>
-            <Field label="Déconnexion après inactivité (minutes)" htmlFor="idle" help="Entre 5 et 1440." error={errors.sessionIdleMinutes}>
+            <Field label="Déconnexion après inactivité (minutes)" htmlFor="idle" help={errors.sessionIdleMinutes ? undefined : "Entre 5 et 1440."} error={errors.sessionIdleMinutes}>
               <Input id="idle" type="number" inputMode="numeric" min={5} max={1440} value={form.sessionIdleMinutes} onChange={(e) => set("sessionIdleMinutes", e.target.value)} />
             </Field>
           </div>
