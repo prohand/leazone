@@ -1822,6 +1822,9 @@ components:
         totpEnabled: { type: boolean }
         passkeyCount: { type: integer }
         recoveryCodesRemaining: { type: integer }
+        totpAllowed:
+          type: boolean
+          description: "The security policy accepts TOTP as a second factor (step-up, enrollment)."
 
     Passkey:
       type: object
@@ -1968,7 +1971,7 @@ components:
       type: object
       properties:
         rcode: { type: string, example: NOERROR }
-        source: { type: string, enum: [local, cache, forwarder, refused, error] }
+        source: { type: string, enum: [local, cache, forwarder, blocked, refused, error] }
         forwarder: { type: string }
         latencyMs: { type: number }
         answers: { type: array, items: { type: string }, description: "Records in presentation format" }
@@ -2519,6 +2522,8 @@ components:
                   size: { type: integer }
                   used: { type: integer }
                   percent: { type: number }
+                  alertThreshold: { type: integer, description: "Alert level of the scope (percent, 80 by default)" }
+                  alert: { type: boolean, description: "percent >= alertThreshold" }
         ha:
           type: [object, "null"]
           description: "null on a single node"

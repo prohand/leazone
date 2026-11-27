@@ -32,6 +32,10 @@ type SoaForm = Record<keyof Soa, string>
 const soaKeys: (keyof Soa)[] = ["primaryNs", "adminEmail", "refresh", "retry", "expire", "minimum"]
 const soaNumeric: (keyof Soa)[] = ["refresh", "retry", "expire", "minimum"]
 const soaDefaults: Record<string, number> = { refresh: 3600, retry: 600, expire: 604800, minimum: 300 }
+/* Bounds of the server (internal/dnsconf): 32-bit timers (RFC 2181: 2^31 − 1 at most), negative TTL ≤ 1 day. */
+const SOA_MAX: Record<string, number> = { refresh: 2147483647, retry: 2147483647, expire: 2147483647, minimum: 86400 }
+/** Default TTL of a zone: 1 s to 7 days (internal/dnsconf/zones.go). */
+const ZONE_TTL_MAX = 604800
 
 const emptySoa = (): SoaForm => ({ primaryNs: "", adminEmail: "", refresh: "", retry: "", expire: "", minimum: "" })
 const soaToForm = (s?: Soa): SoaForm => {
@@ -59,7 +63,8 @@ function checkSoa(f: SoaForm): { soa?: Soa; errors: Record<string, string> } {
     const v = f[k].trim()
     if (!v) continue
     const n = Number(v)
-    if (!Number.isInteger(n) || n < 0) errors[`soa.${k}`] = "Nombre de secondes entier."
+    if (!/^\d+$/.test(v) || !Number.isSafeInteger(n) || n > SOA_MAX[k])
+      errors[`soa.${k}`] = `Nombre de secondes entier, entre 0 (valeur par défaut) et ${SOA_MAX[k].toLocaleString("fr-FR")}.`
     else (soa as Record<string, unknown>)[k] = n
   }
   return { soa: Object.keys(soa).length ? soa : undefined, errors }
@@ -73,7 +78,7 @@ function SoaFields({
   placeholders,
 }: {
   value: SoaForm
-  onChange: (v: SoaForm) => void
+  onChange: (v: SoaForm, changed: keyof Soa) => void
   errors: (key: string) => string | undefined
   idPrefix: string
   placeholders?: Partial<SoaForm>
@@ -98,7 +103,7 @@ function SoaFields({
               spellCheck={false}
               value={value[k]}
               placeholder={placeholders?.[k] ?? (isNum ? String(soaDefaults[k]) : "automatique")}
-              onChange={(e) => onChange({ ...value, [k]: e.target.value })}
+              onChange={(e) => onChange({ ...value, [k]: e.target.value }, k)}
             />
           </Field>
         )
@@ -137,7 +142,24 @@ const ttlHelp = (ttl: string) => {
 function parseTtl(v: string): number | undefined | null {
   if (!v.trim()) return undefined
   const n = Number(v)
-  return Number.isInteger(n) && n > 0 && n <= 2147483647 ? n : null
+  return Number.isInteger(n) && n > 0 && n <= ZONE_TTL_MAX ? n : null
+}
+const ttlError = `Nombre de secondes entier, entre 1 et ${ZONE_TTL_MAX.toLocaleString("fr-FR")} (7 jours).`
+
+/** Local (client-side) errors, each one cleared as soon as its field changes. */
+function useLocalErrors() {
+  const [local, setLocal] = React.useState<Record<string, string>>({})
+  const clear = React.useCallback(
+    (key: string) =>
+      setLocal((l) => {
+        if (!(key in l)) return l
+        const next = { ...l }
+        delete next[key]
+        return next
+      }),
+    [],
+  )
+  return [local, setLocal, clear] as const
 }
 
 // ---- Nouvelle zone ----
@@ -155,7 +177,7 @@ export function ZoneCreateDialog({
   const [name, setName] = React.useState("")
   const [ttl, setTtl] = React.useState("3600")
   const [soa, setSoa] = React.useState<SoaForm>(emptySoa)
-  const [local, setLocal] = React.useState<Record<string, string>>({})
+  const [local, setLocal, clearLocal] = useLocalErrors()
 
   const create = useMutation({
     mutationFn: (body: { name: string; ttl?: number; soa?: Soa }) => api.post("/dns/zones", { body }),
@@ -186,7 +208,7 @@ export function ZoneCreateDialog({
     const n = name.trim()
     if (!n) errors.name = "Indiquez un nom de zone."
     const t = parseTtl(ttl)
-    if (t === null) errors.ttl = "Nombre de secondes entier, supérieur à 0."
+    if (t === null) errors.ttl = ttlError
     const s = checkSoa(soa)
     Object.assign(errors, s.errors)
     setLocal(errors)
@@ -220,14 +242,33 @@ export function ZoneCreateDialog({
               autoCapitalize="none"
               spellCheck={false}
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value)
+                clearLocal("name")
+              }}
               placeholder="maison.lan"
             />
           </Field>
           <Field label="TTL par défaut (secondes)" htmlFor="zone-ttl" help={ttlHelp(ttl)} error={err("ttl")}>
-            <Input id="zone-ttl" inputMode="numeric" value={ttl} onChange={(e) => setTtl(e.target.value)} />
+            <Input
+              id="zone-ttl"
+              inputMode="numeric"
+              value={ttl}
+              onChange={(e) => {
+                setTtl(e.target.value)
+                clearLocal("ttl")
+              }}
+            />
           </Field>
-          <SoaSection value={soa} onChange={setSoa} errors={err} idPrefix="new-soa" />
+          <SoaSection
+            value={soa}
+            onChange={(v, k) => {
+              setSoa(v)
+              clearLocal(`soa.${k}`)
+            }}
+            errors={err}
+            idPrefix="new-soa"
+          />
           <FormError message={formError(create.error, known)} />
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
@@ -258,7 +299,7 @@ export function ZoneSettingsDialog({
   const qc = useQueryClient()
   const [ttl, setTtl] = React.useState("")
   const [soa, setSoa] = React.useState<SoaForm>(emptySoa)
-  const [local, setLocal] = React.useState<Record<string, string>>({})
+  const [local, setLocal, clearLocal] = useLocalErrors()
   const id = zone.id ?? ""
 
   const save = useMutation({
@@ -288,7 +329,7 @@ export function ZoneSettingsDialog({
     e.preventDefault()
     const errors: Record<string, string> = {}
     const t = parseTtl(ttl)
-    if (t === null) errors.ttl = "Nombre de secondes entier, supérieur à 0."
+    if (t === null) errors.ttl = ttlError
     const s = checkSoa(soa)
     Object.assign(errors, s.errors)
     setLocal(errors)
@@ -305,9 +346,26 @@ export function ZoneSettingsDialog({
             <DialogDescription>Le numéro de série augmente tout seul à chaque changement.</DialogDescription>
           </DialogHeader>
           <Field label="TTL par défaut (secondes)" htmlFor="zs-ttl" help={ttlHelp(ttl)} error={err("ttl")}>
-            <Input id="zs-ttl" inputMode="numeric" value={ttl} onChange={(e) => setTtl(e.target.value)} />
+            <Input
+              id="zs-ttl"
+              inputMode="numeric"
+              value={ttl}
+              onChange={(e) => {
+                setTtl(e.target.value)
+                clearLocal("ttl")
+              }}
+            />
           </Field>
-          <SoaSection value={soa} onChange={setSoa} errors={err} idPrefix="zs-soa" defaultOpen />
+          <SoaSection
+            value={soa}
+            onChange={(v, k) => {
+              setSoa(v)
+              clearLocal(`soa.${k}`)
+            }}
+            errors={err}
+            idPrefix="zs-soa"
+            defaultOpen
+          />
           <FormError message={formError(save.error, known)} />
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>

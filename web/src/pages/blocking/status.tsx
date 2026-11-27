@@ -78,7 +78,11 @@ export function StatusCard() {
                   ? errorMessage(status.error)
                   : state.tone === "paused"
                     ? "Tous les noms sont résolus normalement pendant la pause."
-                    : "Module actif : les domaines des listes reçoivent une réponse vide."}
+                    : state.tone === "off"
+                      ? s
+                        ? "Aucun domaine n'est bloqué : toutes les requêtes sont résolues normalement. Activez le blocage dans l'onglet « Réglages »."
+                        : ""
+                      : "Module actif : les domaines des listes reçoivent une réponse vide."}
               </p>
             </div>
           </div>
@@ -103,7 +107,7 @@ export function StatusCard() {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <Stat label="Requêtes vérifiées" value={s ? fmtInt.format(s.queries ?? 0) : "—"} />
           <Stat label="Requêtes bloquées" value={s ? fmtInt.format(s.blocked ?? 0) : "—"} />
-          <Stat label="Part bloquée" value={blockedPercent(s)} className="text-destructive" />
+          <Stat label="Part bloquée" value={blockedPercent(s)} className={(s?.blocked ?? 0) > 0 ? "text-destructive" : undefined} />
           <Stat label="Domaines chargés" value={s ? fmtInt.format(s.domains ?? 0) : "—"} />
           <Stat label="Listes" value={s ? fmtInt.format(s.lists ?? 0) : "—"} />
         </div>

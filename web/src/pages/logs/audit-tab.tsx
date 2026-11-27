@@ -18,13 +18,114 @@ import { errorMessage } from "@/lib/errors"
 import { formatDateTime } from "@/lib/format"
 import { can } from "@/lib/permissions"
 
+/* Action prefixes written by the server (grep of the audit calls in internal/). */
 const actionFilters = [
   { value: "all", label: "Toutes les actions" },
   { value: "auth.", label: "Connexions (auth.)" },
+  { value: "session.", label: "Sessions (session.)" },
   { value: "user.", label: "Utilisateurs (user.)" },
   { value: "passkey.", label: "Passkeys (passkey.)" },
+  { value: "totp.", label: "Codes à usage unique (totp.)" },
+  { value: "recovery_codes.", label: "Codes de secours (recovery_codes.)" },
+  { value: "token.", label: "Jetons d'API (token.)" },
   { value: "settings.", label: "Paramètres (settings.)" },
+  { value: "tls.", label: "Certificat HTTPS (tls.)" },
+  { value: "modules.", label: "Modules (modules.)" },
+  { value: "interface.", label: "Interfaces (interface.)" },
+  { value: "vlan.", label: "VLAN (vlan.)" },
+  { value: "dns.", label: "DNS (dns.)" },
+  { value: "dnssec.", label: "DNSSEC (dnssec.)" },
+  { value: "dhcp.", label: "DHCP (dhcp.)" },
+  { value: "blocking.", label: "Blocage (blocking.)" },
+  { value: "logs.", label: "Journaux (logs.)" },
+  { value: "backup.", label: "Sauvegardes (backup.)" },
+  { value: "import.", label: "Import (import.)" },
+  { value: "cluster.", label: "Haute disponibilité (cluster.)" },
 ]
+
+/** Readable label of the most common actions; the raw code stays visible next to it. */
+const actionLabel: Record<string, string> = {
+  "auth.login.success": "Connexion réussie",
+  "auth.login.failure": "Échec de connexion",
+  "auth.login.password_ok": "Mot de passe accepté (MFA attendu)",
+  "auth.logout": "Déconnexion",
+  "auth.mfa.failure": "Échec du second facteur",
+  "auth.stepup.success": "Confirmation d'identité",
+  "auth.stepup.failure": "Échec de confirmation d'identité",
+  "auth.recovery_code.used": "Code de secours utilisé",
+  "session.revoke": "Session révoquée",
+  "user.create": "Utilisateur créé",
+  "user.update": "Utilisateur modifié",
+  "user.delete": "Utilisateur supprimé",
+  "user.password.change": "Mot de passe changé",
+  "user.password_reset": "Mot de passe réinitialisé",
+  "user.mfa_reset": "MFA réinitialisé",
+  "passkey.add": "Passkey ajoutée",
+  "passkey.rename": "Passkey renommée",
+  "passkey.remove": "Passkey supprimée",
+  "totp.enable": "Application d'authentification activée",
+  "totp.disable": "Application d'authentification désactivée",
+  "recovery_codes.generate": "Codes de secours générés",
+  "token.create": "Jeton d'API créé",
+  "token.revoke": "Jeton d'API révoqué",
+  "settings.update": "Paramètres modifiés",
+  "tls.import": "Certificat importé",
+  "modules.update": "Modules modifiés",
+  "interface.update": "Interface modifiée",
+  "vlan.create": "VLAN créé",
+  "vlan.update": "VLAN modifié",
+  "vlan.delete": "VLAN supprimé",
+  "dns.zone.create": "Zone créée",
+  "dns.zone.update": "Zone modifiée",
+  "dns.zone.delete": "Zone supprimée",
+  "dns.zone.import": "Zone importée",
+  "dns.record.create": "Enregistrement créé",
+  "dns.record.update": "Enregistrement modifié",
+  "dns.record.delete": "Enregistrement supprimé",
+  "dns.forwarder.create": "Redirecteur ajouté",
+  "dns.forwarder.update": "Redirecteur modifié",
+  "dns.forwarder.delete": "Redirecteur supprimé",
+  "dns.settings.update": "Réglages DNS modifiés",
+  "dns.cache.flush": "Cache DNS vidé",
+  "dnssec.enable": "DNSSEC activé",
+  "dnssec.disable": "DNSSEC désactivé",
+  "dnssec.rollover": "Clés DNSSEC renouvelées",
+  "dnssec.export": "Clés DNSSEC exportées",
+  "dhcp.scope.create": "Étendue créée",
+  "dhcp.scope.update": "Étendue modifiée",
+  "dhcp.scope.delete": "Étendue supprimée",
+  "dhcp.reservation.create": "Réservation créée",
+  "dhcp.reservation.update": "Réservation modifiée",
+  "dhcp.reservation.delete": "Réservation supprimée",
+  "dhcp.lease.release": "Bail libéré",
+  "blocking.pause": "Blocage mis en pause",
+  "blocking.resume": "Blocage repris",
+  "blocking.refresh": "Listes de blocage actualisées",
+  "blocking.settings.update": "Réglages du blocage modifiés",
+  "blocking.list.create": "Liste de blocage ajoutée",
+  "blocking.list.update": "Liste de blocage modifiée",
+  "blocking.list.delete": "Liste de blocage supprimée",
+  "blocking.rule.create": "Domaine ajouté (liste noire/blanche)",
+  "blocking.rule.delete": "Domaine retiré (liste noire/blanche)",
+  "blocking.policy.create": "Règle « où bloquer » ajoutée",
+  "blocking.policy.update": "Règle « où bloquer » modifiée",
+  "blocking.policy.delete": "Règle « où bloquer » supprimée",
+  "logs.settings.update": "Conservation des journaux modifiée",
+  "logs.purge": "Journaux purgés",
+  "backup.create": "Sauvegarde créée",
+  "backup.download": "Sauvegarde téléchargée",
+  "backup.restore": "Sauvegarde restaurée",
+  "import.technitium": "Import Technitium",
+  "cluster.settings.update": "Réglages HA modifiés",
+  "cluster.primary": "Nœud devenu primaire",
+  "cluster.stepdown": "Nœud redevenu secondaire",
+  "cluster.promote": "Promotion manuelle",
+  "cluster.failback": "Retour au nœud préféré",
+  "cluster.resync": "Resynchronisation",
+  "cluster.conflicts": "Conflits de réplication détectés",
+  "cluster.conflict.dismiss": "Conflit ignoré",
+  "cluster.conflict.reapply": "Conflit réappliqué",
+}
 
 export function AuditTab() {
   const user = useCurrentUser()
@@ -66,10 +167,10 @@ export function AuditTab() {
           />
         </div>
         <Select value={action} onValueChange={setAction}>
-          <SelectTrigger className="w-full sm:w-56" aria-label="Filtrer par action">
+          <SelectTrigger className="w-full sm:w-auto sm:min-w-56" aria-label="Filtrer par action">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="max-h-80">
             {actionFilters.map((f) => (
               <SelectItem key={f.value} value={f.value}>
                 {f.label}
@@ -143,7 +244,16 @@ function AuditRow({ entry: e }: { entry: AuditEntry }) {
     <TableRow>
       <TableCell className="whitespace-nowrap">{formatDateTime(e.ts)}</TableCell>
       <TableCell className="font-medium">{e.actor || "—"}</TableCell>
-      <TableCell className="font-mono text-xs">{e.action}</TableCell>
+      <TableCell>
+        {e.action && actionLabel[e.action] ? (
+          <>
+            <span className="block">{actionLabel[e.action]}</span>
+            <span className="block font-mono text-[11px] text-muted-foreground">{e.action}</span>
+          </>
+        ) : (
+          <span className="font-mono text-xs">{e.action || "—"}</span>
+        )}
+      </TableCell>
       <TableCell className="max-w-48 truncate" title={e.target}>
         {e.target || "—"}
       </TableCell>

@@ -39,8 +39,8 @@ export const targetKindLabel: Record<BlockTargetKind, string> = {
 
 export const pauseChoices = [
   { minutes: 5, label: "Pause 5 min" },
-  { minutes: 60, label: "1 h" },
-  { minutes: 1440, label: "Jusqu'à demain (24 h)" },
+  { minutes: 60, label: "Pause 1 h" },
+  { minutes: 1440, label: "Pause 24 h" },
 ] as const
 
 /** Suggested public lists (one click in the "add a list" dialog). */
@@ -55,12 +55,14 @@ const DOMAIN = /^(?=.{1,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)(\.[a-z0-9_
 /**
  * Domain typed by the user, cleaned up: lower case, no trailing dot, no
  * leading "*." (sub-domains are always included), host of a pasted URL.
- * Returns null when it is not a domain.
+ * Returns null when it is not a domain, or (with `multiLabel`) when it has a
+ * single label ("com", "lan"): blocking it would block a whole TLD.
  */
-export function cleanDomain(input: string): string | null {
+export function cleanDomain(input: string, { multiLabel = false }: { multiLabel?: boolean } = {}): string | null {
   let v = input.trim().toLowerCase()
   if (/^[a-z][a-z0-9+.-]*:\/\//.test(v)) v = urlHost(v) ?? ""
   v = v.replace(/^\*\./, "").replace(/\.$/, "")
+  if (multiLabel && !v.includes(".")) return null
   return DOMAIN.test(v) ? v : null
 }
 
@@ -81,10 +83,14 @@ export function usePauseBlocking() {
   })
 }
 
-/** Add a domain to the blacklist (deny) or whitelist (allow). */
-export function useAddRule() {
+/**
+ * Add a domain to the blacklist (deny) or whitelist (allow). `silent`: the
+ * caller shows the errors itself (form), so no global error toast.
+ */
+export function useAddRule({ silent = false }: { silent?: boolean } = {}) {
   const qc = useQueryClient()
   return useMutation({
+    meta: { silent },
     mutationFn: (body: { domain: string; kind: BlockRuleKind; comment?: string }) => api.post("/blocking/rules", { body }),
     onSuccess: (_r, v) => {
       void qc.invalidateQueries({ queryKey: qk.blockRules })

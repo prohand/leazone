@@ -124,7 +124,7 @@ function ForwarderRow({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-1 sm:flex-nowrap">
-        <Button variant="outline" size="sm" onClick={onTest} disabled={testing}>
+        <Button variant="outline" size="sm" onClick={onTest} disabled={testing} aria-label={`Tester ${target(f)}`}>
           {testing ? <Loader2 className="animate-spin" /> : <FlaskConical />} Tester
         </Button>
         {canEdit && (
@@ -134,27 +134,27 @@ function ForwarderRow({
               checked={f.enabled !== false}
               disabled={busy}
               onCheckedChange={onToggle}
-              aria-label={f.enabled === false ? "Activer ce redirecteur" : "Désactiver ce redirecteur"}
+              aria-label={f.enabled === false ? `Activer ${target(f)}` : `Désactiver ${target(f)}`}
             />
-            <Button variant="ghost" size="icon-sm" aria-label="Monter" disabled={busy || index === 0} onClick={() => onMove(-1)}>
+            <Button variant="ghost" size="icon-sm" aria-label={`Monter ${target(f)}`} disabled={busy || index === 0} onClick={() => onMove(-1)}>
               <ArrowUp />
             </Button>
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Descendre"
+              aria-label={`Descendre ${target(f)}`}
               disabled={busy || index === count - 1}
               onClick={() => onMove(1)}
             >
               <ArrowDown />
             </Button>
-            <Button variant="ghost" size="icon-sm" aria-label="Modifier" onClick={onEdit}>
+            <Button variant="ghost" size="icon-sm" aria-label={`Modifier ${target(f)}`} onClick={onEdit}>
               <Pencil />
             </Button>
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Supprimer"
+              aria-label={`Supprimer ${target(f)}`}
               className="text-muted-foreground hover:text-destructive"
               onClick={onDelete}
             >

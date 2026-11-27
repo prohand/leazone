@@ -19,6 +19,7 @@ const sourceLabel: Record<NonNullable<LookupResult["source"]>, string> = {
   local: "Zone locale",
   cache: "Cache",
   forwarder: "Redirecteur",
+  blocked: "Bloqué",
   refused: "Refusé",
   error: "Erreur",
 }
@@ -46,14 +47,23 @@ export function LookupResultView({ result }: { result: LookupResult }) {
     <div className="space-y-3 rounded-lg border p-3" aria-live="polite">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <RcodeBadge rcode={result.rcode} />
-        <Badge variant={src === "refused" || src === "error" ? "destructive" : "secondary"}>
-          {sourceLabel[src]}
+        <Badge
+          variant={src === "refused" || src === "error" ? "destructive" : src === "blocked" ? "outline" : "secondary"}
+          className={cn(src === "blocked" && "border-warning/50 text-warning")}
+        >
+          {sourceLabel[src] ?? src}
           {src === "forwarder" && result.forwarder ? ` · ${result.forwarder}` : ""}
         </Badge>
         {result.latencyMs !== undefined && (
           <span className="text-muted-foreground tabular-nums">{formatLatency(result.latencyMs)}</span>
         )}
       </div>
+      {src === "blocked" && (
+        <p className="text-xs text-muted-foreground">
+          Nom bloqué par le module Blocage (liste ou liste noire) : les clients reçoivent une réponse NXDOMAIN ou 0.0.0.0 selon les réglages du blocage. Pour l'autoriser, ajoutez-le à la
+          liste blanche (Blocage › Liste blanche).
+        </p>
+      )}
       {src === "refused" && (
         <p className="text-xs text-muted-foreground">
           Nom externe refusé : ce réseau n'est pas autorisé à utiliser les redirecteurs (Paramètres › DNS).

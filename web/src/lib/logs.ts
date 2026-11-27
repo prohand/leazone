@@ -114,17 +114,17 @@ export function logTime(value?: string): { short: string; title: string } {
   return { short: today ? hms.format(d) : `${dayShort.format(d)} ${hms.format(d)}`, title: full.format(d) }
 }
 
-/** Bytes as "12,3 Mo" (1 Mo = 1 000 000 octets, like the settings). */
+/** Bytes as "12,3 Mo" (1 Mo = 1 048 576 octets, like the size limit applied by the server). */
 export function formatMb(bytes?: number): string {
-  const mb = (bytes ?? 0) / 1_000_000
+  const mb = (bytes ?? 0) / 1_048_576
   return `${mb.toLocaleString("fr-FR", { maximumFractionDigits: mb < 10 ? 1 : 0 })} Mo`
 }
 
 /** Short size: "812 o", "4,2 Ko", "1,3 Mo". */
 export function formatSize(bytes?: number): string {
   const b = bytes ?? 0
-  if (b < 1000) return `${b} o`
-  if (b < 1_000_000) return `${(b / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Ko`
+  if (b < 1024) return `${b} o`
+  if (b < 1_048_576) return `${(b / 1024).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Ko`
   return formatMb(b)
 }
 
