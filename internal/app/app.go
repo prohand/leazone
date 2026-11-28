@@ -516,14 +516,20 @@ func (n *Node) control(ctx context.Context, req control.Request) control.Respons
 			return control.Response{Message: err.Error()}
 		}
 		if dry {
-			return control.Response{OK: true, Message: fmt.Sprintf("Sauvegarde valide : %s, version %s, nœud %s.",
-				res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Version, res.Node)}
+			msg := fmt.Sprintf("Sauvegarde valide : %s, version %s, nœud %s.", res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Version, res.Node)
+			if sum := res.Summary(); sum != "" {
+				msg += "\nÀ la restauration : " + sum + "."
+			}
+			return control.Response{OK: true, Message: msg}
 		}
 		n.afterRestore(ctx)
 		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "backup.restore", Target: res.Node,
-			Details: map[string]any{"createdAt": res.CreatedAt, "tables": res.Tables}})
-		return control.Response{OK: true, Message: fmt.Sprintf("Configuration restaurée (sauvegarde du %s, nœud %s).",
-			res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Node)}
+			Details: map[string]any{"createdAt": res.CreatedAt, "tables": res.Tables, "users": res.Users}})
+		msg := fmt.Sprintf("Configuration restaurée (sauvegarde du %s, nœud %s).", res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Node)
+		if sum := res.Summary(); sum != "" {
+			msg += "\nComptes : " + sum + "."
+		}
+		return control.Response{OK: true, Message: msg}
 	case "reset-ui-allowlist":
 		sec := n.auth.Security()
 		sec.UIAllowedNetworks = nil

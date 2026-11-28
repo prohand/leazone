@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -73,7 +74,7 @@ func (n *Node) witnessCall(ctx context.Context, op string, req proto.LeaseReques
 	var resp proto.LeaseResponse
 	cctx, cancel := context.WithTimeout(ctx, n.interval())
 	defer cancel()
-	err := n.post(cctx, n.d.Config.Witness+"/witness/v1/"+op, req, &resp)
+	err := n.doWith(cctx, n.wclient, http.MethodPost, n.d.Config.Witness+"/witness/v1/"+op, req, &resp)
 	n.mu.Lock()
 	if err != nil {
 		n.witness.reachable, n.witness.lastErr = false, err.Error()
@@ -116,7 +117,10 @@ func (n *Node) serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("port de cluster %s : %w", n.d.Config.ClusterListen, err)
 	}
-	srv := &http.Server{Handler: mux, TLSConfig: n.ca.ServerConfig(n.cert), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: mux, TLSConfig: n.ca.ServerConfig(n.cert, pki.AnyNode), ReadHeaderTimeout: 5 * time.Second,
+		// Refused handshakes (other cluster key or version) are expected
+		// during an update: debug level only.
+		ErrorLog: slog.NewLogLogger(n.log().Handler(), slog.LevelDebug)}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -140,10 +144,23 @@ func (n *Node) peerByID(id string) *peer {
 	return nil
 }
 
+// errIdentity answers a request whose node ID is not the one of its client
+// certificate: a node can only speak for itself.
+var errIdentity = map[string]string{"error": "le nœud indiqué n'est pas celui du certificat client"}
+
+// callerIs reports whether the client certificate of r is the one of node id.
+func callerIs(r *http.Request, id string) bool {
+	got, ok := pki.PeerNodeID(r)
+	return ok && id != "" && got == id
+}
+
 func (n *Node) hHeartbeat(r *http.Request) (any, int) {
 	var st proto.NodeStatus
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&st); err != nil {
 		return map[string]string{"error": "bad request"}, http.StatusBadRequest
+	}
+	if !callerIs(r, st.NodeID) {
+		return errIdentity, http.StatusForbidden
 	}
 	self := n.selfStatus(r.Context())
 	n.mu.Lock()
@@ -167,6 +184,9 @@ func (n *Node) hChanges(r *http.Request) (any, int) {
 	after, _ := strconv.ParseUint(q.Get("after"), 10, 64)
 	fepoch, _ := strconv.ParseUint(q.Get("epoch"), 10, 64)
 	from := q.Get("node")
+	if !callerIs(r, from) {
+		return errIdentity, http.StatusForbidden
+	}
 	n.mu.Lock()
 	if n.role != proto.RolePrimary {
 		n.mu.Unlock()
@@ -231,11 +251,7 @@ func (n *Node) hSnapshot(r *http.Request) (any, int) {
 	if err != nil {
 		return map[string]string{"error": err.Error()}, http.StatusInternalServerError
 	}
-	kek, err := pki.KEK(n.d.Config.ClusterKey)
-	if err != nil {
-		return map[string]string{"error": err.Error()}, http.StatusInternalServerError
-	}
-	wrap, _ := secrets.NewBox(kek)
+	wrap, _ := secrets.NewBox(n.kek)
 	snap.DEK = wrap.Seal(n.d.Box.Key(), "cluster-dek")
 	snap.Epochs, _ = n.d.Repl.Epochs(r.Context())
 	return snap, http.StatusOK
@@ -352,11 +368,7 @@ func (n *Node) snapshotLocked(ctx context.Context, p pullTarget, diverged bool, 
 	if err := n.doLong(cctx, http.MethodGet, p.addr+"/cluster/v1/snapshot", nil, &snap); err != nil {
 		return err
 	}
-	kek, err := pki.KEK(n.d.Config.ClusterKey)
-	if err != nil {
-		return err
-	}
-	unwrap, _ := secrets.NewBox(kek)
+	unwrap, _ := secrets.NewBox(n.kek)
 	dek, err := unwrap.Open(snap.DEK, "cluster-dek")
 	if err != nil {
 		return fmt.Errorf("clé de données du cluster illisible (clé de cluster différente ?) : %w", err)
@@ -565,7 +577,10 @@ func (n *Node) hHandoff(r *http.Request) (any, int) {
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&h); err != nil {
 		return map[string]string{"error": "bad request"}, http.StatusBadRequest
 	}
-	_, seq := n.position(r.Context())
+	if !callerIs(r, h.FromID) {
+		return errIdentity, http.StatusForbidden
+	}
+	lastEpoch, seq := n.position(r.Context())
 	if seq != h.Seq {
 		return map[string]string{"error": "pas à jour"}, http.StatusConflict
 	}
@@ -574,9 +589,27 @@ func (n *Node) hHandoff(r *http.Request) (any, int) {
 	n.mu.Lock()
 	already := n.role == proto.RolePrimary && n.epoch >= h.Epoch
 	n.mu.Unlock()
-	if !already { // else the election just made this node primary
-		n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
+	if already { // the election just made this node primary
+		return map[string]bool{"ok": true}, http.StatusOK
 	}
+	if n.witnessM == "container" {
+		// The witness must have given us the role (lease transferred by the
+		// old primary, epoch h.Epoch): renewing it proves it. Otherwise the
+		// message is refused and the normal election decides.
+		sent := time.Now()
+		resp, err := n.witnessCall(r.Context(), "renew", proto.LeaseRequest{NodeID: n.d.NodeID, Name: n.d.Config.NodeName,
+			Epoch: h.Epoch, Seq: seq, LastEpoch: &lastEpoch, LeaseMs: int64(n.Settings().LeaseMs)})
+		if err != nil {
+			return map[string]string{"error": "témoin injoignable : " + err.Error()}, http.StatusServiceUnavailable
+		}
+		if !resp.Granted || resp.Epoch != h.Epoch {
+			return map[string]string{"error": "le témoin n'a pas donné le rôle à ce nœud : " + resp.Reason}, http.StatusConflict
+		}
+		n.mu.Lock()
+		n.witness.lastOK, n.witness.reachable, n.witness.lastErr = sent, true, ""
+		n.mu.Unlock()
+	}
+	n.becomePrimary(context.WithoutCancel(r.Context()), h.Epoch, "retour du primaire d'origine")
 	return map[string]bool{"ok": true}, http.StatusOK
 }
 

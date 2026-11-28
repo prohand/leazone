@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // Manager adds or removes the VIP.
@@ -49,10 +50,51 @@ func (m *Manager) Status() (bool, string) {
 	return m.up, m.lastErr
 }
 
+// labelSuffix marks the VIP added by Leazone ("eno1:lz"), so that a stale
+// VIP can be told from an address of the host.
+const labelSuffix = ":lz"
+
+// label is the address label of the VIP: "<interface>:lz" when it fits in
+// the kernel limit (15 characters), else the interface name.
+func (m *Manager) label() string {
+	if l := m.Interface + labelSuffix; len(l) <= 15 {
+		return l
+	}
+	return m.Interface
+}
+
 func (m *Manager) addr() *netlink.Addr {
 	return &netlink.Addr{IPNet: &net.IPNet{IP: net.IP(m.Prefix.Addr().AsSlice()), Mask: net.CIDRMask(m.Prefix.Bits(), 32)},
-		Label: m.Interface}
+		Label: m.label()}
 }
+
+// existing returns the VIP address if it is already on the link.
+func (m *Manager) existing(link netlink.Link) (*netlink.Addr, error) {
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return nil, err
+	}
+	ip := net.IP(m.Prefix.Addr().AsSlice())
+	for i := range addrs {
+		if addrs[i].IP.Equal(ip) {
+			return &addrs[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// leazoneAddr reports whether an address equal to the VIP may have been
+// added by Leazone: it carries our label, or it is a secondary address of
+// its subnet (the VIP sits next to the host's own address). A primary,
+// unlabeled address is the host's own: it is never removed (a wrong
+// LEAZONE_VIP must not cut the host from the network).
+func (m *Manager) leazoneAddr(a *netlink.Addr) bool {
+	return a.Label == m.Interface+labelSuffix || a.Flags&unix.IFA_F_SECONDARY != 0
+}
+
+// ErrHostAddress is returned when the VIP is an address of the host itself.
+var ErrHostAddress = errors.New("l'IP virtuelle est déjà une adresse de l'hôte (adresse principale non gérée par Leazone) : " +
+	"elle n'est ni ajoutée ni retirée ; LEAZONE_VIP doit être une adresse libre")
 
 // Up adds the VIP and sends 3 gratuitous ARP.
 func (m *Manager) Up() error {
@@ -61,6 +103,9 @@ func (m *Manager) Up() error {
 	link, err := netlink.LinkByName(m.Interface)
 	if err != nil {
 		return m.fail(fmt.Errorf("interface %s introuvable pour l'IP virtuelle", m.Interface))
+	}
+	if cur, err := m.existing(link); err == nil && cur != nil && !m.up && !m.leazoneAddr(cur) {
+		return m.fail(ErrHostAddress)
 	}
 	if err := netlink.AddrAdd(link, m.addr()); err != nil && !errors.Is(err, syscall.EEXIST) {
 		if errors.Is(err, syscall.EPERM) {
@@ -94,7 +139,20 @@ func (m *Manager) Down() error {
 	if err != nil {
 		return nil // no interface, no address
 	}
-	err = netlink.AddrDel(link, m.addr())
+	del := m.addr()
+	cur, lerr := m.existing(link)
+	switch {
+	case lerr == nil && cur == nil:
+		return nil // not there: nothing to do
+	case lerr == nil && !was && !m.leazoneAddr(cur):
+		// Not added by this run, and not ours: the host's own address.
+		m.log.Error("virtual IP not removed", "err", ErrHostAddress, "vip", m.Prefix, "interface", m.Interface)
+		m.lastErr = ErrHostAddress.Error()
+		return ErrHostAddress
+	case lerr == nil:
+		del.Label = cur.Label // the kernel only deletes a matching label
+	}
+	err = netlink.AddrDel(link, del)
 	switch {
 	case err == nil:
 		m.lastErr = ""

@@ -1990,7 +1990,7 @@ components:
         cacheMaxTtl: { type: integer, minimum: 1, maximum: 604800 }
         cacheNegativeMaxTtl: { type: integer, minimum: 0, maximum: 86400 }
         recursionNetworks: { type: array, items: { type: string }, description: "CIDR allowed to use recursion (forwarders). Local zones answer everyone." }
-        extraListenAddresses: { type: array, items: { type: string }, description: "Extra IPs to listen on (e.g. 127.0.0.1)" }
+        extraListenAddresses: { type: array, items: { type: string }, description: "Extra IPs to listen on (e.g. 127.0.0.1). The unspecified addresses 0.0.0.0 and :: are refused." }
 
     DnsStatus:
       type: object
@@ -2235,7 +2235,7 @@ components:
         options: { type: array, items: { $ref: "#/components/schemas/DhcpOption" } }
         interface: { type: [string, "null"], description: "Direct mode: host interface in this network (e.g. eno1.20)" }
         relay: { type: boolean, description: "Relay mode: accept requests relayed with a giaddr in this network" }
-        relayAgents: { type: array, items: { type: string }, description: "Extra relay addresses (giaddr) outside the network" }
+        relayAgents: { type: array, items: { type: string }, description: "Trusted relays: giaddr outside the network, or UDP source address of a relay that does not send from giaddr. Link selection (82.5) and subnet selection (118) are honored only for these relays." }
         ddnsEnabled: { type: boolean, default: true }
         ddnsDomain: { type: string, description: "Zone for automatic A records, e.g. invites.lan (created if missing)" }
         pingCheck: { type: boolean, default: false }
@@ -2646,3 +2646,16 @@ components:
         version: { type: string, description: "Leazone version that made it" }
         node: { type: string }
         tables: { type: object, additionalProperties: { type: integer }, description: "Rows per table" }
+        users:
+          type: array
+          description: >
+            Accounts not restored as they are in the backup (backup of this installation only): deleted here since
+            the backup (restored disabled, API tokens revoked), or local values kept because more recent or more
+            restrictive.
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              username: { type: string }
+              disabled: { type: boolean, description: "Deleted since the backup: restored disabled, without API tokens" }
+              kept: { type: array, items: { type: string, enum: [password, disabled, role] } }

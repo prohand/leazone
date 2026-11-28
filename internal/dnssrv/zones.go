@@ -129,7 +129,11 @@ type authResult struct {
 // answer resolves qname/qtype inside the local zones. It follows CNAMEs
 // across local zones (8 hops max). When a CNAME leaves the local zones, the
 // external target is returned in cnameOut for the forwarder.
-func (zs *zoneSet) answer(qname string, qtype uint16) authResult {
+//
+// With minimalANY, a query of type ANY gets a single RRset (RFC 8482):
+// the full set of a name is a large answer for a small query, the base of
+// reflection attacks.
+func (zs *zoneSet) answer(qname string, qtype uint16, minimalANY bool) authResult {
 	m := new(dns.Msg)
 	m.Authoritative = true
 	name := strings.ToLower(qname)
@@ -168,6 +172,17 @@ func (zs *zoneSet) answer(qname string, qtype uint16) authResult {
 			return authResult{msg: m, authorized: true}
 		}
 		if qtype == dns.TypeANY {
+			if minimalANY {
+				// The RRset of the lowest type (deterministic).
+				var best uint16
+				for t, s := range sets {
+					if len(s) > 0 && (best == 0 || t < best) {
+						best = t
+					}
+				}
+				m.Answer = append(m.Answer, copyRRs(sets[best], owner)...)
+				return authResult{msg: m, authorized: true}
+			}
 			for _, s := range sets {
 				m.Answer = append(m.Answer, copyRRs(s, owner)...)
 			}

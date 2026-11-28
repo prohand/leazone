@@ -21,6 +21,7 @@ import (
 
 	"github.com/prohand/leazone/internal/dnsconf"
 	"github.com/prohand/leazone/internal/dnssec"
+	"github.com/prohand/leazone/internal/ratelimit"
 )
 
 // Sources of an answer (for the lookup tool and, later, query logs).
@@ -85,12 +86,77 @@ type Engine struct {
 	validator atomic.Pointer[validator]
 	signedWin atomic.Uint64 // inception of the signatures in use (0 = none)
 
-	queries, local, forwarded, refused, failed, blocked, bogus atomic.Uint64
+	// Abuse limits: response rate per source network for clients outside
+	// the recursion networks (UDP), recursive queries in flight, TCP
+	// connections.
+	rrl      *ratelimit.Limiter[netip.Prefix]
+	slip     atomic.Uint64
+	inflight chan struct{}
+	clientMu sync.Mutex
+	perCli   map[netip.Addr]int
+	tcp      *connLimits
+
+	queries, local, forwarded, refused, failed, blocked, bogus, limited atomic.Uint64
+}
+
+// Abuse limits.
+const (
+	// maxUDPSize caps UDP answers whatever the client's EDNS buffer size
+	// (DNS flag day 2020: no IP fragmentation, smaller reflection).
+	maxUDPSize = 1232
+	// Response rate limiting, per /24 (IPv4) or /56 (IPv6), only for the
+	// clients outside the recursion networks: beyond, every other answer is
+	// replaced by an empty truncated one (a real client retries over TCP)
+	// and the others are dropped.
+	rrlRate  = 20
+	rrlBurst = 40
+	rrlKeys  = 65536
+	// Recursive queries in flight (waiting for the forwarders), in all
+	// and per client: beyond, SERVFAIL at once.
+	maxInflight       = 1000
+	maxInflightClient = 100
+)
+
+// rrlKey is the source network a client is limited with.
+func rrlKey(a netip.Addr) netip.Prefix {
+	bits := 24
+	if a.Is6() {
+		bits = 56
+	}
+	p, _ := a.Prefix(bits)
+	return p
+}
+
+// acquireRecursion takes a slot for a recursive query of client.
+func (e *Engine) acquireRecursion(client netip.Addr) (release func(), ok bool) {
+	select {
+	case e.inflight <- struct{}{}:
+	default:
+		return nil, false
+	}
+	e.clientMu.Lock()
+	if e.perCli[client] >= maxInflightClient {
+		e.clientMu.Unlock()
+		<-e.inflight
+		return nil, false
+	}
+	e.perCli[client]++
+	e.clientMu.Unlock()
+	return func() {
+		e.clientMu.Lock()
+		if e.perCli[client]--; e.perCli[client] <= 0 {
+			delete(e.perCli, client)
+		}
+		e.clientMu.Unlock()
+		<-e.inflight
+	}, true
 }
 
 // New creates an engine listening on the given port (53 in production).
 func New(log *slog.Logger, port int) *Engine {
-	e := &Engine{log: log, port: port, cache: newCache(), listeners: map[string]*listener{}, sigs: newSigCache()}
+	e := &Engine{log: log, port: port, cache: newCache(), listeners: map[string]*listener{}, sigs: newSigCache(),
+		rrl: ratelimit.New[netip.Prefix](rrlRate, rrlBurst, rrlKeys), inflight: make(chan struct{}, maxInflight),
+		perCli: map[netip.Addr]int{}, tcp: newConnLimits(maxTCPConns, maxTCPConnsPerIP)}
 	e.anchors, _ = ParseAnchors(RootAnchors)
 	e.st.Store(&state{zones: &zoneSet{zones: map[string]*zoneData{}}, fwd: &forwarders{}})
 	return e
@@ -161,6 +227,17 @@ func (e *Engine) Load(zones []*dnsconf.Zone, recs map[string][]*dnsconf.Record, 
 func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	e.queries.Add(1)
 	client := addrOf(w.RemoteAddr())
+	_, udp := w.RemoteAddr().(*net.UDPAddr)
+	if udp && !e.mayRecurse(e.st.Load(), client) && !e.rrl.Allow(rrlKey(client)) {
+		e.limited.Add(1)
+		if e.slip.Add(1)%2 == 0 {
+			m := new(dns.Msg)
+			m.SetReply(r)
+			m.Truncated = true
+			_ = w.WriteMsg(m)
+		}
+		return
+	}
 	start := time.Now()
 	resp, src := e.handleFrom(context.Background(), r, client, addrOf(w.LocalAddr()))
 	if resp == nil {
@@ -184,10 +261,10 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 		e.observer(qi)
 	}
-	if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
+	if udp {
 		size := dns.MinMsgSize
 		if o := r.IsEdns0(); o != nil {
-			size = int(max(o.UDPSize(), dns.MinMsgSize))
+			size = min(int(max(o.UDPSize(), dns.MinMsgSize)), maxUDPSize)
 		}
 		resp.Truncate(size)
 	}
@@ -254,7 +331,7 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 	// 1. Local zones answer everyone. A delegation inside a local zone is
 	// only a referral for clients that may not recurse (or when no forwarder
 	// serves it): the others get it resolved like any recursive query.
-	res := st.zones.answer(q.Name, q.Qtype)
+	res := st.zones.answer(q.Name, q.Qtype, !e.mayRecurse(st, client))
 	if res.authorized && !(res.referral && e.mayRecurse(st, client) && len(st.fwd.pick(q.Name)) > 0) {
 		e.local.Add(1)
 		m.Authoritative = res.msg.Authoritative
@@ -269,6 +346,13 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 		// A local CNAME points outside: resolve the target like a recursive
 		// query (ad blocking, DNSSEC validation).
 		target := dns.Question{Name: res.cnameOut, Qtype: q.Qtype, Qclass: q.Qclass}
+		release, ok := e.acquireRecursion(client)
+		if !ok {
+			e.limited.Add(1)
+			m.Authoritative = false
+			return finish(SourceLocal) // the local part of the chain only
+		}
+		defer release()
 		up, _, src, x, err := e.recurse(ctx, st, m, q, target, r.CheckingDisabled, do, client, local, false)
 		ede = x
 		if err == nil && up == nil {
@@ -291,6 +375,13 @@ func (e *Engine) handleFrom(ctx context.Context, r *dns.Msg, client, local netip
 	}
 
 	// 3. Ad blocking, cache or forwarders, DNSSEC validation.
+	release, ok := e.acquireRecursion(client)
+	if !ok {
+		e.limited.Add(1)
+		m.Rcode = dns.RcodeServerFailure
+		return finish(SourceError)
+	}
+	defer release()
 	up, secure, src, x, err := e.recurse(ctx, st, m, q, q, r.CheckingDisabled, do, client, local, true)
 	ede = x
 	if err != nil {
@@ -501,6 +592,7 @@ func (e *Engine) TestForwarder(ctx context.Context, f dnsconf.Forwarder) TestRes
 type Stats struct {
 	Queries, Local, Forwarded, Refused, Failed uint64
 	Blocked, Bogus                             uint64
+	Limited                                    uint64 // dropped or refused by the abuse limits
 	CacheEntries                               int
 	CacheHits, CacheMisses                     uint64
 }
@@ -509,7 +601,7 @@ type Stats struct {
 func (e *Engine) Stats() Stats {
 	return Stats{Queries: e.queries.Load(), Local: e.local.Load(), Forwarded: e.forwarded.Load(),
 		Refused: e.refused.Load(), Failed: e.failed.Load(),
-		Blocked: e.blocked.Load(), Bogus: e.bogus.Load(), CacheEntries: e.cache.len(),
+		Blocked: e.blocked.Load(), Bogus: e.bogus.Load(), Limited: e.limited.Load(), CacheEntries: e.cache.len(),
 		CacheHits: e.cache.hits.Load(), CacheMisses: e.cache.misses.Load()}
 }
 
@@ -609,7 +701,7 @@ func (e *Engine) start(l *listener) {
 			e.log.Error("DNS listen failed", "addr", hostport, "proto", "tcp", "err", l.tcpErr)
 		} else {
 			l.tcpErr = ""
-			l.tcp = &dns.Server{Listener: ln, Handler: e, ReadTimeout: 5 * time.Second, IdleTimeout: func() time.Duration { return 10 * time.Second }}
+			l.tcp = &dns.Server{Listener: e.tcp.wrap(ln), Handler: e, ReadTimeout: 5 * time.Second, IdleTimeout: func() time.Duration { return 10 * time.Second }}
 			go serve(e.log, l.tcp)
 		}
 	}

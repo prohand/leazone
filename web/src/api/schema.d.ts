@@ -5031,7 +5031,7 @@ export interface components {
             cacheNegativeMaxTtl?: number;
             /** @description CIDR allowed to use recursion (forwarders). Local zones answer everyone. */
             recursionNetworks?: string[];
-            /** @description Extra IPs to listen on (e.g. 127.0.0.1) */
+            /** @description Extra IPs to listen on (e.g. 127.0.0.1). The unspecified addresses 0.0.0.0 and :: are refused. */
             extraListenAddresses?: string[];
         };
         DnsStatus: {
@@ -5282,7 +5282,7 @@ export interface components {
             interface?: string | null;
             /** @description Relay mode: accept requests relayed with a giaddr in this network */
             relay?: boolean;
-            /** @description Extra relay addresses (giaddr) outside the network */
+            /** @description Trusted relays: giaddr outside the network, or UDP source address of a relay that does not send from giaddr. Link selection (82.5) and subnet selection (118) are honored only for these relays. */
             relayAgents?: string[];
             /** @default true */
             ddnsEnabled?: boolean;

@@ -22,10 +22,12 @@ type Settings struct {
 const SettingsKey = "dns"
 
 // DefaultSettings: private networks may recurse, public ones may not.
+// 100.64.0.0/10 (carrier-grade NAT) is not included: on the WAN side it
+// holds the operator's other customers.
 func DefaultSettings() Settings {
 	return Settings{
 		CacheSize: 10000, CacheMinTTL: 0, CacheMaxTTL: 86400, CacheNegativeMaxTTL: 900,
-		RecursionNetworks: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+		RecursionNetworks: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 			"127.0.0.0/8", "::1/128", "fc00::/7", "fe80::/10"},
 		ExtraListenAddresses: []string{},
 	}
@@ -70,6 +72,10 @@ func (st *Settings) Validate() error {
 		ip, err := netip.ParseAddr(a)
 		if err != nil {
 			errs["extraListenAddresses"] = "adresse IP invalide : " + a
+			continue
+		}
+		if ip.Unmap().IsUnspecified() {
+			errs["extraListenAddresses"] = a + " veut dire toutes les adresses (WAN compris) : indiquez les adresses précises à servir"
 			continue
 		}
 		ips = append(ips, ip.Unmap().String())

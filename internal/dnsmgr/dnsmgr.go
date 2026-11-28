@@ -43,21 +43,38 @@ type Manager struct {
 
 	mu sync.Mutex // serializes reloads
 
-	soonMu sync.Mutex
-	soon   *time.Timer
+	soonMu   sync.Mutex
+	soon     *time.Timer
+	lastSoon time.Time // start of the last reload run by ReloadSoon
+
+	warned sync.Map // extra listen addresses already reported as ignored
 }
 
-// ReloadSoon schedules a reload in 200 ms, merging bursts of changes
-// (many DHCP leases at boot time).
+// Reload pacing of ReloadSoon: changes are merged for reloadDelay, and two
+// such reloads (a full rebuild, with re-signing of signed zones) are at
+// least reloadMinGap apart, so a stream of DHCP changes (many leases at
+// boot time, a flood of clients) cannot keep the server rebuilding.
+const (
+	reloadDelay  = 200 * time.Millisecond
+	reloadMinGap = 2 * time.Second
+)
+
+// soonDelay is the wait before the next ReloadSoon reload.
+func soonDelay(now, last time.Time) time.Duration {
+	return max(reloadDelay, reloadMinGap-now.Sub(last))
+}
+
+// ReloadSoon schedules a reload, merging bursts of changes.
 func (m *Manager) ReloadSoon() {
 	m.soonMu.Lock()
 	defer m.soonMu.Unlock()
 	if m.soon != nil {
 		return
 	}
-	m.soon = time.AfterFunc(200*time.Millisecond, func() {
+	m.soon = time.AfterFunc(soonDelay(time.Now(), m.lastSoon), func() {
 		m.soonMu.Lock()
 		m.soon = nil
+		m.lastSoon = time.Now()
 		m.soonMu.Unlock()
 		if err := m.Reload(context.Background()); err != nil {
 			m.log.Error("DNS reload", "err", err)
@@ -141,9 +158,19 @@ func (m *Manager) applyListeners(ctx context.Context, st dnsconf.Settings) error
 		}
 	}
 	for _, s := range st.ExtraListenAddresses {
-		if ip, err := netip.ParseAddr(s); err == nil {
-			addrs = append(addrs, dnssrv.ListenAddr{IP: ip})
+		ip, err := netip.ParseAddr(s)
+		if err != nil {
+			continue
 		}
+		if ip = ip.Unmap(); ip.IsUnspecified() {
+			// Refused by the settings now; an older configuration may still
+			// hold one: listening on every address would serve the WAN.
+			if _, done := m.warned.LoadOrStore(s, true); !done {
+				m.log.Warn("DNS: extra listen address ignored (all addresses): list the addresses to serve", "address", s)
+			}
+			continue
+		}
+		addrs = append(addrs, dnssrv.ListenAddr{IP: ip})
 	}
 	m.Engine.SetListeners(addrs)
 	return nil

@@ -459,7 +459,7 @@ func ParseZoneLenient(content, zone string, ttl uint32) ([]dns.RR, int, []string
 		} else {
 			owner = strings.Fields(t)[0]
 		}
-		rr, err := dns.NewRR(fmt.Sprintf("$ORIGIN %s\n$TTL %d\n%s", origin, ttl, t))
+		rr, err := parseOneRR(t, origin, ttl)
 		if err != nil || rr == nil {
 			skipped++
 			if len(errs) < 20 {
@@ -470,6 +470,17 @@ func ParseZoneLenient(content, zone string, ttl uint32) ([]dns.RR, int, []string
 		out = append(out, rr)
 	}
 	return out, skipped, errs
+}
+
+// parseOneRR parses a single record line. Unlike dns.NewRR, it never follows
+// $INCLUDE (which would read files of the server): the import content comes
+// from the user.
+func parseOneRR(line, origin string, ttl uint32) (dns.RR, error) {
+	zp := dns.NewZoneParser(strings.NewReader(line+"\n"), origin, "import")
+	zp.SetDefaultTTL(ttl)
+	zp.SetIncludeAllowed(false)
+	rr, _ := zp.Next()
+	return rr, zp.Err()
 }
 
 func humanErr(err error) string {

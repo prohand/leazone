@@ -39,7 +39,8 @@ Puis :
   docker logs leazone
   ```
   Pour le choisir vous-même, écrivez-le dans `compose/secrets/admin_password` **avant** le premier démarrage.
-- Ouvrez `https://<ip-ou-nom-de-l-hôte>:8443`.
+- Ouvrez `https://<ip-ou-nom-de-l-hôte>:8443`. Par défaut, ce port répond sur toutes les interfaces de l'hôte (VLAN
+  clients compris) : pour le restreindre, voir « Derrière nginx ».
 - Au premier login, Leazone **impose la configuration du MFA** (passkey ou TOTP) et donne 10 codes de secours. Gardez-les.
 
 > `--build` construit l'image sur place. Pour utiliser l'image publiée (`ghcr.io/prohand/leazone`, amd64 et arm64),
@@ -112,7 +113,12 @@ le certificat de votre PKI et renvoie vers Leazone.
    ```dotenv
    LEAZONE_PUBLIC_URL=https://leazone.mondomaine.lan
    LEAZONE_TRUSTED_PROXIES=127.0.0.1          # IP de nginx (ici sur le même hôte)
+   LEAZONE_HTTP_LISTEN=127.0.0.1:8443         # seul nginx joint Leazone
    ```
+   Par défaut (`:8443`), Leazone écoute sur **toutes** les interfaces de l'hôte (`network_mode: host`), VLAN clients
+   compris. Avec `127.0.0.1:8443`, l'interface n'est plus joignable qu'à travers nginx. Limitez aussi qui peut
+   l'ouvrir : *Paramètres > Sécurité > Réseaux autorisés pour l'interface* (ex : le réseau d'administration).
+   Prometheus passe alors aussi par nginx (`https://leazone.mondomaine.lan/metrics`).
 2. Configuration nginx :
    ```nginx
    server {
@@ -152,7 +158,21 @@ dans `/data/tls/` puis redémarrez. Le certificat auto-signé créé au premier 
 Avec un certificat importé, Leazone envoie l'en-tête HSTS (1 an) : le navigateur n'acceptera plus de certificat
 non valide pour ce nom.
 
-**En HA** : faites pointer nginx vers l'IP virtuelle, pour garder le même nom (et donc les mêmes passkeys) après une bascule.
+**En HA** : gardez le même nom (et donc les mêmes passkeys) après une bascule. Deux choix :
+
+- nginx vers l'IP virtuelle : laissez `LEAZONE_HTTP_LISTEN=:8443` (l'IP virtuelle change d'hôte, Leazone doit
+  écouter partout) et réglez la liste *Réseaux autorisés pour l'interface* (IP de nginx, réseau d'administration) ;
+- ou chaque nœud n'écoute que sur son IP de gestion, dans `compose/.env` :
+  `NODE1_HTTP_LISTEN=192.168.1.2:8443` et `NODE2_HTTP_LISTEN=192.168.1.3:8443`, et nginx envoie au nœud 1, puis au
+  nœud 2 s'il ne répond pas :
+  ```nginx
+  upstream leazone {
+      server 192.168.1.2:8443;
+      server 192.168.1.3:8443 backup;
+  }
+  # puis, dans location / : proxy_pass https://leazone;
+  ```
+  `LEAZONE_TRUSTED_PROXIES` : l'IP de nginx (les deux IP de gestion si nginx tourne sur les nœuds eux-mêmes).
 
 ---
 
@@ -178,7 +198,21 @@ network:
       addresses: [192.168.20.2/24]
 ```
 
-Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*.
+Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*
+(`0.0.0.0` et `::` y sont refusés ; une ancienne configuration qui les contient est ignorée avec un avertissement).
+
+**IPv6** : Leazone écoute sur **toutes** les IP des interfaces activées, y compris une IPv6 **globale** (joignable
+depuis Internet si votre routeur ne filtre pas). Sur une interface qui a une IPv6 globale, filtrez le port 53 avec le
+pare-feu de l'hôte (ou du routeur) pour ne l'ouvrir qu'au réseau local.
+
+Protections contre les abus (sans réglage) :
+- réponses UDP limitées à 1232 octets (au-delà : réponse tronquée, le client repasse en TCP) ;
+- une requête `ANY` d'un client hors des *réseaux autorisés* ne reçoit qu'un seul type d'enregistrement (RFC 8482) ;
+- limitation du débit de réponses pour les clients hors des *réseaux autorisés* : 20 réponses/s par réseau /24
+  (IPv4) ou /56 (IPv6), au-delà une réponse sur deux est tronquée et les autres ignorées. Le réseau local n'est
+  jamais limité ;
+- au plus 1000 requêtes récursives en cours (100 par client), au-delà SERVFAIL ; au plus 512 connexions TCP
+  (32 par adresse).
 
 ### 2. Zones
 
@@ -187,7 +221,8 @@ Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètre
 - **Zone inverse** : tapez simplement le réseau, ex. `192.168.20.0/24` → `20.168.192.in-addr.arpa`.
 - Import / export au format BIND (fichier `.zone`), pratique pour migrer.
 - Les zones locales répondent à **tous** les clients ; la récursion (noms externes) est limitée aux
-  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, CGNAT, loopback, ULA IPv6).
+  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, loopback, ULA IPv6, lien-local IPv6). Le CGNAT
+  (`100.64.0.0/10`) n'y est plus par défaut : ajoutez-le si vos clients sont derrière un CGNAT à vous.
 
 ### 3. Redirecteurs
 
@@ -242,7 +277,17 @@ En HA, mettez les **deux** nœuds en `helper-address`.
 ### Isolation stricte
 
 - Une requête reçue en direct ne sert **que** l'étendue liée à l'interface d'arrivée.
-- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (ou ses *agents relais supplémentaires*).
+- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (giaddr), ou dont les
+  *agents relais supplémentaires* listent cette adresse. Elle doit venir de l'adresse du relais (adresse source UDP
+  = giaddr) : si votre relais envoie depuis une autre adresse (son interface vers Leazone), ajoutez cette adresse
+  aux *agents relais supplémentaires* de l'étendue.
+- Les options de choix du réseau (82.5 *link selection*, 118 *subnet selection*) ne sont prises en compte que si le
+  relais est listé dans les *agents relais supplémentaires* de l'étendue qu'elles désignent ; sinon elles sont ignorées
+  (un client pourrait les forger).
+- L'interface d'arrivée d'une requête relayée n'est pas contrôlée (un relais sur un autre réseau routé arrive par
+  n'importe quelle interface) : filtrez UDP 67 sur l'interface WAN avec le pare-feu de l'hôte.
+- Protection contre les inondations : 64 requêtes traitées à la fois, 10 requêtes d'affilée puis 1/s par adresse
+  MAC, 200/s par interface ou relais. Au-delà, les paquets sont ignorés (les clients réessaient).
 - Aucune étendue trouvée → pas de réponse. Une demande d'adresse d'un autre réseau → refus (NAK).
 - Deux étendues ne peuvent pas avoir des réseaux qui se chevauchent.
 
@@ -260,6 +305,8 @@ Quand un client obtient un bail avec un nom d'hôte, Leazone crée :
 
 Ils sont supprimés à la fin du bail. Un enregistrement **manuel** n'est jamais remplacé, et un nom déjà pris par
 un autre client actif n'est pas volé. Le nom d'une réservation passe avant celui envoyé par le client.
+Les noms `wpad`, `isatap` et `localhost` ne sont jamais enregistrés pour un client qui les envoie lui-même (un
+poste pourrait se faire passer pour le proxy du réseau) ; une réservation créée par l'admin peut les utiliser.
 
 ### Pages utiles
 
@@ -435,6 +482,9 @@ Bon à savoir :
 
 - La restauration **remplace** toute la configuration. Les comptes, passkeys et TOTP redeviennent ceux de la sauvegarde :
   sur une installation neuve, reconnectez-vous avec le compte admin **de la sauvegarde**.
+- Rien de ce qui a été retiré depuis la sauvegarde ne revient : toutes les sessions sont fermées, un compte supprimé
+  depuis revient **désactivé** et sans jeton d'API, et un mot de passe changé, un compte désactivé ou un rôle abaissé
+  depuis la sauvegarde gardent leur valeur actuelle. Le résultat de la restauration liste ces comptes.
 - Les passkeys restent valables si l'adresse de l'interface (`LEAZONE_PUBLIC_URL`) est la même.
 - En HA, restaurez sur le **primaire** : le secondaire reprend tout seul la nouvelle configuration.
 - Une sauvegarde faite par une version plus récente est refusée (mettez Leazone à jour d'abord).
@@ -456,11 +506,16 @@ Deux nœuds Leazone (un conteneur par hôte) et un **témoin** sur un 3e hôte (
         IP virtuelle 192.168.1.10 (portée par le primaire)
 ```
 
-1. **Une clé de cluster**, la même partout (c'est elle qui authentifie les nœuds entre eux) :
+1. **Une clé de cluster** (32 octets aléatoires), la même sur les deux nœuds (c'est elle qui authentifie les nœuds
+   entre eux), et la **clé du témoin** qui en est dérivée :
    ```bash
    mkdir -p compose/secrets && openssl rand -base64 32 > compose/secrets/cluster_key && touch compose/secrets/admin_password
    ```
-   Copiez `compose/secrets/cluster_key` sur les 3 hôtes.
+   ```bash
+   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/compose/secrets/cluster_key:/run/cluster_key:ro" -e LEAZONE_CLUSTER_KEY_FILE=/run/cluster_key ghcr.io/prohand/leazone:latest cluster witness-key > compose/secrets/witness_key
+   ```
+   Copiez `compose/secrets/cluster_key` sur les hôtes 1 et 2 **seulement**, et `compose/secrets/witness_key` sur
+   l'hôte 3 **seulement**. (`leazone cluster gen-key` génère aussi une clé de cluster.)
 2. **Le témoin** (hôte 3) :
    ```bash
    docker compose -f compose/witness.yml up -d
@@ -508,6 +563,36 @@ sur l'IP virtuelle 4,3 s après la panne.
 | `ping:<ip>` (ex : la passerelle) | **Partielle** : protège si un nœud est isolé, mais si seul le lien entre les deux nœuds coupe, les deux peuvent devenir primaires. Le DHCP reste sûr (chaque nœud ne donne que ses propres adresses) ; les modifications faites des deux côtés finissent en conflits |
 | vide | Pas de bascule automatique : bouton *Promouvoir ce nœud* sur la page Cluster |
 
+### Clé du témoin
+
+Le témoin ne reçoit **pas** la clé de cluster mais une clé dérivée à sens unique (`leazone cluster witness-key`,
+`LEAZONE_WITNESS_KEY_FILE`). Avec elle, il peut accorder le rôle de primaire, mais ni se faire passer pour un nœud,
+ni lire la configuration ou les secrets répliqués. Chaque nœud ne parle qu'en son nom : son identité est celle de
+son certificat.
+
+La clé de cluster est étirée par Argon2id (64 Mio, une fois au démarrage) : utilisez 32 octets aléatoires
+(`openssl rand -base64 32` ou `leazone cluster gen-key`). Une clé plus faible est acceptée, avec un avertissement
+dans les journaux.
+
+Un témoin installé avant la version 2.0 du protocole de cluster reçoit encore la clé de cluster
+(`LEAZONE_CLUSTER_KEY_FILE`) : il fonctionne, mais affiche un avertissement « SÉCURITÉ ». Pour le passer à la clé
+du témoin, avec le `compose/witness.yml` de cette version :
+
+```bash
+# hôte 1 : calculer la clé du témoin
+docker compose -f compose/ha-node1.yml --env-file compose/.env exec -T leazone /leazone cluster witness-key > witness_key
+```
+
+```bash
+# copier vers l'hôte 3
+scp witness_key <hôte3>:<dossier-leazone>/compose/secrets/witness_key && rm witness_key
+```
+
+```bash
+# hôte 3 : relancer le témoin avec la clé du témoin, puis supprimer la clé de cluster de cet hôte
+docker compose -f compose/witness.yml up -d && rm compose/secrets/cluster_key
+```
+
 ### DHCP en HA
 
 - **Load-balancing** (par défaut) : chaque client est servi par un seul nœud selon le hachage de sa MAC ou de son
@@ -543,6 +628,14 @@ Le certificat importé est répliqué (chiffré) sur les deux nœuds.
 
 Deux versions trop éloignées (version majeure différente, ou plus d'une version mineure d'écart) refusent de se
 synchroniser, avec un message clair sur la page Cluster : mettez-les à jour l'une après l'autre.
+
+**Changement de protocole de cluster (ex : passage au protocole 2.0)** : les deux versions ne peuvent plus se
+parler du tout (certificats différents). La mise à jour sans coupure n'est pas possible : mettez à jour **les 3
+hôtes ensemble** (témoin, puis nœud 1, puis nœud 2, `pull` puis `up -d` sur chacun, à la suite). Pendant les
+quelques secondes où les versions diffèrent, aucun nœud ne peut devenir primaire à tort : un nœud qui voit l'autre
+refuser ses certificats reste « incompatible » (pas de nouvelle adresse DHCP, pas de prise de rôle), et un primaire
+qui perd le témoin redevient secondaire. La configuration est en lecture seule et l'IP virtuelle peut manquer
+jusqu'à ce que les 3 hôtes soient à jour. Ensuite, passez le témoin à sa propre clé (« Clé du témoin » plus haut).
 
 ---
 
@@ -599,6 +692,8 @@ Tout se règle par variables d'environnement (prioritaires) ou dans `/config/lea
 | `LEAZONE_ADMIN_USER` | `admin` | Nom du premier compte |
 | `LEAZONE_ADMIN_PASSWORD_FILE` | vide | Fichier (secret Docker) du mot de passe initial |
 | `LEAZONE_BACKUP_PASSWORD_FILE` | vide | Mot de passe des sauvegardes automatiques et de `leazone backup/restore` |
+| `LEAZONE_CLUSTER_KEY_FILE` | vide | Clé de cluster (nœuds HA seulement, 32 octets aléatoires) |
+| `LEAZONE_WITNESS_KEY_FILE` | vide | Clé du témoin (`leazone witness` seulement, voir « Clé du témoin ») |
 | `LEAZONE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LEAZONE_LOG_FORMAT` | `text` | Format de `docker logs` : `text` ou `json` |
 | `LEAZONE_DATA_DIR` / `LEAZONE_LOG_DIR` / `LEAZONE_CONFIG_DIR` | `/data` `/logs` `/config` | Dossiers |
@@ -624,8 +719,11 @@ Images publiées : `ghcr.io/prohand/leazone` pour amd64 et arm64 (Raspberry Pi 4
 par GitHub Actions). Vérifier avant de déployer :
 
 ```bash
-cosign verify ghcr.io/prohand/leazone:1.2.3 --certificate-identity-regexp 'https://github.com/prohand/leazone/.github/workflows/release.yml@.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify ghcr.io/prohand/leazone:1.2.3 --certificate-identity-regexp '^https://github.com/prohand/leazone/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$' --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+Cette vérification n'accepte que les images signées par le workflow de publication lancé depuis `main` ou depuis un
+tag de version : une image construite depuis une autre branche est refusée.
 
 Pour suivre les correctifs sans changer de version mineure, mettez `LEAZONE_IMAGE=ghcr.io/prohand/leazone:1.2` dans `.env`.
 
@@ -698,7 +796,8 @@ désactivez la validation.
   `sudo ss -lunp | grep ':67 '`, puis arrêtez ce service.
 - Mode direct : l'étendue doit avoir son *Interface*, **et** le DHCP doit être activé sur cette interface (*Interfaces*).
 - Mode relais : *Relais* activé sur l'étendue, et l'adresse du relais (giaddr) dans le réseau de l'étendue
-  (sinon ajoutez-la dans *agents relais supplémentaires*). Le pare-feu de l'hôte doit laisser passer UDP 67.
+  (sinon ajoutez-la dans *agents relais supplémentaires*). Si le relais envoie depuis une autre adresse que giaddr,
+  ajoutez aussi cette adresse source. Le pare-feu de l'hôte doit laisser passer UDP 67.
 - Le conteneur doit être en `network_mode: host` pour recevoir les broadcasts.
 
 **Le DNS ne répond pas aux clients d'un autre réseau**
@@ -716,7 +815,9 @@ Les noms locaux répondent à tous. Pour les noms externes, ajoutez le réseau d
 
 **Le cluster ne se forme pas (page Cluster : nœud « hors ligne »)**
 - TCP 7443 doit être ouvert entre les nœuds et vers le témoin (`nc -vz <ip> 7443`).
-- La clé de cluster doit être **identique** partout (sinon : « certificat de cluster refusé »).
+- La clé de cluster doit être **identique** sur les deux nœuds, et le témoin doit avoir la clé du témoin qui en
+  est dérivée (sinon : « certificat de cluster refusé »). Les 3 hôtes doivent avoir le même protocole de cluster
+  (`leazone version`).
 - `LEAZONE_CLUSTER_ADDR` / `NODEx_IP` : l'adresse que l'**autre** nœud utilise pour joindre celui-ci.
 
 **Un nœud reste « isolé »**
@@ -731,6 +832,12 @@ C'est normal : modifiez sur le primaire (lien dans le bandeau), ou passez par l'
 
 **Vérifier les capabilities effectives**
 `docker exec leazone leazone caps` affiche par exemple `NET_BIND_SERVICE=yes NET_RAW=yes NET_ADMIN=no`.
+
+`leazone internal setcap` et `leazone internal install` servent **uniquement** à construire l'image. Ne les lancez
+pas sur un binaire de l'hôte : tout utilisateur qui pourrait l'exécuter recevrait ces capabilities avec sa propre
+configuration. Hors image, `setcap` retire donc le droit d'exécution aux « autres » (droits 0750 au plus). Quoi qu'il
+arrive, Leazone ne retire jamais de l'interface une adresse principale de l'hôte qu'il n'a pas ajoutée : une
+`LEAZONE_VIP` égale à l'adresse de l'hôte est refusée (erreur sur la page Cluster).
 
 ---
 

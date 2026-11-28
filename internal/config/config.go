@@ -60,7 +60,10 @@ type Config struct {
 	// Secrets (never stored in the YAML file).
 	AdminPassword string `yaml:"-"`
 	ClusterKey    string `yaml:"-"`
-	BackupPass    string `yaml:"-"`
+	// WitnessKey is the only secret of the witness (leazone cluster
+	// witness-key prints it on a node). The nodes derive it themselves.
+	WitnessKey string `yaml:"-"`
+	BackupPass string `yaml:"-"`
 
 	// AllowPlainSecrets accepts LEAZONE_ADMIN_PASSWORD etc. as plain env vars.
 	AllowPlainSecrets bool `yaml:"allow_plain_secrets"`
@@ -156,6 +159,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, err
 	}
 	if c.ClusterKey, err = secret(getenv, "CLUSTER_KEY", c.AllowPlainSecrets); err != nil {
+		return nil, err
+	}
+	if c.WitnessKey, err = secret(getenv, "WITNESS_KEY", c.AllowPlainSecrets); err != nil {
 		return nil, err
 	}
 	if c.BackupPass, err = secret(getenv, "BACKUP_PASSWORD", c.AllowPlainSecrets); err != nil {

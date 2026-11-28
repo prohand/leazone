@@ -2,7 +2,8 @@
 #
 #   cp compose/.env.ha.example compose/.env          # same file on both hosts, then edit
 #   mkdir -p compose/secrets && touch compose/secrets/admin_password
-#   openssl rand -base64 32 > compose/secrets/cluster_key    # once, then copy to node 1, node 2 and the witness
+#   openssl rand -base64 32 > compose/secrets/cluster_key    # once (32 random bytes), then copy to node 1 and node 2 only
+#   (the witness gets the witness key instead: see compose/witness.yml)
 #   docker compose -f compose/ha-node2.yml --env-file compose/.env up -d
 
 name: leazone
@@ -38,7 +39,9 @@ services:
       LEAZONE_VIP_INTERFACE: ${NODE2_VIP_INTERFACE:-}
       LEAZONE_PUBLIC_URL: ${LEAZONE_PUBLIC_URL:-}
       LEAZONE_TRUSTED_PROXIES: ${LEAZONE_TRUSTED_PROXIES:-}
-      LEAZONE_HTTP_LISTEN: ${LEAZONE_HTTP_LISTEN:-:8443}
+      # Web UI / API address: NODE2_HTTP_LISTEN (this node only), else LEAZONE_HTTP_LISTEN,
+      # else ":8443" (every interface of the host, needed to serve the UI on the virtual IP).
+      LEAZONE_HTTP_LISTEN: ${NODE2_HTTP_LISTEN:-${LEAZONE_HTTP_LISTEN:-:8443}}
       LEAZONE_LOG_LEVEL: ${LEAZONE_LOG_LEVEL:-info}
       LEAZONE_ADMIN_USER: ${LEAZONE_ADMIN_USER:-admin}
       LEAZONE_ADMIN_PASSWORD_FILE: /run/secrets/admin_password

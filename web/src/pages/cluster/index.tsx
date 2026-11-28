@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useSearchParams } from "react-router"
+import { useLocation, useNavigate } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowLeftRight,
@@ -45,19 +45,23 @@ export default function ClusterPage() {
   const isAdmin = perms.allowed("admin")
   const [confirm, setConfirm] = React.useState<Confirm>(null)
   const [showConflicts, setShowConflicts] = React.useState(false)
-  const [params, setParams] = useSearchParams()
+  const location = useLocation()
+  const navigate = useNavigate()
 
   const view = query.data
   const isPrimary = view?.role === "primary"
 
-  // ⌘K actions land here with ?confirm=resync|failback: open the confirmation once.
+  // ⌘K actions land here with the navigation state { confirm: "resync" | "failback" }:
+  // open the confirmation once. Only the in-app navigation state is read, never a
+  // URL parameter: an outside link must not open this dialog for a signed-in admin.
+  const requested = (location.state as { confirm?: unknown } | null)?.confirm
   React.useEffect(() => {
-    const c = params.get("confirm")
-    if (!c || !view) return
-    if (isAdmin && view.enabled && (c === "resync" || (c === "failback" && isPrimary))) setConfirm(c)
-    params.delete("confirm")
-    setParams(params, { replace: true })
-  }, [params, setParams, view, isAdmin, isPrimary])
+    if (!requested || !view) return
+    if (isAdmin && view.enabled && (requested === "resync" || (requested === "failback" && isPrimary))) {
+      setConfirm(requested)
+    }
+    navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: null })
+  }, [requested, view, isAdmin, isPrimary, navigate, location.pathname, location.search, location.hash])
 
   const onView = (v: ClusterView | undefined) => {
     if (v) qc.setQueryData(qk.cluster, v)

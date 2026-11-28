@@ -663,8 +663,9 @@ func TestRelayScopeSelectionPrefersNetwork(t *testing.T) {
 		if got := sel(dhcpv4.WithOption(o82)); got != "s64" {
 			t.Fatalf("link selection 10.0.64.0: got scope %s", got)
 		}
-		// No scope holds the selected network: relay agent list, first scope by ID.
-		if got := sel(dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionSubnetSelection, []byte{10, 0, 99, 0}))); got != min(s40, "s60") {
+		// No scope holds the selected network: the option is ignored, the
+		// network of the relay is used.
+		if got := sel(dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionSubnetSelection, []byte{10, 0, 99, 0}))); got != s40 {
 			t.Fatalf("fallback: got scope %s", got)
 		}
 	}
