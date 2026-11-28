@@ -23,6 +23,7 @@ type Form = {
   sessionIdleMinutes: string
   networks: string
   webauthnRpId: string
+  auditRetentionDays: string
 }
 
 function toForm(s: SecuritySettings): Form {
@@ -33,6 +34,7 @@ function toForm(s: SecuritySettings): Form {
     sessionIdleMinutes: String(s.sessionIdleMinutes ?? 30),
     networks: (s.uiAllowedNetworks ?? []).join("\n"),
     webauthnRpId: s.webauthnRpId ?? "",
+    auditRetentionDays: String(s.auditRetentionDays || 365),
   }
 }
 
@@ -79,6 +81,7 @@ export function SecurityTab() {
         sessionIdleMinutes: fieldError(e, "sessionIdleMinutes") ?? "",
         networks: fieldError(e, "uiAllowedNetworks") ?? "",
         webauthnRpId: fieldError(e, "webauthnRpId") ?? "",
+        auditRetentionDays: fieldError(e, "auditRetentionDays") ?? "",
       })
       toastError(e)
     },
@@ -97,6 +100,8 @@ export function SecurityTab() {
     const idle = Number(form.sessionIdleMinutes)
     if (!Number.isInteger(maxH) || maxH < 1 || maxH > 720) errs.sessionMaxHours = "Entre 1 et 720 heures."
     if (!Number.isInteger(idle) || idle < 5 || idle > 1440) errs.sessionIdleMinutes = "Entre 5 et 1440 minutes."
+    const retention = Number(form.auditRetentionDays)
+    if (!Number.isInteger(retention) || retention < 30 || retention > 3650) errs.auditRetentionDays = "Entre 30 et 3650 jours."
     const networks = form.networks
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -112,6 +117,7 @@ export function SecurityTab() {
       sessionIdleMinutes: idle,
       uiAllowedNetworks: networks,
       webauthnRpId: form.webauthnRpId.trim(),
+      auditRetentionDays: retention,
     })
   }
 
@@ -180,7 +186,7 @@ export function SecurityTab() {
           <Field
             label="RP ID WebAuthn"
             htmlFor="rpid"
-            help="Nom de domaine utilisé par les passkeys (ex. : leazone.mondomaine.lan). Vide = nom d'hôte de l'URL publique. Le changer rend les passkeys existantes inutilisables."
+            help="Nom de domaine utilisé par les passkeys (ex. : leazone.mondomaine.lan). Vide = nom d'hôte de l'URL publique. Un domaine parent (ex. : mondomaine.lan) exige LEAZONE_PUBLIC_URL. Le changer rend les passkeys existantes inutilisables."
             error={errors.webauthnRpId}
           >
             <Input
@@ -190,6 +196,24 @@ export function SecurityTab() {
               placeholder="leazone.mondomaine.lan"
               value={form.webauthnRpId}
               onChange={(e) => set("webauthnRpId", e.target.value)}
+            />
+          </Field>
+
+          <Field
+            label="Conservation du journal d'audit (jours)"
+            htmlFor="audit-days"
+            help={errors.auditRetentionDays ? undefined : "Entre 30 et 3650. Les entrées plus anciennes sont supprimées automatiquement."}
+            error={errors.auditRetentionDays}
+          >
+            <Input
+              id="audit-days"
+              type="number"
+              inputMode="numeric"
+              min={30}
+              max={3650}
+              className="sm:max-w-40"
+              value={form.auditRetentionDays}
+              onChange={(e) => set("auditRetentionDays", e.target.value)}
             />
           </Field>
         </CardContent>

@@ -193,7 +193,7 @@ function DnsRow({ e, onFilter }: { e: DnsLogEntry; onFilter: (p: Record<string, 
   const [confirmBlock, setConfirmBlock] = React.useState(false)
   // Single-label names ("com.", "lan.") are never offered: that would block a whole TLD.
   const domain = cleanDomain(e.name ?? "", { multiLabel: true })
-  const canBlock = modules.blocking && perms.can("records.write") && !!domain && e.source !== "blocked"
+  const canBlock = modules.blocking && perms.can("config.write") && !!domain && e.source !== "blocked"
   return (
     <TableRow data-testid="dns-row">
       <TableCell className="text-xs">
