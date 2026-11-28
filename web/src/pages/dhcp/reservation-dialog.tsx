@@ -20,13 +20,14 @@ import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { ipToInt, net4String, netContains, normalizeMac, parseNet4 } from "@/lib/dhcp"
+import { ipToInt, net4String, netHostContains, normalizeMac, parseNet4 } from "@/lib/dhcp"
 import { fieldError, formError } from "@/lib/errors"
 import { isIPv4 } from "@/lib/net"
 
 type Form = {
   scopeId: string
-  by: "mac" | "clientId"
+  /** "both": MAC and client id together (e.g. a reservation converted from a lease). */
+  by: "mac" | "clientId" | "both"
   mac: string
   clientId: string
   ip: string
@@ -72,7 +73,7 @@ export function ReservationDialog({
     const r = reservation
     setForm({
       scopeId: r?.scopeId ?? defaultScopeId ?? "",
-      by: r && !r.mac && r.clientId ? "clientId" : "mac",
+      by: r?.mac && r.clientId ? "both" : r && !r.mac && r.clientId ? "clientId" : "mac",
       mac: r?.mac ?? "",
       clientId: r?.clientId ?? "",
       ip: r?.ip ?? "",
@@ -100,6 +101,8 @@ export function ReservationDialog({
   }
   const err = (k: string) => local[k] ?? fieldError(save.error, k)
   const scope = items.find((s) => s.id === form.scopeId)
+  // A reservation with both a MAC and a client id (converted from a lease) keeps both unless the user picks one.
+  const hadBoth = !!reservation?.mac && !!reservation?.clientId
   const net = parseNet4(scope?.network ?? "")
 
   const inRange = (ip: string) => {
@@ -113,17 +116,21 @@ export function ReservationDialog({
     e.preventDefault()
     const errors: Record<string, string> = {}
     if (!form.scopeId) errors.scopeId = "Choisissez une étendue."
+    const useMac = form.by !== "clientId"
+    const useClientId = form.by !== "mac"
     let mac = ""
-    if (form.by === "mac") {
+    if (useMac) {
       const m = normalizeMac(form.mac)
       if (!m) errors.mac = "Adresse MAC non valide (ex. : aa:bb:cc:dd:ee:ff)."
       else mac = m
-    } else if (!/^[0-9a-fA-F]{2}(:?[0-9a-fA-F]{2})+$/.test(form.clientId.trim())) {
+    }
+    if (useClientId && !/^[0-9a-fA-F]{2}(:?[0-9a-fA-F]{2})+$/.test(form.clientId.trim())) {
       errors.clientId = "Identifiant en hexadécimal (ex. : 01:aa:bb:cc:dd:ee:ff)."
     }
     const ip = form.ip.trim()
     if (!isIPv4(ip)) errors.ip = "Adresse IPv4 non valide."
-    else if (net && !netContains(net, ip)) errors.ip = `L'adresse doit être dans ${net4String(net)}.`
+    else if (net && !netHostContains(net, ip)) errors.ip = `L'adresse doit être dans ${net4String(net)} (ni l'adresse du réseau, ni le broadcast).`
+    else if (scope?.gateway && ip === scope.gateway) errors.ip = "C'est l'adresse de la passerelle."
     if (form.hostname.trim() && !/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(form.hostname.trim()))
       errors.hostname = "Lettres, chiffres et tirets seulement (ex. : imprimante-rdc)."
     setLocal(errors)
@@ -131,8 +138,8 @@ export function ReservationDialog({
     if (mac) set({ mac })
     save.mutate({
       scopeId: form.scopeId,
-      mac: form.by === "mac" ? mac : "",
-      clientId: form.by === "clientId" ? form.clientId.trim().toLowerCase() : "",
+      mac: useMac ? mac : "",
+      clientId: useClientId ? form.clientId.trim().toLowerCase() : "",
       ip,
       hostname: form.hostname.trim(),
       description: form.description.trim(),
@@ -168,18 +175,31 @@ export function ReservationDialog({
           </Field>
 
           <div className="space-y-2">
-            <Label>Identifier l'appareil par</Label>
-            <RadioGroup value={form.by} onValueChange={(v) => set({ by: v as Form["by"] })} className="flex flex-wrap gap-4">
+            <Label id="rs-by-label">Identifier l'appareil par</Label>
+            <RadioGroup
+              aria-labelledby="rs-by-label"
+              value={form.by}
+              onValueChange={(v) => set({ by: v as Form["by"] })}
+              className="flex flex-wrap gap-4"
+            >
               <label className="flex items-center gap-2 text-sm">
                 <RadioGroupItem value="mac" /> Adresse MAC
               </label>
               <label className="flex items-center gap-2 text-sm">
                 <RadioGroupItem value="clientId" /> Identifiant client (option 61)
               </label>
+              {hadBoth && (
+                <label className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="both" /> Les deux
+                </label>
+              )}
             </RadioGroup>
+            {form.by === "both" && (
+              <p className="text-xs text-muted-foreground">L'appareil est reconnu par son adresse MAC ou par son identifiant client.</p>
+            )}
           </div>
 
-          {form.by === "mac" ? (
+          {form.by !== "clientId" && (
             <Field label="Adresse MAC" htmlFor="rs-mac" error={err("mac")} help="Tous les formats sont acceptés : aa-bb-cc…, AABBCC…">
               <Input
                 id="rs-mac"
@@ -195,7 +215,8 @@ export function ReservationDialog({
                 placeholder="aa:bb:cc:dd:ee:ff"
               />
             </Field>
-          ) : (
+          )}
+          {form.by !== "mac" && (
             <Field label="Identifiant client" htmlFor="rs-cid" error={err("clientId")} help="En hexadécimal, tel qu'envoyé par l'appareil.">
               <Input
                 id="rs-cid"

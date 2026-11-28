@@ -38,8 +38,9 @@ type Confirm = "resync" | "failback" | "promote" | null
 
 export default function ClusterPage() {
   const qc = useQueryClient()
-  // Same cache entry as the read-only banner, refreshed faster while this page is open.
-  const query = useQuery({ ...clusterQuery, refetchInterval: 2_000 })
+  // Same cache entry as the read-only banner, refreshed faster while this page
+  // is open, but only when HA is on (otherwise nothing moves on its own).
+  const query = useQuery({ ...clusterQuery, refetchInterval: (q) => (q.state.data?.enabled ? 2_000 : false) })
   const perms = usePermissions()
   const isAdmin = perms.allowed("admin")
   const [confirm, setConfirm] = React.useState<Confirm>(null)

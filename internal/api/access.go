@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -102,7 +103,7 @@ func (s *Server) guard(a access, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		unsafe := r.Method != http.MethodGet && r.Method != http.MethodHead
 		if unsafe && !s.originOK(r) {
-			problem(w, http.StatusForbidden, TCSRF, "Origine de la requête refusée.")
+			originRefused(w)
 			return
 		}
 		p, err := s.authenticate(r)
@@ -197,7 +198,11 @@ func (s *Server) authenticate(r *http.Request) (*principal, error) {
 	if err != nil {
 		return nil, auth.ErrNoSession
 	}
-	se, err := s.auth.LookupSession(r.Context(), c.Value)
+	lookup := s.auth.LookupSession
+	if background(r) {
+		lookup = s.auth.PeekSession
+	}
+	se, err := lookup(r.Context(), c.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +212,31 @@ func (s *Server) authenticate(r *http.Request) (*principal, error) {
 		return nil, auth.ErrNoSession
 	}
 	return &principal{User: u, Session: se}, nil
+}
+
+// BackgroundHeader marks a request the UI sent on its own (automatic
+// refresh, not a user action): it does not count as activity for the
+// session idle timeout.
+const BackgroundHeader = "X-Leazone-Background"
+
+// background reports whether the request must not refresh the session's
+// last activity: flagged by the UI, or the event stream (EventSource cannot
+// set headers, and an open dashboard must not keep an idle session alive).
+func background(r *http.Request) bool {
+	return r.Header.Get(BackgroundHeader) == "1" || r.URL.Path == "/api/v1/events"
+}
+
+// originRefused answers a cross-site state-changing request. The "reason"
+// member tells the UI that this is not a lost session (unlike a missing or
+// stale CSRF token): reloading or logging in again will not help.
+func originRefused(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(struct {
+		Problem
+		Reason string `json:"reason"`
+	}{Problem{Type: TCSRF, Title: titles[TCSRF], Status: http.StatusForbidden, Detail: "Origine de la requête refusée."}, "origin"})
 }
 
 // originOK blocks cross-site state-changing requests. Browsers always send

@@ -17,6 +17,7 @@ import {
 import { dnsStatusQuery, meQuery, systemInfoQuery } from "@/api/queries"
 import type { Dashboard, DashboardBlocking, DashboardHa, DashboardScope, TopCount } from "@/api/types"
 import { ClusterRoleBadge } from "@/components/cluster"
+import { UsageBar, usageTone, usageToneClass } from "@/components/dhcp"
 import { PageHeader } from "@/components/page-header"
 import { QueryChart } from "@/components/query-chart"
 import { StatusDot } from "@/components/status-dot"
@@ -27,7 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useDashboard } from "@/hooks/use-dashboard"
 import { useCurrentUser } from "@/hooks/use-session"
 import { humanDuration } from "@/lib/dns"
-import { fmtInt, fmtOneDecimal, formatPct } from "@/lib/logs"
+import { fmtInt, fmtOneDecimal, formatPct, hhmm } from "@/lib/logs"
 import { can } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import type { ClusterRole } from "@/api/types"
@@ -38,6 +39,9 @@ export default function DashboardPage() {
   const dash = useDashboard()
   const d = dash.data
   const blocking = d?.blocking ?? null
+  // Polling failed while the stream is down: the figures shown are those of the last answer.
+  const stale = dash.isError && !dash.live && !!d
+  const side = !!d?.ha || !!blocking
 
   return (
     <>
@@ -52,8 +56,18 @@ export default function DashboardPage() {
             "État général du serveur DNS et DHCP."
           )
         }
-        actions={<LiveIndicator live={dash.live} hasData={!!d} error={dash.isError && !d} />}
+        actions={<LiveIndicator live={dash.live} hasData={!!d} error={dash.isError && !dash.live} />}
       />
+      {stale && (
+        <Alert className="mb-4 border-warning/50" data-testid="dashboard-stale">
+          <TriangleAlert className="text-warning" />
+          <AlertTitle>Données périmées : serveur injoignable</AlertTitle>
+          <AlertDescription>
+            Les chiffres ci-dessous datent de {dash.dataUpdatedAt ? hhmm.format(new Date(dash.dataUpdatedAt)) : "la dernière réponse"}. Nouvel essai
+            automatique toutes les 5 s.
+          </AlertDescription>
+        </Alert>
+      )}
       <ListenerAlert />
       <div className={cn("grid gap-4 sm:grid-cols-2", blocking ? "lg:grid-cols-5" : "lg:grid-cols-4")} data-testid="kpis">
         <Kpi title="Requêtes/s" icon={Gauge} value={d ? fmtOneDecimal.format(d.dns?.qps ?? 0) : undefined} hint="sur la dernière minute" />
@@ -96,42 +110,45 @@ export default function DashboardPage() {
       <div className={cn("mt-6 grid gap-4", blocking ? "lg:grid-cols-3" : "lg:grid-cols-2")}>
         <TopCard
           testId="top-domains"
-          title="Top domaines"
+          title="Top domaines (24 h)"
           items={d?.dns?.topDomains}
           mono
-          linkOf={(t) => `/logs?tab=dns&q=${encodeURIComponent(t.name ?? "")}`}
+          linkOf={(t) => `/logs?tab=dns&period=24h&q=${encodeURIComponent(t.name ?? "")}`}
           linkLabel={(t) => `Voir les requêtes pour ${t.name}`}
           loading={!d}
         />
         <TopCard
           testId="top-clients"
-          title="Top clients"
+          title="Top clients (24 h)"
           items={d?.dns?.topClients}
           mono
-          linkOf={(t) => `/logs?tab=dns&client=${encodeURIComponent(t.name ?? "")}`}
+          linkOf={(t) => `/logs?tab=dns&period=24h&client=${encodeURIComponent(t.name ?? "")}`}
           linkLabel={(t) => `Voir les requêtes de ${t.name}`}
           loading={!d}
         />
         {blocking && (
           <TopCard
             testId="top-blocked"
-            title="Top bloqués"
+            title="Top bloqués (24 h)"
             items={d?.dns?.topBlocked}
             mono
             barClass="bg-series-2"
-            linkOf={(t) => `/logs?tab=dns&source=blocked&q=${encodeURIComponent(t.name ?? "")}`}
+            linkOf={(t) => `/logs?tab=dns&period=24h&source=blocked&q=${encodeURIComponent(t.name ?? "")}`}
             linkLabel={(t) => `Voir les requêtes bloquées pour ${t.name}`}
             loading={!d}
           />
         )}
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      {/* The scopes take the whole width when there is nothing beside them (no HA, no blocking). */}
+      <div className={cn("mt-6 grid gap-4", side && "lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]")}>
         <ScopesCard scopes={d?.dhcp?.scopes} loading={!d} />
-        <div className="grid content-start gap-4">
-          {d?.ha && <HaCard ha={d.ha} />}
-          {blocking && <BlockingCard b={blocking} />}
-        </div>
+        {side && (
+          <div className="grid content-start gap-4">
+            {d?.ha && <HaCard ha={d.ha} />}
+            {blocking && <BlockingCard b={blocking} />}
+          </div>
+        )}
       </div>
 
       <GettingStarted dashboard={d} />
@@ -139,10 +156,19 @@ export default function DashboardPage() {
   )
 }
 
+/** Tone of a scope: same rules as the DHCP pages (usageTone), the server's `alert` verdict winning. */
+function scopeTone(s: DashboardScope) {
+  const tone = usageTone(s.percent, s.alertThreshold || 80)
+  if (s.alert) return "alert"
+  if (s.alert === false && tone === "alert") return "warning"
+  return tone
+}
+
 function scopesHint(d: Dashboard): string {
   const n = d.dhcp?.scopes?.length ?? 0
   if (n === 0) return "aucune étendue DHCP"
-  const full = (d.dhcp?.scopes ?? []).filter((s) => (s.percent ?? 0) > 90).length
+  // "Almost full" = the scope's own alert threshold is reached.
+  const full = (d.dhcp?.scopes ?? []).filter((s) => scopeTone(s) === "alert").length
   if (full > 0) return `${full} étendue${full > 1 ? "s" : ""} presque pleine${full > 1 ? "s" : ""}`
   return `dans ${n} étendue${n > 1 ? "s" : ""}`
 }
@@ -154,7 +180,7 @@ function LiveIndicator({ live, hasData, error }: { live: boolean; hasData: boole
         {live && <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60 motion-reduce:hidden" />}
         <span className={cn("relative inline-flex size-2 rounded-full", live ? "bg-success" : error ? "bg-destructive" : "bg-muted-foreground/40")} />
       </span>
-      {live ? "en direct" : error ? "indisponible" : hasData ? "mise à jour toutes les 5 s" : "connexion…"}
+      {live ? "en direct" : error ? (hasData ? "serveur injoignable" : "indisponible") : hasData ? "mise à jour toutes les 5 s" : "connexion…"}
     </span>
   )
 }
@@ -243,7 +269,7 @@ function TopCard({
               <li key={t.name ?? i}>
                 <Link
                   to={linkOf(t)}
-                  aria-label={linkLabel(t)}
+                  aria-label={`${linkLabel(t)} (${fmtInt.format(t.count ?? 0)} requête${(t.count ?? 0) > 1 ? "s" : ""})`}
                   className="group flex items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
                 >
                   <span className="w-4 shrink-0 text-right text-xs text-muted-foreground tabular-nums">{i + 1}</span>
@@ -266,8 +292,6 @@ function TopCard({
   )
 }
 
-const fillClass = (p: number) => (p > 90 ? "bg-destructive" : p >= 70 ? "bg-warning" : "bg-success")
-
 function ScopesCard({ scopes, loading }: { scopes?: DashboardScope[]; loading: boolean }) {
   const list = [...(scopes ?? [])].sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))
   return (
@@ -275,7 +299,7 @@ function ScopesCard({ scopes, loading }: { scopes?: DashboardScope[]; loading: b
       <CardHeader className="flex flex-row items-start justify-between gap-2">
         <div className="space-y-1.5">
           <CardTitle>Étendues DHCP</CardTitle>
-          <CardDescription>Remplissage : vert sous 70 %, orange jusqu'à 90 %, rouge au-delà.</CardDescription>
+          <CardDescription>Remplissage : orange 20 points avant le seuil d'alerte de l'étendue, rouge une fois atteint (80 % par défaut).</CardDescription>
         </div>
         <Link to="/dhcp/scopes" className="inline-flex shrink-0 items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           Étendues <ArrowRight className="size-4" />
@@ -289,7 +313,7 @@ function ScopesCard({ scopes, loading }: { scopes?: DashboardScope[]; loading: b
         ) : (
           <ul className="-mx-2 space-y-1">
             {list.map((s) => {
-              const p = Math.max(0, Math.min(100, s.percent ?? 0))
+              const tone = scopeTone(s)
               return (
                 <li key={s.id}>
                   <Link
@@ -298,7 +322,9 @@ function ScopesCard({ scopes, loading }: { scopes?: DashboardScope[]; loading: b
                     data-testid={`scope-${s.id}`}
                   >
                     <div className="flex items-center gap-2 text-sm">
-                      {p > 90 && <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-label="Presque pleine" />}
+                      {tone === "alert" && (
+                        <TriangleAlert className="size-3.5 shrink-0 text-destructive" aria-label={`Seuil d'alerte atteint (${s.alertThreshold || 80} %)`} />
+                      )}
                       <span className="min-w-0 truncate font-medium">{s.name}</span>
                       {s.vlanId != null && (
                         <Badge variant="outline" className="shrink-0">
@@ -309,20 +335,13 @@ function ScopesCard({ scopes, loading }: { scopes?: DashboardScope[]; loading: b
                       <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
                         {fmtInt.format(s.used ?? 0)} / {fmtInt.format(s.size ?? 0)}
                       </span>
-                      <span className={cn("w-11 shrink-0 text-right text-sm tabular-nums", p > 90 ? "font-medium text-destructive" : "text-muted-foreground")}>
+                      <span
+                        className={cn("w-11 shrink-0 text-right text-sm tabular-nums", tone === "alert" ? cn("font-medium", usageToneClass.alert.text) : "text-muted-foreground")}
+                      >
                         {formatPct(s.percent)}
                       </span>
                     </div>
-                    <div
-                      role="progressbar"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Math.round(p)}
-                      aria-label={`Remplissage de ${s.name}`}
-                      className="h-2 w-full overflow-hidden rounded-full bg-muted"
-                    >
-                      <div className={cn("h-full rounded-full transition-[width]", fillClass(p))} style={{ width: `${p}%` }} />
-                    </div>
+                    <UsageBar percent={s.percent} alert={s.alert} threshold={s.alertThreshold || 80} label={`Remplissage de ${s.name}`} />
                   </Link>
                 </li>
               )

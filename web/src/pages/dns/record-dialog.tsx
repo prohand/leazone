@@ -134,6 +134,15 @@ export function RecordDialog({
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => {
     setForm((f) => ({ ...f, [k]: v }))
+    // Local errors: the edited field's one goes away; a new type means other fields, so all of them.
+    const key = k === "name" || k === "type" || k === "ttl" ? k : `data.${k}`
+    setLocal((l) => {
+      if (k === "type") return Object.keys(l).length ? {} : l
+      if (!(key in l)) return l
+      const next = { ...l }
+      delete next[key]
+      return next
+    })
     // A server error is about the old values: hide it once the user edits.
     if (save.isError) save.reset()
   }
@@ -164,7 +173,8 @@ export function RecordDialog({
     let ttl: number | null = null
     if (form.ttl.trim()) {
       const n = Number(form.ttl)
-      if (!Number.isInteger(n) || n < 0 || n > 2147483647) errors.ttl = "Nombre de secondes entier."
+      // Same bound as the server (internal/dnsconf/records.go): 0 to 2^31 − 1.
+      if (!Number.isInteger(n) || n < 0 || n > 2147483647) errors.ttl = "Nombre de secondes entier, entre 0 et 2 147 483 647."
       else ttl = n
     }
     setLocal(errors)

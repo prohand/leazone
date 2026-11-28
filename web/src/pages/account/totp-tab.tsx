@@ -6,6 +6,7 @@ import { api } from "@/api/client"
 import { qk } from "@/api/queries"
 import type { MfaEnrollResult } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { LoadError } from "@/components/form-field"
 import { RecoveryCodesDialog } from "@/components/recovery-codes-dialog"
 import { BlockSpinner } from "@/components/spinner"
 import { TotpSetup } from "@/components/totp-setup"
@@ -47,8 +48,14 @@ export function TotpTab() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           Application TOTP
-          {!status.isPending &&
-            (enabled ? <Badge className="bg-success text-white">Activé</Badge> : <Badge variant="outline">Désactivé</Badge>)}
+          {status.isSuccess &&
+            (enabled ? (
+              <Badge variant="outline" className="border-success/40 text-success">
+                Activé
+              </Badge>
+            ) : (
+              <Badge variant="outline">Désactivé</Badge>
+            ))}
         </CardTitle>
         <CardDescription>
           Un code à 6 chiffres donné par une application (Aegis, Google Authenticator, 1Password…).
@@ -57,6 +64,8 @@ export function TotpTab() {
       <CardContent>
         {status.isPending ? (
           <BlockSpinner />
+        ) : status.isError ? (
+          <LoadError error={status.error} onRetry={() => void status.refetch()} retrying={status.isFetching} />
         ) : enabled ? (
           <Button variant="outline" onClick={() => setConfirmOff(true)}>
             Désactiver le TOTP

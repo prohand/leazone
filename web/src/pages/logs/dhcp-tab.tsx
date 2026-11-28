@@ -62,6 +62,7 @@ export function DhcpTab() {
           setParam={setParam}
           label="Événement"
           allLabel="Tous les événements"
+          className="col-span-2"
           options={dhcpEvents.map((e) => ({ value: e, label: dhcpEventLabel[e] }))}
         />
         <UrlSelect
@@ -70,9 +71,10 @@ export function DhcpTab() {
           setParam={setParam}
           label="Étendue"
           allLabel="Toutes les étendues"
+          className="col-span-2"
           options={(scopes.data?.items ?? []).map((s) => ({ value: s.id ?? "", label: s.name ?? s.id ?? "" }))}
         />
-        <PeriodFilter params={params} setParam={setParam} />
+        <PeriodFilter params={params} setParam={setParam} className="col-span-2" />
       </div>
 
       {settings.data && settings.data.dhcpEvents === false && (

@@ -170,16 +170,29 @@ export function ForwarderDialog({
 
   const set = (patch: Partial<Form>) => {
     setForm((f) => ({ ...f, ...patch }))
+    // The local errors of the edited fields are outdated.
+    setLocal((l) => {
+      const keys = Object.keys(patch).filter((k) => k in l)
+      if (keys.length === 0) return l
+      const next = { ...l }
+      for (const k of keys) delete next[k]
+      return next
+    })
     test.reset()
     if (save.isError) save.reset()
   }
 
-  const setProtocol = (p: ForwarderProtocol) =>
+  const setProtocol = (p: ForwarderProtocol) => {
     setForm((f) => {
       // Follow the protocol's default port unless the user typed another one.
       const wasDefault = !f.port || Number(f.port) === defaultPort[f.protocol]
       return { ...f, protocol: p, port: wasDefault ? (p === "doh" ? "" : String(defaultPort[p])) : f.port }
     })
+    // Other fields, other checks: the previous test and errors no longer apply.
+    setLocal({})
+    test.reset()
+    if (save.isError) save.reset()
+  }
 
   const err = (k: string) => local[k] ?? fieldError(save.error, k) ?? fieldError(test.error, k)
   const known = ["domain", "protocol", "address", "port", "tlsServerName", "tlsVerify", "dohUrl"]

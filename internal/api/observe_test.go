@@ -190,3 +190,31 @@ func TestMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardScopeAlertThreshold(t *testing.T) {
+	h := newHarness(t, nil)
+	addVLANIface(h)
+	c := adminClient(t, h)
+	in := map[string]any{"name": "20 - Invités", "vlanId": 20, "network": "10.20.0.0/24", "rangeStart": "10.20.0.100",
+		"rangeEnd": "10.20.0.199", "gateway": "10.20.0.1", "dnsServers": []string{"10.20.0.2"}, "interface": "eth0.20",
+		"ddnsDomain": "invites.lan", "alertThreshold": 65}
+	var out map[string]any
+	if s := c.do("POST", "/api/v1/dhcp/scopes", in, &out); s != 201 {
+		t.Fatalf("create scope: %d %v", s, out)
+	}
+	var d struct {
+		DHCP struct {
+			Scopes []struct {
+				Name           string
+				AlertThreshold int
+				Alert          *bool
+			}
+		}
+	}
+	if s := c.do("GET", "/api/v1/dashboard", nil, &d); s != 200 {
+		t.Fatalf("dashboard: %d", s)
+	}
+	if len(d.DHCP.Scopes) != 1 || d.DHCP.Scopes[0].AlertThreshold != 65 || d.DHCP.Scopes[0].Alert == nil || *d.DHCP.Scopes[0].Alert {
+		t.Fatalf("dashboard scopes: %+v", d.DHCP.Scopes)
+	}
+}

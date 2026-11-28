@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { api, isApiError } from "@/api/client"
 import { meQuery } from "@/api/queries"
+import { LoadError } from "@/components/form-field"
 import { RoleBadge } from "@/components/role-badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -25,6 +26,8 @@ export function ProfileTab() {
         <CardContent>
           {me.isPending ? (
             <Skeleton className="h-20 w-full" />
+          ) : me.isError ? (
+            <LoadError error={me.error} onRetry={() => void me.refetch()} retrying={me.isFetching} />
           ) : (
             <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
               <dt className="text-muted-foreground">Identifiant</dt>

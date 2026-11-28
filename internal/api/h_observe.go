@@ -38,6 +38,10 @@ type dashScope struct {
 	Size    int     `json:"size"`
 	Used    int     `json:"used"`
 	Percent float64 `json:"percent"`
+	// AlertThreshold is the scope's alert level (percent); Alert is
+	// percent >= AlertThreshold, as in the scope usage.
+	AlertThreshold int  `json:"alertThreshold"`
+	Alert          bool `json:"alert"`
 }
 
 type dashboard struct {
@@ -80,7 +84,7 @@ func (s *Server) buildDashboard(ctx context.Context) (*dashboard, error) {
 			u := usageOf(sc, usage[sc.ID])
 			d.DHCP.ActiveLeases += u.ActiveLeases
 			d.DHCP.Scopes = append(d.DHCP.Scopes, dashScope{ID: sc.ID, Name: sc.Name, Network: sc.Network, VLANID: sc.VLANID,
-				Size: u.Size, Used: u.Used, Percent: u.Percent})
+				Size: u.Size, Used: u.Used, Percent: u.Percent, AlertThreshold: u.AlertThreshold, Alert: u.Alert})
 		}
 	}
 	if s.cluster != nil {

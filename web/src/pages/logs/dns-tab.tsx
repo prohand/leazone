@@ -4,6 +4,7 @@ import { Ban, Filter, MoreHorizontal, Radio, TextSearch } from "lucide-react"
 import { api, type ApiResponse } from "@/api/client"
 import { logSettingsQuery, qk } from "@/api/queries"
 import type { DnsLogEntry } from "@/api/types"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -97,16 +98,16 @@ export function DnsTab() {
           setParam={setParam}
           placeholder="Client (IP ou réseau)"
           label="Filtrer par client"
-          className="col-span-2 sm:w-48"
+          className="col-span-2 sm:w-60"
           mono
         />
-        <UrlSelect name="type" params={params} setParam={setParam} label="Type" allLabel="Tous les types" options={queryTypes.map((t) => ({ value: t, label: t }))} />
+        <UrlSelect name="type" params={params} setParam={setParam} label="Type" allLabel="Tous types" options={queryTypes.map((t) => ({ value: t, label: t }))} />
         <UrlSelect
           name="rcode"
           params={params}
           setParam={setParam}
           label="Réponse"
-          allLabel="Toutes les réponses"
+          allLabel="Toutes réponses"
           options={rcodes.map((r) => ({ value: r, label: r }))}
         />
         <UrlSelect
@@ -114,7 +115,7 @@ export function DnsTab() {
           params={params}
           setParam={setParam}
           label="Source"
-          allLabel="Toutes les sources"
+          allLabel="Toutes sources"
           options={dnsSources.map((s) => ({ value: s, label: dnsSourceLabel[s] }))}
         />
         <PeriodFilter params={params} setParam={setParam} />
@@ -189,7 +190,9 @@ function DnsRow({ e, onFilter }: { e: DnsLogEntry; onFilter: (p: Record<string, 
   const perms = usePermissions()
   const modules = useModules()
   const addRule = useAddRule()
-  const domain = cleanDomain(e.name ?? "")
+  const [confirmBlock, setConfirmBlock] = React.useState(false)
+  // Single-label names ("com.", "lan.") are never offered: that would block a whole TLD.
+  const domain = cleanDomain(e.name ?? "", { multiLabel: true })
   const canBlock = modules.blocking && perms.can("records.write") && !!domain && e.source !== "blocked"
   return (
     <TableRow data-testid="dns-row">
@@ -240,13 +243,30 @@ function DnsRow({ e, onFilter }: { e: DnsLogEntry; onFilter: (p: Record<string, 
             {canBlock && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onSelect={() => addRule.mutate({ domain: domain!, kind: "deny" })}>
-                  <Ban /> Bloquer ce domaine
+                <DropdownMenuItem variant="destructive" onSelect={() => setConfirmBlock(true)}>
+                  <Ban /> Bloquer ce domaine…
                 </DropdownMenuItem>
               </>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
+        {canBlock && confirmBlock && (
+          <ConfirmDialog
+            open={confirmBlock}
+            onOpenChange={setConfirmBlock}
+            title={`Bloquer ${domain} ?`}
+            description={
+              <>
+                Le domaine <span className="font-mono break-all">{domain}</span> et tous ses sous-domaines (
+                <span className="font-mono break-all">*.{domain}</span>) seront ajoutés à la liste noire : ils recevront une réponse vide pour
+                tous les clients concernés par le blocage. Vous pourrez le retirer dans Blocage › Liste noire.
+              </>
+            }
+            confirmLabel="Bloquer"
+            destructive
+            onConfirm={() => addRule.mutateAsync({ domain: domain!, kind: "deny" })}
+          />
+        )}
       </TableCell>
     </TableRow>
   )

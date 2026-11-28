@@ -8,6 +8,7 @@ import {
   type Column,
   type ColumnDef,
   type FilterFn,
+  type RowData,
   type SortingState,
 } from "@tanstack/react-table"
 import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react"
@@ -16,6 +17,14 @@ import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
+
+declare module "@tanstack/react-table" {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends RowData, TValue> {
+    /** Classes added to the column's header and cells, e.g. "hidden sm:table-cell" to hide it on small screens. */
+    className?: string
+  }
+}
 
 /** Sortable column header. */
 export function SortHeader<T>({ column, title }: { column: Column<T, unknown>; title: string }) {
@@ -50,6 +59,7 @@ export function DataTable<T>({
   searchPlaceholder = "Rechercher…",
   toolbar,
   empty = "Aucun élément.",
+  emptyFiltered = "Aucun résultat.",
   initialSorting = [],
   getRowId,
   onRowClick,
@@ -64,6 +74,8 @@ export function DataTable<T>({
   searchPlaceholder?: string
   toolbar?: React.ReactNode
   empty?: React.ReactNode
+  /** Shown instead of `empty` when the search finds nothing. */
+  emptyFiltered?: React.ReactNode
   initialSorting?: SortingState
   getRowId?: (row: T) => string
   /** Makes rows clickable (and keyboard focusable). */
@@ -117,7 +129,7 @@ export function DataTable<T>({
             {table.getHeaderGroups().map((hg) => (
               <TableRow key={hg.id} className="hover:bg-transparent">
                 {hg.headers.map((h) => (
-                  <TableHead key={h.id} className="text-xs text-muted-foreground">
+                  <TableHead key={h.id} className={cn("text-sm text-muted-foreground", h.column.columnDef.meta?.className)}>
                     {h.isPlaceholder ? null : flexRender(h.column.columnDef.header, h.getContext())}
                   </TableHead>
                 ))}
@@ -135,13 +147,7 @@ export function DataTable<T>({
                   ))}
                 </TableRow>
               ))
-            ) : rows.length === 0 ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={colCount} className="h-24 text-center text-muted-foreground">
-                  {globalFilter ? "Aucun résultat." : empty}
-                </TableCell>
-              </TableRow>
-            ) : (
+            ) : rows.length === 0 ? null : (
               rows.map((row) => (
                 <TableRow
                   key={row.id}
@@ -165,13 +171,21 @@ export function DataTable<T>({
                   }
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                    <TableCell key={cell.id} className={cell.column.columnDef.meta?.className}>
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </TableCell>
                   ))}
                 </TableRow>
               ))
             )}
           </TableBody>
         </Table>
+        {/* Outside the table (which may scroll sideways on a phone) so the message stays in view. */}
+        {!loading && rows.length === 0 && (
+          <div className="flex min-h-24 items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground" data-testid="table-empty">
+            {globalFilter ? emptyFiltered : empty}
+          </div>
+        )}
       </div>
       {!loading && data && data.length > 0 && (
         <p className="text-xs text-muted-foreground">

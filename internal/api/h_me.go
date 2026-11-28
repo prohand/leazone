@@ -16,6 +16,10 @@ type meResp struct {
 	TOTPEnabled            bool      `json:"totpEnabled"`
 	PasskeyCount           int       `json:"passkeyCount"`
 	RecoveryCodesRemaining int       `json:"recoveryCodesRemaining"`
+	// TOTPAllowed: the security policy accepts TOTP as a second factor
+	// (step-up, enrollment). A TOTP enabled under an older policy may be
+	// refused.
+	TOTPAllowed bool `json:"totpAllowed"`
 }
 
 func (s *Server) getMe(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +29,8 @@ func (s *Server) getMe(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, meResp{u.ID, u.Username, u.Role, u.CreatedAt, m.TOTPEnabled, m.PasskeyCount, m.RecoveryRemaining})
+	writeJSON(w, http.StatusOK, meResp{u.ID, u.Username, u.Role, u.CreatedAt, m.TOTPEnabled, m.PasskeyCount, m.RecoveryRemaining,
+		s.auth.Security().TOTPAllowed()})
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {

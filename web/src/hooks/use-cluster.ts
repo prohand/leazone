@@ -4,7 +4,7 @@ import type { ClusterView } from "@/api/types"
 import { useCurrentUser } from "@/hooks/use-session"
 import { can, type Action } from "@/lib/permissions"
 
-/** Cluster state, shared with the read-only banner (polled every 10 s). */
+/** Cluster state, shared with the read-only banner (polled every 10 s, 60 s without HA). */
 export function useClusterView() {
   return useQuery(clusterQuery)
 }

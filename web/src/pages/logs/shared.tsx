@@ -151,7 +151,7 @@ export function UrlSelect({
 }
 
 /** Period presets + custom from/to (datetime-local inputs). */
-export function PeriodFilter({ params, setParam }: { params: Params; setParam: SetParams }) {
+export function PeriodFilter({ params, setParam, className }: { params: Params; setParam: SetParams; className?: string }) {
   const { period, from, to } = usePeriod(params)
   const onPeriod = (v: string) => {
     if (v === "custom") {
@@ -163,7 +163,7 @@ export function PeriodFilter({ params, setParam }: { params: Params; setParam: S
   return (
     <>
       <Select value={period} onValueChange={onPeriod}>
-        <SelectTrigger className="w-full sm:w-auto sm:min-w-40" aria-label="Période">
+        <SelectTrigger className={cn("w-full sm:w-auto sm:min-w-40", className)} aria-label="Période">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

@@ -4836,6 +4836,8 @@ export interface components {
             totpEnabled?: boolean;
             passkeyCount?: number;
             recoveryCodesRemaining?: number;
+            /** @description The security policy accepts TOTP as a second factor (step-up, enrollment). */
+            totpAllowed?: boolean;
         };
         Passkey: {
             id?: string;
@@ -4992,7 +4994,7 @@ export interface components {
             /** @example NOERROR */
             rcode?: string;
             /** @enum {string} */
-            source?: "local" | "cache" | "forwarder" | "refused" | "error";
+            source?: "local" | "cache" | "forwarder" | "blocked" | "refused" | "error";
             forwarder?: string;
             latencyMs?: number;
             /** @description Records in presentation format */
@@ -5582,6 +5584,10 @@ export interface components {
                     size?: number;
                     used?: number;
                     percent?: number;
+                    /** @description Alert level of the scope (percent, 80 by default) */
+                    alertThreshold?: number;
+                    /** @description percent >= alertThreshold */
+                    alert?: boolean;
                 }[];
             };
             /** @description null on a single node */

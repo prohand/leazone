@@ -164,7 +164,7 @@ export function ListsTab() {
   return (
     <div className="space-y-3">
       {lists.isError && <p className="text-sm text-destructive">{errorMessage(lists.error)}</p>}
-      {!lists.isPending && items.length === 0 ? (
+      {!lists.isPending && !lists.isError && items.length === 0 ? (
         <EmptyState
           icon={ListPlus}
           title="Aucune liste"

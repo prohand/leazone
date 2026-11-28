@@ -34,15 +34,30 @@ const queryClient = new QueryClient({
   }),
 })
 
-// Keep the CSRF token in sync with the cached session state.
+// Data that does not depend on who is logged in.
+const SHARED_KEYS: readonly unknown[] = [qk.session[0], qk.systemInfo[0]]
+
+// Keep the CSRF token in sync with the cached session state, and forget the
+// previous user's data when the session ends or another user logs in (in the
+// same tab, after an expiry): /me, users, settings... must not be reused.
+let sessionUserId: string | undefined
 queryClient.getQueryCache().subscribe((event) => {
   if (event.query.queryKey[0] !== qk.session[0]) return
   const s = event.query.state.data as SessionState | undefined
   setCsrfToken(s?.csrfToken)
+  if (!s) return
+  const id = s.state === "anonymous" ? undefined : s.user?.id
+  if (id === sessionUserId) return
+  const previous = sessionUserId
+  sessionUserId = id
+  if (previous === undefined) return
+  // Deferred: the cache is being updated right now.
+  queueMicrotask(() => queryClient.removeQueries({ predicate: (q) => !SHARED_KEYS.includes(q.queryKey[0]) }))
 })
 
 // Session expired / revoked while using the app: refresh the session state;
-// the route guard then sends the user to the login page.
+// the route guard then sends the user to the login page. (A refused request
+// origin is not reported here: see api/client.ts.)
 let lostNotified = 0
 setAuthLostHandler(() => {
   if (Date.now() - lostNotified > 5000) {

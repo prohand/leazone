@@ -26,7 +26,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { WriteGuard } from "@/components/read-only"
 import { usePermissions } from "@/hooks/use-cluster"
-import { activeLeasesLabel } from "@/lib/dhcp"
+import { activeLeasesLabel, countLabel, vlanLabel } from "@/lib/dhcp"
 import { errorMessage, fieldError, formError } from "@/lib/errors"
 import { cn } from "@/lib/utils"
 
@@ -109,7 +109,8 @@ export default function VlansPage() {
               key={`${v.vlanId}`}
               vlan={v}
               canConfig={canConfig}
-              onName={() => setEditing({ id: v.id ?? null, vlanId: v.vlanId, name: v.name, lockId: !v.id })}
+              // The number of an existing VLAN is fixed: changing it would move all its scopes (UpdateVLAN).
+              onName={() => setEditing({ id: v.id ?? null, vlanId: v.vlanId, name: v.name, lockId: true })}
               onDelete={() => setDeleting(v)}
             />
           ))}
@@ -170,9 +171,7 @@ function VlanCard({
         <CardTitle className="flex items-center gap-2 text-base">
           {alert && <TriangleAlert className="size-4 text-destructive" aria-label="Alerte de remplissage" />}
           {v.name ? (
-            <span>
-              {v.vlanId} - {v.name}
-            </span>
+            <span>{vlanLabel(v.vlanId, v.name)}</span>
           ) : (
             <span>
               VLAN {v.vlanId} <span className="font-normal text-muted-foreground">(sans nom)</span>
@@ -182,7 +181,7 @@ function VlanCard({
         <CardDescription>
           {scopes.length === 0
             ? "Aucune étendue"
-            : `${scopes.length} étendue${scopes.length > 1 ? "s" : ""} · ${activeLeasesLabel(active)}`}
+            : `${countLabel(scopes.length, "étendue", "étendues")} · ${activeLeasesLabel(active)}`}
         </CardDescription>
         {canConfig && (
           <CardAction className="flex items-center gap-1">
@@ -336,7 +335,7 @@ function VlanDialog({ editing, onOpenChange }: { editing: Editing | null; onOpen
           <DialogHeader>
             <DialogTitle>{editing?.id ? "Renommer le VLAN" : "Nommer un VLAN"}</DialogTitle>
             <DialogDescription>
-              Un nom lisible pour un numéro de VLAN, ex. : 20 - Invités. Le VLAN lui-même se crée sur l'hôte ou le routeur.
+              Un nom lisible pour un numéro de VLAN, ex. : VLAN 20 · Invités. Le VLAN lui-même se crée sur l'hôte ou le routeur.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-[7rem_1fr]">

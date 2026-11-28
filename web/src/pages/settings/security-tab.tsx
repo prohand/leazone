@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { api } from "@/api/client"
 import { qk } from "@/api/queries"
 import type { SecuritySettings } from "@/api/types"
+import { Field } from "@/components/form-field"
 import { BlockSpinner } from "@/components/spinner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -40,17 +41,6 @@ function isCidr(v: string): boolean {
   if (m4) return m4.slice(1, 5).every((o) => Number(o) <= 255) && Number(m4[5]) <= 32
   const m6 = /^([0-9a-fA-F:]+)\/(\d{1,3})$/.exec(v)
   return !!m6 && m6[1].includes(":") && Number(m6[2]) <= 128
-}
-
-function Field({ label, htmlFor, help, error, children }: { label: string; htmlFor?: string; help?: React.ReactNode; error?: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-2">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-      {help && <p className="text-xs text-muted-foreground">{help}</p>}
-      {error && <p className="text-sm text-destructive">{error}</p>}
-    </div>
-  )
 }
 
 function Choice({ value, id, label, help }: { value: string; id: string; label: string; help?: string }) {
@@ -97,6 +87,8 @@ export function SecurityTab() {
   if (settings.isPending || !form) return settings.isError ? <p className="text-sm text-destructive">{errorMessage(settings.error)}</p> : <BlockSpinner />
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm({ ...form, [k]: v })
+  // Save / Cancel only make sense once something changed.
+  const dirty = !!settings.data && JSON.stringify(form) !== JSON.stringify(toForm(settings.data))
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -126,7 +118,8 @@ export function SecurityTab() {
   const hasNetworks = form.networks.trim().length > 0
 
   return (
-    <form onSubmit={submit}>
+    // noValidate: no native (English) bubbles, the checks below show French messages.
+    <form onSubmit={submit} noValidate>
       <Card>
         <CardHeader>
           <CardTitle>Sécurité</CardTitle>
@@ -149,11 +142,11 @@ export function SecurityTab() {
           </div>
 
           <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Durée maximale d'une session (heures)" htmlFor="max-h" help="Entre 1 et 720." error={errors.sessionMaxHours}>
-              <Input id="max-h" type="number" min={1} max={720} value={form.sessionMaxHours} onChange={(e) => set("sessionMaxHours", e.target.value)} />
+            <Field label="Durée maximale d'une session (heures)" htmlFor="max-h" help={errors.sessionMaxHours ? undefined : "Entre 1 et 720."} error={errors.sessionMaxHours}>
+              <Input id="max-h" type="number" inputMode="numeric" min={1} max={720} value={form.sessionMaxHours} onChange={(e) => set("sessionMaxHours", e.target.value)} />
             </Field>
-            <Field label="Déconnexion après inactivité (minutes)" htmlFor="idle" help="Entre 5 et 1440." error={errors.sessionIdleMinutes}>
-              <Input id="idle" type="number" min={5} max={1440} value={form.sessionIdleMinutes} onChange={(e) => set("sessionIdleMinutes", e.target.value)} />
+            <Field label="Déconnexion après inactivité (minutes)" htmlFor="idle" help={errors.sessionIdleMinutes ? undefined : "Entre 5 et 1440."} error={errors.sessionIdleMinutes}>
+              <Input id="idle" type="number" inputMode="numeric" min={5} max={1440} value={form.sessionIdleMinutes} onChange={(e) => set("sessionIdleMinutes", e.target.value)} />
             </Field>
           </div>
 
@@ -204,6 +197,7 @@ export function SecurityTab() {
           <Button
             type="button"
             variant="ghost"
+            disabled={!dirty || save.isPending}
             onClick={() => {
               if (settings.data) setForm(toForm(settings.data))
               setErrors({})
@@ -211,7 +205,7 @@ export function SecurityTab() {
           >
             Annuler
           </Button>
-          <Button type="submit" disabled={save.isPending}>
+          <Button type="submit" disabled={!dirty || save.isPending}>
             {save.isPending && <Loader2 className="animate-spin" />}
             Enregistrer
           </Button>

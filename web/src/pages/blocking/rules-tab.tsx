@@ -37,7 +37,8 @@ export function RulesTab({ kind }: { kind: BlockRuleKind }) {
   const perms = usePermissions()
   const canEdit = perms.can("records.write")
   const rules = useQuery(blockRulesQuery)
-  const add = useAddRule()
+  // Errors are shown under the form (no global toast on top).
+  const add = useAddRule({ silent: true })
   const [domain, setDomain] = React.useState("")
   const [comment, setComment] = React.useState("")
   const [error, setError] = React.useState<string>()
@@ -67,7 +68,7 @@ export function RulesTab({ kind }: { kind: BlockRuleKind }) {
           setDomain("")
           setComment("")
         },
-        onError: (err) => setError(fieldError(err, "domain")),
+        onError: (err) => setError(fieldError(err, "domain") ?? errorMessage(err)),
       },
     )
   }

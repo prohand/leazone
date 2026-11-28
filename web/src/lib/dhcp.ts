@@ -102,13 +102,72 @@ export function suggestRange(cidr: string): { start: string; end: string } | nul
   return { start: intToIp(n.base + n.size / 2), end: intToIp(n.broadcast - 1) }
 }
 
-/** Reverse zone name(s) the server creates for a network (octet boundary). */
-export function reverseZoneOf(cidr: string): string | null {
+/** Prefix lengths the server accepts for a scope (dhcpconf.validate). */
+export const SCOPE_MIN_PREFIX = 8
+export const SCOPE_MAX_PREFIX = 30
+/** Largest distributed range (dhcpconf.MaxScopeSize). */
+export const MAX_SCOPE_SIZE = 65536
+/** Lease time bounds, in seconds (dhcpconf.validate). */
+export const MIN_LEASE_SECONDS = 60
+export const MAX_LEASE_SECONDS = 365 * 86400
+
+/** True when ip is a host address of n: inside the network, but neither its network address nor its broadcast. */
+export function netHostContains(n: Net4 | null, ip: string): boolean {
+  const v = ipToInt(ip)
+  return !!n && v !== null && v > n.base && v < n.broadcast
+}
+
+/**
+ * Reverse zones the server creates for a network (port of dnsconf.ReverseZonesFor):
+ * one per /24 for /17 to /32, one per /16 for /9 to /16, else the /8.
+ * 192.168.0.0/20 -> 16 zones, 0.168.192.in-addr.arpa … 15.168.192.in-addr.arpa.
+ */
+export function reverseZonesOf(cidr: string): string[] {
   const n = parseNet4(cidr)
-  if (!n) return null
-  const octets = intToIp(n.base).split(".")
-  const keep = Math.max(1, Math.min(3, Math.floor(n.prefix / 8)))
-  return octets.slice(0, keep).reverse().join(".") + ".in-addr.arpa"
+  if (!n) return []
+  const step = n.prefix <= 8 ? 8 : n.prefix <= 16 ? 16 : 24
+  const zoneSize = 2 ** (32 - step)
+  const first = Math.floor(n.base / zoneSize) * zoneSize
+  const count = n.prefix >= step ? 1 : 2 ** (step - n.prefix)
+  const out: string[] = []
+  for (let i = 0; i < count; i++) {
+    const octets = intToIp(first + i * zoneSize).split(".")
+    out.push(octets.slice(0, step / 8).reverse().join(".") + ".in-addr.arpa")
+  }
+  return out
+}
+
+/** "a.in-addr.arpa", "a et b", or "first … last (16 zones)". */
+export function reverseZonesSummary(zones: string[]): string {
+  if (zones.length <= 2) return zones.join(" et ")
+  return `${zones[0]} … ${zones[zones.length - 1]} (${zones.length} zones)`
+}
+
+/**
+ * Option codes the server refuses in custom options (dhcpconf reservedCodes):
+ * they are set by dedicated fields or by the protocol itself. Value = what to do instead.
+ */
+export const reservedOptionCodes: Record<number, string> = {
+  1: "le masque est déduit du champ Réseau",
+  3: "utilisez le champ Passerelle",
+  6: "utilisez le champ Serveurs DNS",
+  15: "utilisez le champ Domaine",
+  42: "utilisez le champ Serveurs NTP",
+  51: "utilisez le champ Durée du bail",
+  50: "elle fait partie du protocole DHCP",
+  53: "elle fait partie du protocole DHCP",
+  54: "elle fait partie du protocole DHCP",
+  55: "elle fait partie du protocole DHCP",
+  58: "elle fait partie du protocole DHCP",
+  59: "elle fait partie du protocole DHCP",
+  61: "elle fait partie du protocole DHCP",
+  82: "elle est ajoutée par les relais",
+}
+
+/** "L'option 3 est gérée par Leazone : utilisez le champ Passerelle." or undefined. */
+export function reservedOptionMessage(code: number): string | undefined {
+  const why = reservedOptionCodes[code]
+  return why ? `L'option ${code} est gérée par Leazone : ${why}.` : undefined
 }
 
 /** "aa-bb-cc-dd-ee-ff", "AABBCCDDEEFF"... -> "aa:bb:cc:dd:ee:ff"; null when not a MAC. */
@@ -136,7 +195,7 @@ export function scopeInputOf(s: Scope, patch: Partial<ScopeInput> = {}): ScopeIn
 /** "VLAN 20 · Invités", "VLAN 20", or "Sans VLAN". */
 export function vlanLabel(vlanId?: number | null, name?: string | null): string {
   if (vlanId === null || vlanId === undefined) return "Sans VLAN"
-  return name ? `${vlanId} - ${name}` : `VLAN ${vlanId}`
+  return name ? `VLAN ${vlanId} · ${name}` : `VLAN ${vlanId}`
 }
 
 export const fmtInt = new Intl.NumberFormat("fr-FR")
@@ -146,5 +205,8 @@ export function formatPercent(p?: number | null): string {
   return `${p < 10 && p > 0 ? p.toFixed(1).replace(".", ",") : Math.round(p)} %`
 }
 
-/** "1 bail actif", "3 baux actifs". */
-export const activeLeasesLabel = (n: number) => `${fmtInt.format(n)} ${n > 1 ? "baux actifs" : "bail actif"}`
+/** French count: 0 and 1 take the singular ("0 bail actif", "1 bail actif", "3 baux actifs"). */
+export const countLabel = (n: number, singular: string, plural: string) => `${fmtInt.format(n)} ${n >= 2 ? plural : singular}`
+
+/** "0 bail actif", "1 bail actif", "3 baux actifs". */
+export const activeLeasesLabel = (n: number) => countLabel(n, "bail actif", "baux actifs")

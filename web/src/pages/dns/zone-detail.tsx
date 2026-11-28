@@ -79,10 +79,19 @@ export default function ZoneDetailPage() {
         accessorFn: (r) => `${r.name ?? ""} ${r.fqdn ?? ""}`,
         sortingFn: nameSort,
         header: ({ column }) => <SortHeader column={column} title="Nom" />,
+        // Long names are cut (full name in the title); on narrow screens the value goes under the name.
         cell: ({ row }) => (
-          <span className="font-medium" title={row.original.fqdn}>
-            {row.original.name}
-          </span>
+          <>
+            <span
+              className="block max-w-[9rem] truncate font-medium @md:max-w-[12rem] @3xl:max-w-[16rem] @5xl:max-w-[18rem]"
+              title={row.original.fqdn ?? row.original.name}
+            >
+              {row.original.name}
+            </span>
+            <span className="block max-w-[9rem] truncate font-mono text-xs text-muted-foreground @md:max-w-[12rem] @xl:hidden" title={row.original.value}>
+              {row.original.value}
+            </span>
+          </>
         ),
       },
       {
@@ -97,8 +106,9 @@ export default function ZoneDetailPage() {
       {
         accessorKey: "value",
         header: ({ column }) => <SortHeader column={column} title="Valeur" />,
+        meta: { className: "hidden @xl:table-cell" },
         cell: ({ row }) => (
-          <span className="block max-w-[28rem] truncate font-mono text-xs" title={row.original.value}>
+          <span className="block max-w-[10rem] truncate font-mono text-xs @3xl:max-w-[14rem] @5xl:max-w-[22rem]" title={row.original.value}>
             {row.original.value}
           </span>
         ),
@@ -108,6 +118,7 @@ export default function ZoneDetailPage() {
         accessorFn: (r) => r.ttl ?? -1,
         header: ({ column }) => <SortHeader column={column} title="TTL" />,
         enableGlobalFilter: false,
+        meta: { className: "hidden @4xl:table-cell" },
         cell: ({ row }) =>
           row.original.ttl === null || row.original.ttl === undefined ? (
             <span className="text-muted-foreground">défaut</span>
@@ -121,6 +132,7 @@ export default function ZoneDetailPage() {
         id: "source",
         accessorFn: (r) => (r.source === "dhcp" ? "DHCP" : "manuel"),
         header: ({ column }) => <SortHeader column={column} title="Source" />,
+        meta: { className: "hidden @4xl:table-cell" },
         cell: ({ row }) =>
           row.original.source === "dhcp" ? (
             <Badge variant="secondary">DHCP</Badge>
@@ -181,6 +193,10 @@ export default function ZoneDetailPage() {
     () => (all ?? []).filter((r) => typeFilter === "all" || r.type === typeFilter),
     [all, typeFilter],
   )
+  // The last record of the filtered type is gone (deleted, edited): back to all types.
+  React.useEffect(() => {
+    if (all && typeFilter !== "all" && !presentTypes.has(typeFilter)) setTypeFilter("all")
+  }, [all, presentTypes, typeFilter])
 
   if (zone.isPending) return <BlockSpinner />
   if (zone.isError) {
@@ -259,41 +275,51 @@ export default function ZoneDetailPage() {
       </div>
 
       {records.isError && <p className="mb-3 text-sm text-destructive">{errorMessage(records.error)}</p>}
-      <DataTable
-        columns={columns}
-        data={data}
-        loading={records.isPending}
-        getRowId={(r) => r.id ?? `${r.name}-${r.type}-${r.value}`}
-        searchPlaceholder="Rechercher un nom, une valeur…"
-        initialSorting={[{ id: "name", desc: false }]}
-        empty={canRecords ? "Aucun enregistrement. Ajoutez-en un ou importez un fichier de zone." : "Aucun enregistrement."}
-        toolbar={
-          <>
-            <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as "all" | RecordType)}>
-              <SelectTrigger className="w-36" aria-label="Filtrer par type">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les types</SelectItem>
-                {recordTypes
-                  .filter((t) => presentTypes.has(t))
-                  .map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-            {perms.allowed("records.write") && (
-              <WriteGuard>
-                <Button onClick={() => setEditing({ record: null })}>
-                  <Plus /> Ajouter
-                </Button>
-              </WriteGuard>
-            )}
-          </>
-        }
-      />
+      {/* Container queries: the columns follow the width really available (sidebar or not). */}
+      <div className="@container">
+        <DataTable
+          columns={columns}
+          data={data}
+          loading={records.isPending}
+          getRowId={(r) => r.id ?? `${r.name}-${r.type}-${r.value}`}
+          searchPlaceholder="Rechercher un nom, une valeur…"
+          initialSorting={[{ id: "name", desc: false }]}
+          empty={
+            typeFilter !== "all"
+              ? "Aucun enregistrement ne correspond aux filtres."
+              : canRecords
+                ? "Aucun enregistrement. Ajoutez-en un ou importez un fichier de zone."
+                : "Aucun enregistrement."
+          }
+          emptyFiltered="Aucun enregistrement ne correspond aux filtres."
+          toolbar={
+            <>
+              <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as "all" | RecordType)}>
+                <SelectTrigger className="w-40" aria-label="Filtrer par type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les types</SelectItem>
+                  {recordTypes
+                    .filter((t) => presentTypes.has(t))
+                    .map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {t}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {perms.allowed("records.write") && (
+                <WriteGuard>
+                  <Button onClick={() => setEditing({ record: null })}>
+                    <Plus /> Ajouter
+                  </Button>
+                </WriteGuard>
+              )}
+            </>
+          }
+        />
+      </div>
 
       <RecordDialog
         zone={z}

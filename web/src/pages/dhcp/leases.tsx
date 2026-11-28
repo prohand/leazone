@@ -61,11 +61,7 @@ export default function LeasesPage() {
   const canWrite = perms.can("leases.release")
   const canReserve = perms.can("leases.write")
   const [params, setParams] = useSearchParams()
-  // ⌘K "Rechercher un bail" lands here with ?search=1: focus the search box once.
-  const [focusSearch] = React.useState(() => params.get("search") === "1")
-  React.useEffect(() => {
-    if (params.has("search")) setParam("search", undefined)
-  }, [])
+  const tableRef = React.useRef<HTMLDivElement>(null)
 
   const scope = params.get("scope") ?? ""
   const vlanParam = Number(params.get("vlan"))
@@ -92,6 +88,25 @@ export default function LeasesPage() {
   React.useEffect(() => {
     if ((params.get("q") ?? "") !== debouncedQ) setParam("q", debouncedQ || undefined)
   }, [debouncedQ])
+
+  // The URL can change while the page is shown (⌘K, links): follow ?q= when it differs from what was typed.
+  const urlQ = params.get("q") ?? ""
+  React.useEffect(() => {
+    if (urlQ !== debouncedQ) setQ(urlQ)
+    // Only when the URL changes: our own debounced writes match debouncedQ and are ignored.
+  }, [urlQ])
+
+  // ⌘K "Rechercher un bail" lands here with ?search=1 (even when already on the page):
+  // focus the search box, then drop the parameter so the next ?search=1 is seen again.
+  const wantFocus = params.get("search") === "1"
+  React.useEffect(() => {
+    if (!wantFocus) return
+    const id = requestAnimationFrame(() =>
+      tableRef.current?.querySelector<HTMLInputElement>('input[aria-label="Rechercher"]')?.focus(),
+    )
+    setParam("search", undefined)
+    return () => cancelAnimationFrame(id)
+  }, [wantFocus])
 
   // Released and expired leases are only returned with all=true.
   const filters: LeaseFilters = {
@@ -133,11 +148,12 @@ export default function LeasesPage() {
   const reserveMutate = reserve.mutate
 
   const scopeItems = scopes.data?.items ?? []
-  const vlanOptions = React.useMemo(() => {
+  const vlanNames = React.useMemo(() => {
     const m = new Map<number, string>()
     for (const s of scopeItems) if (s.vlanId != null) m.set(s.vlanId, s.vlanName ?? "")
-    return [...m.entries()].sort((a, b) => a[0] - b[0])
+    return m
   }, [scopeItems])
+  const vlanOptions = React.useMemo(() => [...vlanNames.entries()].sort((a, b) => a[0] - b[0]), [vlanNames])
 
   const columns = React.useMemo<ColumnDef<Lease, unknown>[]>(
     () => [
@@ -191,7 +207,9 @@ export default function LeasesPage() {
         cell: ({ row }) => (
           <div className="text-sm">
             <span>{row.original.scopeName || "—"}</span>
-            <span className="block text-xs text-muted-foreground">{vlanLabel(row.original.vlanId)}</span>
+            <span className="block text-xs text-muted-foreground">
+              {vlanLabel(row.original.vlanId, row.original.vlanId != null ? vlanNames.get(row.original.vlanId) : undefined)}
+            </span>
           </div>
         ),
       },
@@ -249,7 +267,9 @@ export default function LeasesPage() {
               enableGlobalFilter: false,
               cell: ({ row }) => {
                 const l = row.original
-                if (!isLive(l) && (l.reserved || !canReserve)) return null
+                // Without a MAC (e.g. a conflict marker) the server cannot turn the lease into a reservation.
+                const reservable = !l.reserved && canReserve && !!l.mac
+                if (!isLive(l) && !reservable) return null
                 return (
                   <div className="flex justify-end">
                     <DropdownMenu>
@@ -261,7 +281,7 @@ export default function LeasesPage() {
                       <DropdownMenuContent align="end" className="w-56">
                         <DropdownMenuLabel className="font-mono">{l.ip}</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        {!l.reserved && canReserve && (
+                        {reservable && (
                           <DropdownMenuItem onSelect={() => reserveMutate(l)}>
                             <BookmarkPlus /> Convertir en réservation
                           </DropdownMenuItem>
@@ -280,7 +300,7 @@ export default function LeasesPage() {
           ]
         : []),
     ],
-    [canWrite, canReserve, reserveMutate],
+    [canWrite, canReserve, reserveMutate, vlanNames],
   )
 
   const updated = list.dataUpdatedAt ? new Date(list.dataUpdatedAt).toLocaleTimeString("fr-FR") : ""
@@ -306,70 +326,71 @@ export default function LeasesPage() {
         }
       />
       {list.isError && <p className="mb-3 text-sm text-destructive">{errorMessage(list.error)}</p>}
-      <DataTable
-        columns={columns}
-        data={list.data?.items}
-        loading={list.isPending}
-        getRowId={leaseKey}
-        search={q}
-        onSearchChange={setQ}
-        searchAutoFocus={focusSearch}
-        searchPlaceholder="IP, MAC, nom, circuit-id…"
-        initialSorting={[{ id: "ip", desc: false }]}
-        empty={
-          scopes.data && scopeItems.length === 0 ? "Aucune étendue : créez-en une pour distribuer des adresses." : "Aucun bail pour ces filtres."
-        }
-        rowClassName={(l) => (isLive(l) ? undefined : "opacity-60")}
-        toolbar={
-          <>
-            <Select value={scope || "all"} onValueChange={(v) => setParam("scope", v === "all" ? undefined : v)}>
-              <SelectTrigger className="w-48" aria-label="Filtrer par étendue">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Toutes les étendues</SelectItem>
-                {scope && !scopeItems.some((s) => s.id === scope) && <SelectItem value={scope}>Étendue {scope}</SelectItem>}
-                {scopeItems.map((s) => (
-                  <SelectItem key={s.id} value={s.id ?? ""}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={vlan ? String(vlan) : "all"} onValueChange={(v) => setParam("vlan", v === "all" ? undefined : v)}>
-              <SelectTrigger className="w-40" aria-label="Filtrer par VLAN">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les VLAN</SelectItem>
-                {vlan && !vlanOptions.some(([id]) => id === vlan) && <SelectItem value={String(vlan)}>VLAN {vlan}</SelectItem>}
-                {vlanOptions.map(([id, name]) => (
-                  <SelectItem key={id} value={String(id)}>
-                    {vlanLabel(id, name)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={state ?? "all"} onValueChange={(v) => setParam("state", v === "all" ? undefined : v)}>
-              <SelectTrigger className="w-36" aria-label="Filtrer par état">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les états</SelectItem>
-                {leaseStates.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {leaseStateLabel[s]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <label className="flex items-center gap-2 text-sm whitespace-nowrap">
-              <Switch checked={showOld} onCheckedChange={(v) => setParam("all", v ? "1" : undefined)} aria-label="Afficher les anciens baux" />
-              Anciens baux
-            </label>
-          </>
-        }
-      />
+      <div ref={tableRef}>
+        <DataTable
+          columns={columns}
+          data={list.data?.items}
+          loading={list.isPending}
+          getRowId={leaseKey}
+          search={q}
+          onSearchChange={setQ}
+          searchPlaceholder="IP, MAC, nom, circuit-id…"
+          initialSorting={[{ id: "ip", desc: false }]}
+          empty={
+            scopes.data && scopeItems.length === 0 ? "Aucune étendue : créez-en une pour distribuer des adresses." : "Aucun bail pour ces filtres."
+          }
+          rowClassName={(l) => (isLive(l) ? undefined : "opacity-60")}
+          toolbar={
+            <>
+              <Select value={scope || "all"} onValueChange={(v) => setParam("scope", v === "all" ? undefined : v)}>
+                <SelectTrigger className="w-48" aria-label="Filtrer par étendue">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les étendues</SelectItem>
+                  {scope && !scopeItems.some((s) => s.id === scope) && <SelectItem value={scope}>Étendue {scope}</SelectItem>}
+                  {scopeItems.map((s) => (
+                    <SelectItem key={s.id} value={s.id ?? ""}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={vlan ? String(vlan) : "all"} onValueChange={(v) => setParam("vlan", v === "all" ? undefined : v)}>
+                <SelectTrigger className="w-40" aria-label="Filtrer par VLAN">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les VLAN</SelectItem>
+                  {vlan && !vlanOptions.some(([id]) => id === vlan) && <SelectItem value={String(vlan)}>{vlanLabel(vlan)}</SelectItem>}
+                  {vlanOptions.map(([id, name]) => (
+                    <SelectItem key={id} value={String(id)}>
+                      {vlanLabel(id, name)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={state ?? "all"} onValueChange={(v) => setParam("state", v === "all" ? undefined : v)}>
+                <SelectTrigger className="w-36" aria-label="Filtrer par état">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les états</SelectItem>
+                  {leaseStates.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {leaseStateLabel[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <label className="flex items-center gap-2 text-sm whitespace-nowrap">
+                <Switch checked={showOld} onCheckedChange={(v) => setParam("all", v ? "1" : undefined)} aria-label="Afficher les anciens baux" />
+                Anciens baux
+              </label>
+            </>
+          }
+        />
+      </div>
       {showOld && <p className="mt-2 text-xs text-muted-foreground">Les baux libérés ou expirés restent visibles 24 h.</p>}
       {releasing && (
         <ConfirmDialog

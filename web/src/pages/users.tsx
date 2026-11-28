@@ -8,6 +8,7 @@ import { qk } from "@/api/queries"
 import type { Role, User } from "@/api/types"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { DataTable, SortHeader } from "@/components/data-table"
+import { LoadError } from "@/components/form-field"
 import { PageHeader } from "@/components/page-header"
 import { RoleBadge } from "@/components/role-badge"
 import { SecretOnceDialog } from "@/components/secret-once-dialog"
@@ -103,6 +104,11 @@ export default function UsersPage() {
           <div className="flex items-center gap-2 font-medium">
             {row.original.username}
             {row.original.id === me?.id && <Badge variant="outline">Vous</Badge>}
+            {row.original.disabled && (
+              <Badge variant="destructive" className="sm:hidden">
+                Désactivé
+              </Badge>
+            )}
           </div>
         ),
       },
@@ -115,6 +121,8 @@ export default function UsersPage() {
       {
         id: "mfa",
         accessorFn: (u) => (u.mfaEnabled ? 1 : 0),
+        // Small screens: secondary columns hidden so the actions stay in view.
+        meta: { className: "hidden md:table-cell" },
         header: ({ column }) => <SortHeader column={column} title="MFA" />,
         enableGlobalFilter: false,
         cell: ({ row }) => {
@@ -139,6 +147,7 @@ export default function UsersPage() {
       {
         id: "status",
         accessorFn: (u) => (u.disabled ? "Désactivé" : "Actif"),
+        meta: { className: "hidden sm:table-cell" },
         header: ({ column }) => <SortHeader column={column} title="État" />,
         cell: ({ row }) =>
           row.original.disabled ? <Badge variant="destructive">Désactivé</Badge> : <Badge variant="secondary">Actif</Badge>,
@@ -146,6 +155,7 @@ export default function UsersPage() {
       {
         id: "lastLogin",
         accessorFn: (u) => (u.lastLoginAt ? new Date(u.lastLoginAt).getTime() : 0),
+        meta: { className: "hidden lg:table-cell" },
         header: ({ column }) => <SortHeader column={column} title="Dernière connexion" />,
         enableGlobalFilter: false,
         cell: ({ row }) => (
@@ -154,6 +164,7 @@ export default function UsersPage() {
       },
       {
         id: "actions",
+        header: () => <span className="sr-only">Actions</span>,
         enableSorting: false,
         enableGlobalFilter: false,
         cell: ({ row }) => {
@@ -274,6 +285,9 @@ export default function UsersPage() {
           </WriteGuard>
         }
       />
+      {list.isError && (
+        <LoadError className="mb-3" error={list.error} onRetry={() => void list.refetch()} retrying={list.isFetching} />
+      )}
       <DataTable
         columns={columns}
         data={data}
@@ -281,7 +295,7 @@ export default function UsersPage() {
         getRowId={(u) => u.id ?? u.username ?? ""}
         searchPlaceholder="Rechercher un utilisateur…"
         initialSorting={[{ id: "username", desc: false }]}
-        empty="Aucun utilisateur."
+        empty={list.isError ? "Liste indisponible." : "Aucun utilisateur."}
         toolbar={
           <Select value={roleFilter} onValueChange={(v) => setRoleFilter(v as "all" | Role)}>
             <SelectTrigger className="w-44" aria-label="Filtrer par rôle">
@@ -335,21 +349,24 @@ function CreateUserDialog({
   const [password, setPassword] = React.useState("")
   const [localError, setLocalError] = React.useState<string | null>(null)
 
-  React.useEffect(() => {
-    if (open) {
-      setUsername("")
-      setRole("readonly")
-      setPassword("")
-      setLocalError(null)
-    }
-  }, [open])
-
   const create = useMutation({
     mutationFn: () =>
       api.post("/users", { body: { username: username.trim(), role, ...(password ? { password } : {}) } }),
     meta: { silent: true },
     onSuccess: (r) => onCreated(r.item?.username ?? username, r.temporaryPassword),
   })
+
+  // Fresh form on every opening (no error left from the previous attempt).
+  const resetCreate = create.reset
+  React.useEffect(() => {
+    if (open) {
+      setUsername("")
+      setRole("readonly")
+      setPassword("")
+      setLocalError(null)
+      resetCreate()
+    }
+  }, [open, resetCreate])
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -384,9 +401,9 @@ function CreateUserDialog({
             {usernameError && <p className="text-sm text-destructive">{usernameError}</p>}
           </div>
           <div className="space-y-2">
-            <Label>Rôle</Label>
+            <Label htmlFor="new-role">Rôle</Label>
             <Select value={role} onValueChange={(v) => setRole(v as Role)}>
-              <SelectTrigger className="w-full">
+              <SelectTrigger id="new-role" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
