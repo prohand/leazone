@@ -41,26 +41,33 @@ func TestRelaySpoofedGiaddrAndSubnetSelection(t *testing.T) {
 	}
 }
 
-// giaddr of the relayed network but sent from another address: refused,
-// unless that address is a listed relay agent of the scope.
+// giaddr of the relayed network sent from a network served directly (a
+// client forging giaddr): refused, unless that address is a listed relay
+// agent of the scope. A relay sending from its routed uplink is accepted.
 func TestRelaySourceMustBeTheRelay(t *testing.T) {
 	e, _, _ := newEngine(t)
 	ctx := context.Background()
 	gi := dhcpv4.WithGatewayIP(net.IPv4(10, 0, 40, 1))
-	if r := e.Handle(ctx, Packet{Msg: discover(mac(1), gi), IfIndex: 1, Src: netip.MustParseAddr("192.168.1.66")}); r != nil {
-		t.Fatal("relayed request from another source answered")
+	for _, src := range []string{"10.0.10.66", "10.0.50.9"} { // direct scope, DHCP-enabled interface
+		if r := e.Handle(ctx, Packet{Msg: discover(mac(1), gi), IfIndex: 10, Src: netip.MustParseAddr(src)}); r != nil {
+			t.Fatalf("relayed request forged from %s answered", src)
+		}
 	}
 	if r := e.Handle(ctx, Packet{Msg: discover(mac(1), gi), IfIndex: 1, Src: netip.MustParseAddr("10.0.40.1")}); r == nil {
 		t.Fatal("genuine relayed request ignored")
 	}
+	// Most relays send from their interface towards the server.
+	if r := e.Handle(ctx, Packet{Msg: discover(mac(3), gi), IfIndex: 1, Src: netip.MustParseAddr("192.168.1.254")}); r == nil {
+		t.Fatal("relay sending from its routed uplink ignored")
+	}
 	scopes := scopesOf(e)
 	for _, s := range scopes {
 		if s.Relay {
-			s.RelayAgents = []string{"192.168.1.254"}
+			s.RelayAgents = []string{"10.0.10.254"}
 		}
 	}
 	setConfig(e, scopes)
-	if r := e.Handle(ctx, Packet{Msg: discover(mac(2), gi), IfIndex: 1, Src: netip.MustParseAddr("192.168.1.254")}); r == nil {
+	if r := e.Handle(ctx, Packet{Msg: discover(mac(2), gi), IfIndex: 10, Src: netip.MustParseAddr("10.0.10.254")}); r == nil {
 		t.Fatal("relay sending from a listed agent address ignored")
 	}
 }

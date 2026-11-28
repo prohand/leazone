@@ -180,11 +180,35 @@ func (e *Engine) relayScope(p Packet, gi netip.Addr) *scopeRT {
 	if s == nil {
 		return nil
 	}
-	if p.Src.IsValid() && p.Src != gi && !s.trustsRelay(p.Src) {
-		e.log.Debug("DHCP relayed request ignored: source is not the relay", "giaddr", gi, "src", p.Src, "scope", s.Name)
+	// Relays often send from their interface towards us, not from giaddr:
+	// accept that from a routed network. A source on a network we serve
+	// directly is a client forging giaddr, unless it is a listed relay.
+	if p.Src.IsValid() && p.Src != gi && !s.trustsRelay(p.Src) && e.servedDirectly(p.Src) {
+		e.log.Debug("DHCP relayed request ignored: sent from a directly served network", "giaddr", gi, "src", p.Src, "scope", s.Name)
 		return nil
 	}
 	return s
+}
+
+// servedDirectly reports whether a is on a network where DHCP answers
+// clients directly: a direct scope, or an interface with DHCP enabled.
+func (e *Engine) servedDirectly(a netip.Addr) bool {
+	for _, s := range e.ordered {
+		if s.Enabled && !s.Relay && s.prefix.Contains(a) {
+			return true
+		}
+	}
+	for _, it := range e.ifaces {
+		if !e.dhcpOn[it.Name] {
+			continue
+		}
+		for _, ad := range it.Addresses {
+			if ad.Prefix.Masked().Contains(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // trustsRelay reports whether a is listed in the scope's relay agents.

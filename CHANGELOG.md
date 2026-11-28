@@ -22,8 +22,10 @@ haute disponibilité, authentification, API, sauvegarde, interface, publication)
   Pour en générer une : `openssl rand -base64 32` ou `leazone cluster gen-key`.
 
 **DHCP**
-- Relais : une requête relayée doit venir de l'adresse du relais (`giaddr`). Si votre relais envoie depuis une autre
-  adresse, ajoutez-la dans les *agents relais supplémentaires* de l'étendue.
+- Relais : une requête relayée envoyée depuis un réseau servi en direct (un poste qui forge `giaddr`) est ignorée.
+  Si votre relais est lui-même sur un réseau servi en direct et envoie depuis une autre adresse que `giaddr`,
+  ajoutez cette adresse dans les *agents relais supplémentaires* de l'étendue. Un relais sur un réseau routé marche
+  sans changement.
 - Les options 82.5 et 118 ne sont suivies que si le relais est listé dans les *agents relais supplémentaires* de
   l'étendue visée ; sinon l'étendue est choisie d'après `giaddr`.
 - INFORM : pas de réponse si l'adresse du client n'est pas dans le réseau de son étendue.
