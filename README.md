@@ -39,7 +39,8 @@ Puis :
   docker logs leazone
   ```
   Pour le choisir vous-même, écrivez-le dans `compose/secrets/admin_password` **avant** le premier démarrage.
-- Ouvrez `https://<ip-ou-nom-de-l-hôte>:8443`.
+- Ouvrez `https://<ip-ou-nom-de-l-hôte>:8443`. Par défaut, ce port répond sur toutes les interfaces de l'hôte (VLAN
+  clients compris) : pour le restreindre, voir « Derrière nginx ».
 - Au premier login, Leazone **impose la configuration du MFA** (passkey ou TOTP) et donne 10 codes de secours. Gardez-les.
 
 > `--build` construit l'image sur place. Pour utiliser l'image publiée (`ghcr.io/prohand/leazone`, amd64 et arm64),
@@ -632,8 +633,11 @@ Images publiées : `ghcr.io/prohand/leazone` pour amd64 et arm64 (Raspberry Pi 4
 par GitHub Actions). Vérifier avant de déployer :
 
 ```bash
-cosign verify ghcr.io/prohand/leazone:1.2.3 --certificate-identity-regexp 'https://github.com/prohand/leazone/.github/workflows/release.yml@.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify ghcr.io/prohand/leazone:1.2.3 --certificate-identity-regexp '^https://github.com/prohand/leazone/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$' --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+Cette vérification n'accepte que les images signées par le workflow de publication lancé depuis `main` ou depuis un
+tag de version : une image construite depuis une autre branche est refusée.
 
 Pour suivre les correctifs sans changer de version mineure, mettez `LEAZONE_IMAGE=ghcr.io/prohand/leazone:1.2` dans `.env`.
 

@@ -2,10 +2,16 @@ name: Release
 
 # Publishes ghcr.io/prohand/leazone for linux/amd64 and linux/arm64 when a
 # version tag is pushed (git tag v1.2.3 && git push origin v1.2.3), or when
-# run by hand (Actions > Release > Run workflow): the run then also creates
-# the tag on the chosen branch.
+# run by hand from main (Actions > Release > Run workflow): the run then also
+# creates the tag on the current commit of main.
+# Only commits of main are published: a tag on another branch, or a manual run
+# from another branch, is refused. The tests run first, and the publishing job
+# uses the "release" environment (approval by the reviewers set on GitHub).
 # Tags: 1.2.3, 1.2 and latest. Each image has an SBOM and a provenance
 # attestation, and is signed with cosign (keyless, GitHub OIDC).
+#
+# Actions are pinned by full commit SHA (tag in the comment); Dependabot
+# (.github/dependabot.yml) proposes the updates.
 
 on:
   push:
@@ -19,49 +25,134 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/prohand/leazone
 
 jobs:
+  guard:
+    name: Check version and source commit
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      date: ${{ steps.v.outputs.date }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Version, branch and tag checks
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            workflow_dispatch)
+              if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+                echo "::error::Manual release only from main (got $GITHUB_REF)."
+                exit 1
+              fi
+              v="$INPUT_VERSION"
+              ;;
+            push)
+              v="${GITHUB_REF_NAME#v}"
+              ;;
+            *)
+              echo "::error::Unexpected event $EVENT."
+              exit 1
+              ;;
+          esac
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version (expected X.Y.Z)."
+            exit 1
+          fi
+          # The published commit must be on main.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::Commit $GITHUB_SHA is not on main: release refused."
+            exit 1
+          fi
+          # An existing tag must point to this very commit.
+          if tagged=$(git rev-parse -q --verify "refs/tags/v$v^{commit}"); then
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag v$v already exists on another commit ($tagged)."
+              exit 1
+            fi
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: guard
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Go vet and tests
+        run: |
+          test -z "$(gofmt -l ./cmd ./internal ./api ./web)"
+          go vet ./...
+          go test -race -count=1 ./...
+
   image:
     runs-on: ubuntu-latest
+    needs: [guard, test]
+    environment: release
     permissions:
       contents: write   # tag and GitHub release
       packages: write   # push to ghcr.io
       id-token: write   # cosign keyless signature
       attestations: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - name: Version
-        id: v
-        run: |
-          v="${{ github.event.inputs.version }}"
-          [ -z "$v" ] && v="${GITHUB_REF_NAME#v}"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE }}
+          # The version was checked against ^[0-9]+\.[0-9]+\.[0-9]+$ in the guard job.
           tags: |
-            type=semver,pattern={{version}},value=v${{ steps.v.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.v.outputs.version }}
+            type=semver,pattern={{version}},value=v${{ needs.guard.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.guard.outputs.version }}
           # "latest" is added automatically for the highest semver tag.
 
       - name: Build and push (amd64 + arm64, SBOM, provenance)
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -71,31 +162,34 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.v.outputs.version }}
+            VERSION=${{ needs.guard.outputs.version }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.v.outputs.date }}
+            BUILD_DATE=${{ needs.guard.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Image size < 40 MB (amd64)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          docker pull --platform linux/amd64 "$IMAGE@${{ steps.build.outputs.digest }}"
-          size=$(docker image inspect "$IMAGE@${{ steps.build.outputs.digest }}" -f '{{.Size}}')
+          docker pull --platform linux/amd64 "$IMAGE@$DIGEST"
+          size=$(docker image inspect "$IMAGE@$DIGEST" -f '{{.Size}}')
           echo "size: $((size/1024/1024)) MB"
           [ "$size" -lt $((40*1024*1024)) ]
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign with cosign (keyless)
-        run: cosign sign --yes "$IMAGE@${{ steps.build.outputs.digest }}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
 
       - name: Tag and GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.v.outputs.version }}
         run: |
           tag="v$VERSION"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $tag already exists"
             exit 0
           fi
@@ -106,21 +200,24 @@ jobs:
             echo
             echo "Image : \`ghcr.io/prohand/leazone:$VERSION\` (amd64, arm64), signée avec cosign."
           } >> notes.md
-          # Creates the tag on this commit when it does not exist yet (manual run).
-          gh release create "$tag" --target "$GITHUB_SHA" --title "Leazone $VERSION" --notes-file notes.md
+          # Creates the tag on this commit (checked to be on main) when it does not exist yet (manual run).
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Leazone $VERSION" --notes-file notes.md
 
       - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
-            echo "### ghcr.io/prohand/leazone ${{ steps.v.outputs.version }}"
+            echo "### ghcr.io/prohand/leazone $VERSION"
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo "digest: ${{ steps.build.outputs.digest }}"
+            echo "$TAGS"
+            echo "digest: $DIGEST"
             echo '```'
             echo "Vérifier la signature :"
             echo '```'
-            echo "cosign verify $IMAGE:${{ steps.v.outputs.version }} \\"
-            echo "  --certificate-identity-regexp 'https://github.com/prohand/leazone/.github/workflows/release.yml@.*' \\"
+            echo "cosign verify $IMAGE:$VERSION \\"
+            echo "  --certificate-identity-regexp '^https://github.com/prohand/leazone/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$' \\"
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
