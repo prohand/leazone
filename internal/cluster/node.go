@@ -956,6 +956,12 @@ func (n *Node) applyDHCPPolicy() {
 	if n.d.DHCP == nil {
 		return
 	}
+	n.d.DHCP.SetPolicy(n.dhcpPolicy())
+}
+
+// dhcpPolicy computes the allocation (owns) and answering (serves) rules of
+// this node from its role and its peers.
+func (n *Node) dhcpPolicy() (owns func(string, uint32) bool, serves func(byte) bool) {
 	n.mu.Lock()
 	mode := n.Settings().DHCPMode
 	role, partnerDown := n.role, n.partnerDown
@@ -979,21 +985,21 @@ func (n *Node) applyDHCPPolicy() {
 	noneC := func(byte) bool { return false }
 	switch {
 	case partnerDown && role == proto.RolePrimary:
-		n.d.DHCP.SetPolicy(all, allC)
+		return all, allC
 	case mode == "active-passive" && role == proto.RolePrimary:
-		n.d.DHCP.SetPolicy(all, allC)
+		return all, allC
 	case mode == "active-passive" && role == proto.RoleSecondary:
-		n.d.DHCP.SetPolicy(none, noneC)
+		return none, noneC
 	case role != proto.RolePrimary && (mode == "active-passive" || (n.witnessM == "container" && !peerSeen) || mismatch):
 		// Not following a primary that may be serving the whole pool
 		// (active-passive, partner-down after the witness gave it the role
 		// while we are cut from it, or a peer of another protocol version
 		// that cannot see us): no new address, existing leases and
 		// reservations only (own clients).
-		n.d.DHCP.SetPolicy(none, dhcpsrv.Buckets(nodes, n.d.NodeID))
+		return none, dhcpsrv.Buckets(nodes, n.d.NodeID)
 	default:
 		// Load balancing, or a degraded state: own clients and own addresses.
-		n.d.DHCP.SetPolicy(dhcpsrv.AddressOwner(nodes, n.d.NodeID), dhcpsrv.Buckets(nodes, n.d.NodeID))
+		return dhcpsrv.AddressOwner(nodes, n.d.NodeID), dhcpsrv.Buckets(nodes, n.d.NodeID)
 	}
 }
 

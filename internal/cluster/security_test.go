@@ -190,7 +190,7 @@ func TestMismatchedPeerIsNotADeadPeer(t *testing.T) {
 	}
 	h.waitRole(n1, proto.RoleIncompatible, time.Second)
 	// The peer may serve the whole pool (it does not see us): no new address here.
-	if n1.node.d.DHCP.Owns("s", 10) || n1.node.d.DHCP.Owns("s", 11) {
+	if owns, _ := n1.node.dhcpPolicy(); owns("s", 10) || owns("s", 11) {
 		t.Fatal("new addresses given next to a peer that cannot see this node")
 	}
 	if v := n1.node.Status(context.Background()); len(v.Gaps) == 0 {
