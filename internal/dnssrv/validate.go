@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -150,8 +151,11 @@ func supportedAlg(a uint8) bool {
 	return false
 }
 
-// verifySet checks that one signature of the set is valid with one key.
-func (v *validator) verifySet(s *rrset, signer string, keys []*dns.DNSKEY) bool {
+// verifySet checks that one signature of the set is valid with one key and
+// returns that signature (nil if none is valid). Callers that read fields of
+// the signature (the label count of a wildcard expansion) must use the one
+// returned: the other RRSIGs of the set are not authenticated.
+func (v *validator) verifySet(s *rrset, signer string, keys []*dns.DNSKEY) *dns.RRSIG {
 	now := v.now()
 	for _, sig := range s.sigs {
 		if !strings.EqualFold(sig.SignerName, signer) || !sig.ValidityPeriod(now) || !dns.IsSubDomain(signer, s.owner) {
@@ -162,11 +166,26 @@ func (v *validator) verifySet(s *rrset, signer string, keys []*dns.DNSKEY) bool 
 				continue
 			}
 			if sig.Verify(k, s.rrs) == nil {
-				return true
+				return sig
 			}
 		}
 	}
-	return false
+	return nil
+}
+
+// signerOK tells whether signer may sign data at name: it must be name or
+// one of its ancestors (strictly an ancestor when strict is set: a DS or
+// its denial comes from the parent zone) and, when name is under the trust
+// anchor, signer must be under it too. The signer name comes from the
+// RRSIG, which the sender chooses: without these checks an answer could
+// name an unrelated insecure zone as its signer and pass as "insecure".
+func (v *validator) signerOK(signer, name string, strict bool) bool {
+	signer, name = strings.ToLower(dns.Fqdn(signer)), strings.ToLower(dns.Fqdn(name))
+	if !dns.IsSubDomain(signer, name) || (strict && signer == name) {
+		return false
+	}
+	anchor := v.anchorZone()
+	return !dns.IsSubDomain(anchor, name) || dns.IsSubDomain(anchor, signer)
 }
 
 // ---- chain of trust ----
@@ -216,24 +235,30 @@ func (v *validator) fetchKeys(ctx context.Context, zone string) ([]*dns.DNSKEY, 
 		}
 		if set == nil {
 			// No DS: the zone is insecure if the parent proves it.
+			// Only a proven delegation without DS (or an NSEC3 opt-out span)
+			// makes the zone insecure: a name that does not exist or is not
+			// a zone cut is not a zone and cannot sign anything.
 			neg := v.negative(ctx, zone, dns.TypeDS, r)
-			if neg.st == vSecure {
+			if neg.st != vSecure {
+				return nil, neg.st, neg.why
+			}
+			if neg.cut || neg.optOut {
 				return nil, vInsecure, "pas de DS pour " + zone
 			}
-			return nil, neg.st, neg.why
+			return nil, vBogus, zone + " n'est pas une zone déléguée"
 		}
 		if len(set.sigs) == 0 {
 			return nil, vBogus, "DS de " + zone + " non signé"
 		}
 		parent := strings.ToLower(set.sigs[0].SignerName)
-		if parent == zone || !dns.IsSubDomain(parent, zone) {
+		if !v.signerOK(parent, zone, true) {
 			return nil, vBogus, "DS de " + zone + " signé par " + parent
 		}
 		pkeys, pst, why := v.trustedKeys(ctx, parent)
 		if pst != vSecure {
 			return nil, pst, why
 		}
-		if !v.verifySet(set, parent, pkeys) {
+		if v.verifySet(set, parent, pkeys) == nil {
 			return nil, vBogus, "signature invalide du DS de " + zone
 		}
 		for _, rr := range set.rrs {
@@ -275,7 +300,7 @@ func (v *validator) fetchKeys(ctx context.Context, zone string) ([]*dns.DNSKEY, 
 			if d == nil || !strings.EqualFold(d.Digest, ds.Digest) {
 				continue
 			}
-			if v.verifySet(set, zone, []*dns.DNSKEY{k}) {
+			if v.verifySet(set, zone, []*dns.DNSKEY{k}) != nil {
 				return keys, vSecure, ""
 			}
 		}
@@ -373,10 +398,18 @@ func (v *validator) negative(ctx context.Context, name string, qtype uint16, m *
 	name = strings.ToLower(dns.Fqdn(name))
 	sets := group(m.Ns)
 	signer := ""
+	// The parent of the trust anchor cannot be validated: the anchor itself
+	// may deny its own DS (the root for "DS .").
+	strict := qtype == dns.TypeDS && name != v.anchorZone()
+find:
 	for _, s := range sets {
-		if len(s.sigs) > 0 {
-			signer = strings.ToLower(s.sigs[0].SignerName)
-			break
+		for _, sig := range s.sigs {
+			// The denial must come from the zone of name (from the parent
+			// zone for a DS), not from a zone the sender picked.
+			if c := strings.ToLower(sig.SignerName); v.signerOK(c, name, strict) {
+				signer = c
+				break find
+			}
 		}
 	}
 	if signer == "" {
@@ -391,7 +424,10 @@ func (v *validator) negative(ctx context.Context, name string, qtype uint16, m *
 	for _, s := range sets {
 		switch s.t {
 		case dns.TypeNSEC, dns.TypeNSEC3, dns.TypeSOA:
-			if !v.verifySet(s, signer, keys) {
+			if s.t == dns.TypeSOA && (s.owner != signer || !dns.IsSubDomain(s.owner, name)) {
+				return negResult{st: vBogus, why: "SOA de " + s.owner + " dans la réponse pour " + name}
+			}
+			if v.verifySet(s, signer, keys) == nil {
 				return negResult{st: vBogus, why: "signature invalide (" + dns.TypeToString[s.t] + " " + s.owner + ")"}
 			}
 			for _, rr := range s.rrs {
@@ -559,34 +595,12 @@ func (v *validator) check(ctx context.Context, qname string, qtype uint16, m *dn
 		} else if s.owner == cur && (s.t == qtype || qtype == dns.TypeANY) {
 			answered = true
 		}
-		if len(s.sigs) == 0 {
-			st, why := v.zoneStatus(ctx, s.owner)
-			if st == vSecure {
-				return vBogus, "enregistrement non signé dans une zone signée : " + s.owner
-			}
-			if st == vBogus {
-				return vBogus, why
-			}
-			result = vInsecure
-			continue
-		}
-		signer := strings.ToLower(s.sigs[0].SignerName)
-		keys, st, why := v.trustedKeys(ctx, signer)
-		if st == vBogus {
+		st, why := v.checkSet(ctx, s, m.Ns)
+		switch st {
+		case vBogus:
 			return vBogus, why
-		}
-		if st == vInsecure {
+		case vInsecure:
 			result = vInsecure
-			continue
-		}
-		if !v.verifySet(s, signer, keys) {
-			return vBogus, "signature invalide pour " + s.owner + " " + dns.TypeToString[s.t]
-		}
-		// Wildcard expansion: the exact name must be proven absent.
-		if labels := int(s.sigs[0].Labels); labels < dns.CountLabel(s.owner) {
-			if !v.wildcardProof(s.owner, labels, signer, keys, m.Ns) {
-				return vBogus, "réponse par joker sans preuve : " + s.owner
-			}
 		}
 	}
 	if answered {
@@ -600,23 +614,74 @@ func (v *validator) check(ctx context.Context, qname string, qtype uint16, m *dn
 		}
 	}
 	if !hasSig {
-		st, why := v.zoneStatus(ctx, cur)
-		if st == vSecure {
-			return vBogus, "réponse négative non signée dans une zone signée : " + cur
-		}
-		if st == vBogus {
-			return vBogus, why
-		}
-		return vInsecure, ""
+		return v.unsignedStatus(ctx, cur, "réponse négative non signée dans une zone signée : ")
 	}
 	neg := v.negative(ctx, cur, qtype, m)
 	if neg.st == vBogus {
 		return vBogus, neg.why
 	}
-	if neg.st == vInsecure || neg.optOut || result == vInsecure {
+	if neg.st == vInsecure {
+		// The signer of the denial is insecure: the name is insecure only
+		// if its own zone is (the signer could be any insecure zone).
+		if st, why := v.unsignedStatus(ctx, cur, "réponse négative d'une zone non signée pour un nom d'une zone signée : "); st != vInsecure {
+			return st, why
+		}
+		return vInsecure, ""
+	}
+	if neg.optOut || result == vInsecure {
 		return vInsecure, ""
 	}
 	return vSecure, ""
+}
+
+// checkSet validates one RRset of the answer section.
+func (v *validator) checkSet(ctx context.Context, s *rrset, ns []dns.RR) (vstatus, string) {
+	// Candidate signers: the zone of the owner or one of its ancestors.
+	var signers []string
+	for _, sig := range s.sigs {
+		c := strings.ToLower(sig.SignerName)
+		if v.signerOK(c, s.owner, false) && !slices.Contains(signers, c) {
+			signers = append(signers, c)
+		}
+	}
+	for _, signer := range signers {
+		keys, st, _ := v.trustedKeys(ctx, signer)
+		if st != vSecure {
+			continue
+		}
+		sig := v.verifySet(s, signer, keys)
+		if sig == nil {
+			continue
+		}
+		// Wildcard expansion: the exact name must be proven absent. The
+		// label count is read from the signature that was verified.
+		if labels := int(sig.Labels); labels < dns.CountLabel(s.owner) {
+			if !v.wildcardProof(s.owner, labels, signer, keys, ns) {
+				return vBogus, "réponse par joker sans preuve : " + s.owner
+			}
+		}
+		return vSecure, ""
+	}
+	// No signature verified: acceptable only if the zone of the owner is
+	// insecure, whatever signer the RRSIGs claim.
+	msg := "enregistrement non signé dans une zone signée : "
+	if len(s.sigs) > 0 {
+		msg = "signature invalide pour " + dns.TypeToString[s.t] + " "
+	}
+	return v.unsignedStatus(ctx, s.owner, msg)
+}
+
+// unsignedStatus is the verdict for data at name that no trusted key
+// signed: insecure if name is in an unsigned zone, bogus otherwise.
+func (v *validator) unsignedStatus(ctx context.Context, name, msg string) (vstatus, string) {
+	st, why := v.zoneStatus(ctx, name)
+	switch st {
+	case vSecure:
+		return vBogus, msg + name
+	case vBogus:
+		return vBogus, why
+	}
+	return vInsecure, ""
 }
 
 // memoKey identifies a question and the answer given for it. The verdict
@@ -648,7 +713,7 @@ func (v *validator) wildcardProof(owner string, labels int, signer string, keys 
 	// The closest encloser has `labels` labels; the next closer one more.
 	nextCloser := owner[idx[len(idx)-labels-1]:]
 	for _, a := range group(ns) {
-		if (a.t != dns.TypeNSEC && a.t != dns.TypeNSEC3) || !v.verifySet(a, signer, keys) {
+		if (a.t != dns.TypeNSEC && a.t != dns.TypeNSEC3) || v.verifySet(a, signer, keys) == nil {
 			continue
 		}
 		for _, rr := range a.rrs {

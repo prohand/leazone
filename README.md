@@ -196,7 +196,21 @@ network:
       addresses: [192.168.20.2/24]
 ```
 
-Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*.
+Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*
+(`0.0.0.0` et `::` y sont refusés ; une ancienne configuration qui les contient est ignorée avec un avertissement).
+
+**IPv6** : Leazone écoute sur **toutes** les IP des interfaces activées, y compris une IPv6 **globale** (joignable
+depuis Internet si votre routeur ne filtre pas). Sur une interface qui a une IPv6 globale, filtrez le port 53 avec le
+pare-feu de l'hôte (ou du routeur) pour ne l'ouvrir qu'au réseau local.
+
+Protections contre les abus (sans réglage) :
+- réponses UDP limitées à 1232 octets (au-delà : réponse tronquée, le client repasse en TCP) ;
+- une requête `ANY` d'un client hors des *réseaux autorisés* ne reçoit qu'un seul type d'enregistrement (RFC 8482) ;
+- limitation du débit de réponses pour les clients hors des *réseaux autorisés* : 20 réponses/s par réseau /24
+  (IPv4) ou /56 (IPv6), au-delà une réponse sur deux est tronquée et les autres ignorées. Le réseau local n'est
+  jamais limité ;
+- au plus 1000 requêtes récursives en cours (100 par client), au-delà SERVFAIL ; au plus 512 connexions TCP
+  (32 par adresse).
 
 ### 2. Zones
 
@@ -205,7 +219,8 @@ Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètre
 - **Zone inverse** : tapez simplement le réseau, ex. `192.168.20.0/24` → `20.168.192.in-addr.arpa`.
 - Import / export au format BIND (fichier `.zone`), pratique pour migrer.
 - Les zones locales répondent à **tous** les clients ; la récursion (noms externes) est limitée aux
-  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, CGNAT, loopback, ULA IPv6).
+  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, loopback, ULA IPv6, lien-local IPv6). Le CGNAT
+  (`100.64.0.0/10`) n'y est plus par défaut : ajoutez-le si vos clients sont derrière un CGNAT à vous.
 
 ### 3. Redirecteurs
 
@@ -260,7 +275,17 @@ En HA, mettez les **deux** nœuds en `helper-address`.
 ### Isolation stricte
 
 - Une requête reçue en direct ne sert **que** l'étendue liée à l'interface d'arrivée.
-- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (ou ses *agents relais supplémentaires*).
+- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (giaddr), ou dont les
+  *agents relais supplémentaires* listent cette adresse. Elle doit venir de l'adresse du relais (adresse source UDP
+  = giaddr) : si votre relais envoie depuis une autre adresse (son interface vers Leazone), ajoutez cette adresse
+  aux *agents relais supplémentaires* de l'étendue.
+- Les options de choix du réseau (82.5 *link selection*, 118 *subnet selection*) ne sont prises en compte que si le
+  relais est listé dans les *agents relais supplémentaires* de l'étendue qu'elles désignent ; sinon elles sont ignorées
+  (un client pourrait les forger).
+- L'interface d'arrivée d'une requête relayée n'est pas contrôlée (un relais sur un autre réseau routé arrive par
+  n'importe quelle interface) : filtrez UDP 67 sur l'interface WAN avec le pare-feu de l'hôte.
+- Protection contre les inondations : 64 requêtes traitées à la fois, 10 requêtes d'affilée puis 1/s par adresse
+  MAC, 200/s par interface ou relais. Au-delà, les paquets sont ignorés (les clients réessaient).
 - Aucune étendue trouvée → pas de réponse. Une demande d'adresse d'un autre réseau → refus (NAK).
 - Deux étendues ne peuvent pas avoir des réseaux qui se chevauchent.
 
@@ -278,6 +303,8 @@ Quand un client obtient un bail avec un nom d'hôte, Leazone crée :
 
 Ils sont supprimés à la fin du bail. Un enregistrement **manuel** n'est jamais remplacé, et un nom déjà pris par
 un autre client actif n'est pas volé. Le nom d'une réservation passe avant celui envoyé par le client.
+Les noms `wpad`, `isatap` et `localhost` ne sont jamais enregistrés pour un client qui les envoie lui-même (un
+poste pourrait se faire passer pour le proxy du réseau) ; une réservation créée par l'admin peut les utiliser.
 
 ### Pages utiles
 
@@ -710,7 +737,8 @@ désactivez la validation.
   `sudo ss -lunp | grep ':67 '`, puis arrêtez ce service.
 - Mode direct : l'étendue doit avoir son *Interface*, **et** le DHCP doit être activé sur cette interface (*Interfaces*).
 - Mode relais : *Relais* activé sur l'étendue, et l'adresse du relais (giaddr) dans le réseau de l'étendue
-  (sinon ajoutez-la dans *agents relais supplémentaires*). Le pare-feu de l'hôte doit laisser passer UDP 67.
+  (sinon ajoutez-la dans *agents relais supplémentaires*). Si le relais envoie depuis une autre adresse que giaddr,
+  ajoutez aussi cette adresse source. Le pare-feu de l'hôte doit laisser passer UDP 67.
 - Le conteneur doit être en `network_mode: host` pour recevoir les broadcasts.
 
 **Le DNS ne répond pas aux clients d'un autre réseau**

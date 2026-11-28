@@ -2,6 +2,7 @@ package stats
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -48,5 +49,43 @@ func TestBoundedMaps(t *testing.T) {
 	h := r.hours[(now.Unix()-now.Unix()%3600)/3600%hours]
 	if len(h.domains) > topCapacity {
 		t.Fatalf("map grew to %d", len(h.domains))
+	}
+}
+
+// Once the map is full of names seen several times, new names must not
+// cost a full pass each (the pass runs at most once per topCapacity/2 new
+// names), and the frequent names stay.
+func TestBumpAmortized(t *testing.T) {
+	m := map[string]uint64{}
+	for i := 0; i < topCapacity; i++ {
+		m[fmt.Sprintf("heavy%d", i)] = uint64(5 + i%7)
+	}
+	m["top"] = 1000
+	before := prunes.Load()
+	n := 4 * topCapacity
+	for i := 0; i < n; i++ {
+		bump(m, fmt.Sprintf("new%d", i))
+		if len(m) > topCapacity {
+			t.Fatalf("map grew to %d", len(m))
+		}
+	}
+	if p := prunes.Load() - before; p > int64(2*n/topCapacity+1) {
+		t.Fatalf("%d full passes for %d new names", p, n)
+	}
+	if m["top"] != 1000 {
+		t.Fatal("frequent name dropped")
+	}
+}
+
+func TestNth(t *testing.T) {
+	for _, a := range [][]uint64{{5}, {3, 1, 2}, {1, 1, 1, 1}, {9, 8, 7, 6, 5, 4, 3, 2, 1, 0}} {
+		for k := range a {
+			b := append([]uint64(nil), a...)
+			c := append([]uint64(nil), a...)
+			slices.Sort(c)
+			if got := nth(b, k); got != c[k] {
+				t.Fatalf("nth(%v, %d) = %d, want %d", a, k, got, c[k])
+			}
+		}
 	}
 }
