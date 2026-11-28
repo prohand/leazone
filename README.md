@@ -176,7 +176,21 @@ network:
       addresses: [192.168.20.2/24]
 ```
 
-Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*.
+Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètres > DNS > adresses d'écoute supplémentaires*
+(`0.0.0.0` et `::` y sont refusés ; une ancienne configuration qui les contient est ignorée avec un avertissement).
+
+**IPv6** : Leazone écoute sur **toutes** les IP des interfaces activées, y compris une IPv6 **globale** (joignable
+depuis Internet si votre routeur ne filtre pas). Sur une interface qui a une IPv6 globale, filtrez le port 53 avec le
+pare-feu de l'hôte (ou du routeur) pour ne l'ouvrir qu'au réseau local.
+
+Protections contre les abus (sans réglage) :
+- réponses UDP limitées à 1232 octets (au-delà : réponse tronquée, le client repasse en TCP) ;
+- une requête `ANY` d'un client hors des *réseaux autorisés* ne reçoit qu'un seul type d'enregistrement (RFC 8482) ;
+- limitation du débit de réponses pour les clients hors des *réseaux autorisés* : 20 réponses/s par réseau /24
+  (IPv4) ou /56 (IPv6), au-delà une réponse sur deux est tronquée et les autres ignorées. Le réseau local n'est
+  jamais limité ;
+- au plus 1000 requêtes récursives en cours (100 par client), au-delà SERVFAIL ; au plus 512 connexions TCP
+  (32 par adresse).
 
 ### 2. Zones
 
@@ -185,7 +199,8 @@ Pour écouter sur une IP hors interface (ex : `127.0.0.1`), utilisez *Paramètre
 - **Zone inverse** : tapez simplement le réseau, ex. `192.168.20.0/24` → `20.168.192.in-addr.arpa`.
 - Import / export au format BIND (fichier `.zone`), pratique pour migrer.
 - Les zones locales répondent à **tous** les clients ; la récursion (noms externes) est limitée aux
-  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, CGNAT, loopback, ULA IPv6).
+  *réseaux autorisés* (par défaut : réseaux privés RFC 1918, loopback, ULA IPv6, lien-local IPv6). Le CGNAT
+  (`100.64.0.0/10`) n'y est plus par défaut : ajoutez-le si vos clients sont derrière un CGNAT à vous.
 
 ### 3. Redirecteurs
 
@@ -249,6 +264,8 @@ En HA, mettez les **deux** nœuds en `helper-address`.
   (un client pourrait les forger).
 - L'interface d'arrivée d'une requête relayée n'est pas contrôlée (un relais sur un autre réseau routé arrive par
   n'importe quelle interface) : filtrez UDP 67 sur l'interface WAN avec le pare-feu de l'hôte.
+- Protection contre les inondations : 64 requêtes traitées à la fois, 10 requêtes d'affilée puis 1/s par adresse
+  MAC, 200/s par interface ou relais. Au-delà, les paquets sont ignorés (les clients réessaient).
 - Aucune étendue trouvée → pas de réponse. Une demande d'adresse d'un autre réseau → refus (NAK).
 - Deux étendues ne peuvent pas avoir des réseaux qui se chevauchent.
 

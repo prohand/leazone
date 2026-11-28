@@ -1944,7 +1944,7 @@ components:
         cacheMaxTtl: { type: integer, minimum: 1, maximum: 604800 }
         cacheNegativeMaxTtl: { type: integer, minimum: 0, maximum: 86400 }
         recursionNetworks: { type: array, items: { type: string }, description: "CIDR allowed to use recursion (forwarders). Local zones answer everyone." }
-        extraListenAddresses: { type: array, items: { type: string }, description: "Extra IPs to listen on (e.g. 127.0.0.1)" }
+        extraListenAddresses: { type: array, items: { type: string }, description: "Extra IPs to listen on (e.g. 127.0.0.1). The unspecified addresses 0.0.0.0 and :: are refused." }
 
     DnsStatus:
       type: object
