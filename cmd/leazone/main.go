@@ -103,7 +103,13 @@ func loadConfig(stderr io.Writer) (*config.Config, bool) {
 	return cfg, true
 }
 
+// privateFiles makes every file the long-running process creates private
+// (database, WAL, backups, keys, logs): nothing it writes is meant for
+// other local users.
+func privateFiles() { syscall.Umask(0o077) }
+
 func serve() int {
+	privateFiles()
 	cfg, ok := loadConfig(os.Stderr)
 	if !ok {
 		return 1
@@ -121,6 +127,7 @@ func serve() int {
 
 // runWitness runs the tie-breaker of a two-node cluster (third host).
 func runWitness() int {
+	privateFiles()
 	cfg, ok := loadConfig(os.Stderr)
 	if !ok {
 		return 1
