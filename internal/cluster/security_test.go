@@ -218,5 +218,23 @@ func TestPrimaryStepsDownWithOnlyAMismatchedPeer(t *testing.T) {
 		t.Fatal("the mismatched peer is not seen as running")
 	}
 	cut(n1, h.witnessHost(), true)
-	h.waitRole(n1, proto.RoleIsolated, 4*time.Second)
+	// The node steps down to isolated, and the next tick may already mark it
+	// incompatible (its peer still runs the other version): both are fine,
+	// primary is not.
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		n1.node.mu.Lock()
+		r := n1.node.role
+		n1.node.mu.Unlock()
+		if r == proto.RoleIsolated || r == proto.RoleIncompatible {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node1: role %s, want isolated or incompatible", r)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n1.node.IsPrimary() {
+		t.Fatal("node1 still primary without witness next to a mismatched peer")
+	}
 }
