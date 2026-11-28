@@ -146,6 +146,43 @@ func (s *Service) UpgradeSession(ctx context.Context, se *Session) error {
 	return err
 }
 
+// PromoteSession finishes a login: the half-authenticated session se is
+// revoked and a new full session (new cookie value, new CSRF token) starts
+// for the same user. A session token known before the second factor (a
+// fixed or stolen pending cookie) is worthless afterwards. The fresh MFA
+// proof also counts as a step-up.
+func (s *Service) PromoteSession(ctx context.Context, se *Session, ip, ua string) (string, *Session, error) {
+	token := base64.RawURLEncoding.EncodeToString(randomBytes(32))
+	now := s.Now()
+	elev := now.Add(StepUpWindow)
+	if len(ua) > 256 {
+		ua = ua[:256]
+	}
+	ns := &Session{IDHash: hashToken(token), PublicID: ids.New(), UserID: se.UserID, Level: LevelFull,
+		CSRF: base64.RawURLEncoding.EncodeToString(randomBytes(24)), CreatedAt: now, LastSeenAt: now,
+		ExpiresAt: now.Add(time.Duration(s.Security().SessionMaxHours) * time.Hour), ElevatedUntil: &elev, IP: ip, UserAgent: ua}
+	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+		// Revoked rather than deleted: in a cluster, a late copy of the old
+		// row from the other node cannot bring it back (revoked_at is kept).
+		res, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE id_hash = ? AND revoked_at IS NULL`, now.UnixMilli(), se.IDHash)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNoSession // already promoted or revoked
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id_hash, public_id, user_id, auth_level, csrf_token, created_at,
+			last_seen_at, expires_at, elevated_until, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ns.IDHash, ns.PublicID, ns.UserID, ns.Level, ns.CSRF, now.UnixMilli(), now.UnixMilli(), ns.ExpiresAt.UnixMilli(),
+			elev.UnixMilli(), ip, ua)
+		return err
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return token, ns, nil
+}
+
 // StepUpWindow is how long a re-verification unlocks sensitive actions.
 const StepUpWindow = 5 * time.Minute
 

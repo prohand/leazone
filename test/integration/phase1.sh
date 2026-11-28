@@ -42,7 +42,7 @@ run() { # name, extra docker args...
   local n=$1; shift
   docker run -d --name "$n" --network host --user 1000:1000 --read-only --tmpfs /tmp:mode=1777 \
     --security-opt no-new-privileges:true --cap-drop ALL "$@" \
-    -e LEAZONE_HTTP_LISTEN=127.0.0.1:$PORT -e LEAZONE_CONTROL_SOCKET=/tmp/leazone.sock \
+    -e LEAZONE_HTTP_LISTEN=127.0.0.1:$PORT \
     -e LEAZONE_ADMIN_PASSWORD_FILE=/run/admin_password -v "$WORK/admin_password:/run/admin_password:ro" \
     -v $NAME-data:/data -v $NAME-logs:/logs $IMG >/dev/null
 }

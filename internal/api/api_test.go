@@ -131,6 +131,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	h.audit = audit.New(db, "node-test", log)
+	h.audit.SetKey(box)
 	tm, err := tlsmgr.New(ctx, db, box, log, dir, []string{testHost})
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +245,24 @@ func (c *testClient) do(method, path string, body any, out any) int {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
+	// Like the UI: keep the CSRF token of the session state an auth
+	// endpoint returns (it changes when the login completes).
+	if resp.StatusCode < 300 && bytes.Contains(raw, []byte(`"csrfToken"`)) {
+		var st struct {
+			CSRFToken string `json:"csrfToken"`
+			Session   struct {
+				CSRFToken string `json:"csrfToken"`
+			} `json:"session"`
+		}
+		if json.Unmarshal(raw, &st) == nil {
+			if st.Session.CSRFToken != "" {
+				st.CSRFToken = st.Session.CSRFToken
+			}
+			if st.CSRFToken != "" {
+				c.csrf = st.CSRFToken
+			}
+		}
+	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
 			c.h.t.Fatalf("%s %s: decode %q: %v", method, path, raw, err)
@@ -471,6 +490,15 @@ func TestAPITokensFollowRoles(t *testing.T) {
 	c := h.client()
 	c.origin = ""
 	c.token = read
+	// The policy requires MFA for admins: no token until a factor exists.
+	c.expect("GET", "/api/v1/users", nil, 401, TUnauthenticated)
+	setup, err := h.auth.BeginTOTP(ctx, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.auth.ConfirmTOTP(ctx, u, totpCode(t, setup.Secret, time.Now())); err != nil {
+		t.Fatal(err)
+	}
 	if s := c.do("GET", "/api/v1/users", nil, nil); s != 200 {
 		t.Fatalf("read token GET users: %d", s)
 	}

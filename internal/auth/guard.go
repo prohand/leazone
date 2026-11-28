@@ -20,6 +20,8 @@ const (
 	baseLock      = time.Minute
 	maxLock       = time.Hour
 	guardMemory   = 24 * time.Hour
+	// ipInFlight is the number of attempts of one client verified at once.
+	ipInFlight = 4
 )
 
 // RateLimitError tells the client how long to wait.
@@ -86,6 +88,11 @@ func (s *Service) GuardEnter(ctx context.Context, keys ...string) (release func(
 		// Attempts in flight may all still fail: refuse one that could go
 		// over the threshold until they end.
 		if n := s.inflight[k]; n > 0 && failures+n >= threshold(k) && worst < time.Second {
+			worst = time.Second
+		}
+		// Each attempt may cost an Argon2 computation: one client cannot
+		// run many at once even below its failure threshold.
+		if strings.HasPrefix(k, "ip:") && s.inflight[k] >= ipInFlight && worst < time.Second {
 			worst = time.Second
 		}
 	}

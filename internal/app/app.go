@@ -98,6 +98,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		}
 	}
 	n.audit = audit.New(n.db, nodeID, log)
+	n.audit.SetKey(n.box) // chain keyed with a sub-key of the shared data key
 
 	// Replication journal: on a cluster node, local config writes are not
 	// journaled until this node is elected primary.
@@ -402,6 +403,7 @@ func (n *Node) firstStart(ctx context.Context) error {
 func (n *Node) housekeeping(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
+	n.audit.Maintain(ctx, n.auth.Security().AuditRetentionDays) // verifies and anchors at startup
 	for {
 		select {
 		case <-ctx.Done():
@@ -410,6 +412,8 @@ func (n *Node) housekeeping(ctx context.Context) {
 			if err := n.auth.PurgeSessions(ctx); err != nil {
 				n.log.Warn("session purge", "err", err)
 			}
+			// Audit retention, chain heads in the application log, daily check.
+			n.audit.Maintain(ctx, n.auth.Security().AuditRetentionDays)
 			// Keep the journal bounded; a single node has nobody to ship state to.
 			_ = n.repl.Trim(ctx, 20000)
 			if !n.cfg.Clustered() {
@@ -512,14 +516,20 @@ func (n *Node) control(ctx context.Context, req control.Request) control.Respons
 			return control.Response{Message: err.Error()}
 		}
 		if dry {
-			return control.Response{OK: true, Message: fmt.Sprintf("Sauvegarde valide : %s, version %s, nœud %s.",
-				res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Version, res.Node)}
+			msg := fmt.Sprintf("Sauvegarde valide : %s, version %s, nœud %s.", res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Version, res.Node)
+			if sum := res.Summary(); sum != "" {
+				msg += "\nÀ la restauration : " + sum + "."
+			}
+			return control.Response{OK: true, Message: msg}
 		}
 		n.afterRestore(ctx)
 		n.audit.Record(ctx, audit.Entry{Actor: "cli (docker exec)", Action: "backup.restore", Target: res.Node,
-			Details: map[string]any{"createdAt": res.CreatedAt, "tables": res.Tables}})
-		return control.Response{OK: true, Message: fmt.Sprintf("Configuration restaurée (sauvegarde du %s, nœud %s).",
-			res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Node)}
+			Details: map[string]any{"createdAt": res.CreatedAt, "tables": res.Tables, "users": res.Users}})
+		msg := fmt.Sprintf("Configuration restaurée (sauvegarde du %s, nœud %s).", res.CreatedAt.Format("2006-01-02 15:04 UTC"), res.Node)
+		if sum := res.Summary(); sum != "" {
+			msg += "\nComptes : " + sum + "."
+		}
+		return control.Response{OK: true, Message: msg}
 	case "reset-ui-allowlist":
 		sec := n.auth.Security()
 		sec.UIAllowedNetworks = nil

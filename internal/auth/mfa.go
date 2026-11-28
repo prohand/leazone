@@ -88,6 +88,18 @@ func (s *Service) VerifyTOTP(ctx context.Context, userID, code string) error {
 	if !s.Security().TOTPAllowed() {
 		return ErrTOTPNotAllowed
 	}
+	return s.verifyTOTP(ctx, userID, code)
+}
+
+// VerifyTOTPProof checks a code of an enabled TOTP even when the policy no
+// longer accepts TOTP as a second factor. It only proves that the user still
+// holds the TOTP enrolled before the policy changed, to enroll a passkey
+// (forced setup): the password alone must not be enough to replace it.
+func (s *Service) VerifyTOTPProof(ctx context.Context, userID, code string) error {
+	return s.verifyTOTP(ctx, userID, code)
+}
+
+func (s *Service) verifyTOTP(ctx context.Context, userID, code string) error {
 	secret, confirmed, err := s.totpSecret(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !confirmed) {
 		return ErrBadCode
@@ -197,9 +209,8 @@ func (s *Service) EnsureRecoveryCodes(ctx context.Context, userID string) ([]str
 // LoginLevel decides the session level after a successful password check.
 func (s *Service) LoginLevel(u *User, m MFAStatus) Level {
 	sec := s.Security()
-	usable := m.PasskeyCount > 0 || (m.TOTPEnabled && sec.TOTPAllowed())
 	switch {
-	case usable:
+	case sec.FactorUsable(m):
 		return LevelMFAPending
 	case sec.MFARequired(u.Role):
 		return LevelMFASetup
@@ -211,7 +222,7 @@ func (s *Service) LoginLevel(u *User, m MFAStatus) Level {
 // CanStepUp reports whether the user has a factor accepted by the step-up
 // (a passkey, or TOTP when the policy allows it).
 func (s *Service) CanStepUp(m MFAStatus) bool {
-	return m.PasskeyCount > 0 || (m.TOTPEnabled && s.Security().TOTPAllowed())
+	return s.Security().FactorUsable(m)
 }
 
 // SecondFactors lists what the user can use right now as a second factor.

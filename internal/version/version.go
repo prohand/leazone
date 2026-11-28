@@ -13,4 +13,4 @@ var (
 
 // ClusterProtocol is the version of the node-to-node protocol.
 // Nodes refuse to sync when the major part differs.
-const ClusterProtocol = "1.0"
+const ClusterProtocol = "2.0"

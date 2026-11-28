@@ -204,6 +204,13 @@ func (s *Server) clientInfo(next http.Handler) http.Handler {
 				ci.Origin = s.cfg.PublicURL
 			}
 		}
+		// HSTS on direct access with a trusted certificate (imported or
+		// dropped in /data/tls). Never with the generated self-signed one
+		// (the browser would refuse to continue past the warning), nor
+		// behind a trusted proxy, which serves its own certificate and HSTS.
+		if !ci.ViaProxy && s.tls != nil && !s.tls.SelfSigned() {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), keyClient, ci)))
 	})
 }

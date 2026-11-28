@@ -308,7 +308,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
               <CommandItem
                 value="Forcer la resynchro"
                 keywords={["cluster", "HA", "synchro", "resync", "copier"]}
-                onSelect={() => run(() => navigate("/cluster?confirm=resync"), true)}
+                onSelect={() => run(() => navigate("/cluster", { state: { confirm: "resync" } }), true)}
               >
                 <RefreshCw /> Forcer la resynchro
               </CommandItem>
@@ -316,7 +316,7 @@ function CommandPalette({ open, setOpen }: Ctx) {
                 <CommandItem
                   value="Rebasculer"
                   keywords={["cluster", "HA", "failback", "bascule", "primaire"]}
-                  onSelect={() => run(() => navigate("/cluster?confirm=failback"), true)}
+                  onSelect={() => run(() => navigate("/cluster", { state: { confirm: "failback" } }), true)}
                 >
                   <ArrowLeftRight /> Rebasculer vers l'autre nœud
                 </CommandItem>

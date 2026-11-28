@@ -31,11 +31,24 @@ type Service struct {
 
 	guardMu  sync.Mutex
 	inflight map[string]int // login_guard key -> attempts being verified
+
+	// argonSlots bounds the Argon2id computations running at once (each
+	// takes Argon.Memory): a burst of logins cannot exhaust the memory.
+	argonSlots chan struct{}
+	// ArgonWait is how long a password check waits for a free slot.
+	ArgonWait time.Duration
 }
+
+// ArgonConcurrency is the number of password hashes computed at once.
+const ArgonConcurrency = 4
+
+// ErrBusy means that too many password checks are running: retry later.
+var ErrBusy = errors.New("trop de connexions en cours, réessayez dans quelques secondes")
 
 // NewService loads the security settings and returns the service.
 func NewService(ctx context.Context, db *store.DB, box *secrets.Box, log *slog.Logger) (*Service, error) {
-	s := &Service{db: db, box: box, log: log, Now: time.Now, Argon: DefaultArgon2, ceremonies: newCeremonyStore()}
+	s := &Service{db: db, box: box, log: log, Now: time.Now, Argon: DefaultArgon2, ceremonies: newCeremonyStore(),
+		argonSlots: make(chan struct{}, ArgonConcurrency), ArgonWait: 2 * time.Second}
 	sec := DefaultSecurity()
 	if _, err := db.GetSetting(ctx, SettingsKey, &sec); err != nil {
 		return nil, err
@@ -79,9 +92,10 @@ func (s *Service) SetSecurity(ctx context.Context, sec SecuritySettings) (Securi
 	return sec, s.revokeUnprotectedSessions(ctx, sec)
 }
 
-// revokeUnprotectedSessions ends the open sessions of users that the policy
-// subjects to MFA but who have no second factor it accepts (after a policy
-// change): at their next login they will have to enroll one.
+// revokeUnprotectedSessions ends the open sessions and revokes the API
+// tokens of users that the policy subjects to MFA but who have no second
+// factor it accepts (after a policy change): at their next login they will
+// have to enroll one.
 func (s *Service) revokeUnprotectedSessions(ctx context.Context, sec SecuritySettings) error {
 	users, err := s.ListUsers(ctx)
 	if err != nil {
@@ -95,11 +109,16 @@ func (s *Service) revokeUnprotectedSessions(ctx context.Context, sec SecuritySet
 		if err != nil {
 			return err
 		}
-		if m.PasskeyCount > 0 || (m.TOTPEnabled && sec.TOTPAllowed()) {
+		if sec.FactorUsable(m) {
 			continue
 		}
+		now := s.Now().UnixMilli()
 		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND auth_level = ? AND revoked_at IS NULL`,
-			s.Now().UnixMilli(), u.ID, LevelFull); err != nil {
+			now, u.ID, LevelFull); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+			now, u.ID); err != nil {
 			return err
 		}
 	}
@@ -182,7 +201,7 @@ func (s *Service) CreateUser(ctx context.Context, username string, role Role, pa
 	if len(errs) > 0 {
 		return nil, ErrValidation(errs)
 	}
-	hash, err := HashPassword(password, s.Argon)
+	hash, err := s.hashPassword(ctx, password)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +324,14 @@ func (s *Service) UpdateUser(ctx context.Context, id string, role *Role, disable
 			return err
 		}
 		if newDisabled || newRole != u.Role {
-			_, err = tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id)
+			if _, err = tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
+				return err
+			}
+		}
+		// API tokens act with the owner's current role: tokens created for
+		// the old role must not carry over to the new one.
+		if newRole != u.Role {
+			_, err = tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id)
 		}
 		return err
 	})
@@ -356,7 +382,7 @@ func (s *Service) SetPassword(ctx context.Context, userID, password, exceptSessi
 	if err := CheckPasswordPolicy(password, u.Username); err != nil {
 		return ErrValidation{"newPassword": err.Error()}
 	}
-	hash, err := HashPassword(password, s.Argon)
+	hash, err := s.hashPassword(ctx, password)
 	if err != nil {
 		return err
 	}
@@ -407,7 +433,22 @@ func (s *Service) ResetMFA(ctx context.Context, userID string) error {
 // A good password only clears the password counter: second factor attempts
 // have their own counter (MFAKey), cleared after a complete login.
 func (s *Service) Authenticate(ctx context.Context, username, password, ip string) (*User, error) {
-	username = strings.ToLower(strings.TrimSpace(username))
+	name, valid := LoginName(username)
+	if !valid {
+		// No account can have this name: refuse without a password hash
+		// and without a per-name counter (an attacker chooses the name), but
+		// count the failure for the client.
+		release, err := s.GuardEnter(ctx, ipKey(ip))
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		if err := s.GuardFail(ctx, ipKey(ip)); err != nil {
+			return nil, err
+		}
+		return nil, ErrInvalidCredentials
+	}
+	username = name
 	release, err := s.GuardEnter(ctx, ipKey(ip), userKey(username))
 	if err != nil {
 		return nil, err
@@ -421,7 +462,11 @@ func (s *Service) Authenticate(ctx context.Context, username, password, ip strin
 	if u != nil {
 		hash = u.PasswordHash
 	}
-	ok, verr := VerifyPassword(password, hash)
+	var ok bool
+	var verr error
+	if err := s.argon(ctx, func() { ok, verr = VerifyPassword(password, hash) }); err != nil {
+		return nil, err
+	}
 	if verr != nil {
 		s.log.Error("password hash unreadable", "user", username, "err", verr)
 	}
@@ -435,6 +480,48 @@ func (s *Service) Authenticate(ctx context.Context, username, password, ip strin
 		return nil, err
 	}
 	return u, nil
+}
+
+// MaxLoginName is the longest user name accepted at login (bytes, before
+// normalization). Account names are at most 32 characters.
+const MaxLoginName = 64
+
+// LoginName normalizes a user name typed at login and reports whether an
+// account can have it (valid is false for anything longer than
+// MaxLoginName or outside the allowed characters).
+func LoginName(raw string) (name string, valid bool) {
+	if len(raw) > MaxLoginName {
+		return "", false
+	}
+	name = strings.ToLower(strings.TrimSpace(raw))
+	return name, usernameRe.MatchString(name)
+}
+
+// argon runs fn (an Argon2id computation) when one of the ArgonConcurrency
+// slots is free. It returns ErrBusy after ArgonWait without a slot.
+func (s *Service) argon(ctx context.Context, fn func()) error {
+	t := time.NewTimer(s.ArgonWait)
+	defer t.Stop()
+	select {
+	case s.argonSlots <- struct{}{}:
+	case <-t.C:
+		return ErrBusy
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-s.argonSlots }()
+	fn()
+	return nil
+}
+
+// hashPassword is HashPassword within the Argon2 concurrency limit.
+func (s *Service) hashPassword(ctx context.Context, password string) (string, error) {
+	var h string
+	var err error
+	if aerr := s.argon(ctx, func() { h, err = HashPassword(password, s.Argon) }); aerr != nil {
+		return "", aerr
+	}
+	return h, err
 }
 
 // TouchLogin records a successful full login.

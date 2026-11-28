@@ -138,7 +138,7 @@ func (s *Server) afterEnroll(w http.ResponseWriter, r *http.Request, p *principa
 		s.record(r, "recovery_codes.generate", p.User.Username, audit.Success, nil)
 	}
 	if p.Session != nil && p.Session.Level == auth.LevelMFASetup {
-		if err := s.completeMFA(r, p, "enroll"); err != nil {
+		if err := s.completeMFA(w, r, p, "enroll"); err != nil {
 			s.fail(w, r, err)
 			return
 		}

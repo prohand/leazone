@@ -156,9 +156,13 @@ func TestPhase6Operations(t *testing.T) {
 	}
 	b.csrf = st.CSRFToken
 	code, _ := totp.GenerateCode(a.totpSecret, time.Now())
-	if s := b.do("POST", "/api/v1/auth/mfa/totp", map[string]string{"code": code}, nil); s != 200 {
+	var full struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if s := b.do("POST", "/api/v1/auth/mfa/totp", map[string]string{"code": code}, &full); s != 200 {
 		t.Fatalf("TOTP of the backup on the new node: %d", s)
 	}
+	b.csrf = full.CSRFToken // renewed session
 	if s, _ := metricsBody(t, b, tk.Token); s != 200 {
 		t.Fatalf("API token of the backup on the new node: %d", s)
 	}

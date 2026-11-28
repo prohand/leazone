@@ -35,64 +35,116 @@ const recordTTL = 300
 // Owner is the DNS owner key of a lease.
 func Owner(scopeID string, l dhcpsrv.Lease) string { return scopeID + "|" + l.Key() }
 
+// forbiddenNames are never registered for a client that names itself:
+// clients look them up to find a proxy configuration (WPAD), an IPv6
+// tunnel (ISATAP) or the local host, so a client registering them could
+// intercept the traffic of the others. A reservation created by the admin
+// may still use them.
+var forbiddenNames = map[string]bool{"wpad": true, "isatap": true, "localhost": true}
+
+// ForbiddenName reports whether a client-chosen host name is refused.
+func ForbiddenName(host string) bool { return forbiddenNames[strings.ToLower(host)] }
+
 // Bound registers the lease and returns the FQDN ("" when nothing registered).
+// When the records of the lease are already the ones wanted (a renewal, the
+// same client re-binding), nothing is written and DNS is not reloaded.
 func (u *Updater) Bound(ctx context.Context, sc *dhcpconf.Scope, l dhcpsrv.Lease) string {
 	owner := Owner(sc.ID, l)
+	fqdn, want := u.plan(ctx, sc, l, owner)
+	if have, err := u.DNS.DHCPOwnerRecords(ctx, owner); err == nil && sameRecords(have, want) {
+		return fqdn
+	}
 	// The client may have changed its name: drop what it had before.
 	if _, err := u.DNS.DeleteDHCPOwner(ctx, owner); err != nil {
 		u.Log.Warn("DDNS cleanup", "err", err)
 	}
 	defer u.Reload.ReloadSoon()
+	for i, r := range want {
+		if err := u.DNS.PutDHCPRecord(ctx, r.ZoneID, r.Name, r.Type, r.TTL, r.Data, owner); err != nil {
+			u.Log.Warn("DDNS "+r.Type+" record", "err", err)
+			if i == 0 {
+				return "" // no A record: nothing registered
+			}
+		}
+	}
+	if fqdn != "" {
+		u.Log.Info("DDNS registered", "name", fqdn, "ip", l.IP)
+	}
+	return fqdn
+}
+
+// plan computes the records a lease should have (A first, then PTR) and
+// its FQDN; none when the lease gets no name.
+func (u *Updater) plan(ctx context.Context, sc *dhcpconf.Scope, l dhcpsrv.Lease, owner string) (string, []dnsconf.DHCPRecord) {
 	host := l.Hostname
+	reserved := false
 	// A reservation with a host name wins over what the client sends.
 	if res, err := u.DHCP.Reservations(ctx, sc.ID); err == nil {
 		for _, r := range res {
 			if r.IP == l.IP.String() && r.Hostname != "" {
-				host = r.Hostname
+				host, reserved = r.Hostname, true
 			}
 		}
 	}
 	if !sc.DDNSEnabled || host == "" || sc.DDNSDomain == "" {
-		return ""
+		return "", nil
+	}
+	if !reserved && ForbiddenName(host) {
+		u.Log.Warn("DDNS: reserved name refused for a client", "name", host, "ip", l.IP, "mac", l.MAC)
+		return "", nil
 	}
 	// The zone is created with the scope (on the primary): never create
 	// config from here, this also runs on secondaries.
 	zone, err := u.DNS.ZoneByName(ctx, sc.DDNSDomain)
 	if err != nil {
 		u.Log.Warn("DDNS zone missing", "zone", sc.DDNSDomain, "err", err)
-		return ""
+		return "", nil
 	}
 	owners, err := u.DNS.Owners(ctx, zone.ID, host)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	for _, o := range owners {
 		if o.Source == "manual" {
 			u.Log.Info("DDNS: name kept by a manual record", "name", host+"."+zone.Name, "ip", l.IP)
-			return ""
+			return "", nil
 		}
 		if o.Owner != owner && u.Active != nil && u.Active(o.Owner) {
 			u.Log.Info("DDNS: name already used by another client", "name", host+"."+zone.Name, "ip", l.IP)
-			return ""
+			return "", nil
 		}
 	}
 	ttl := uint32(recordTTL)
 	if zone.TTL < ttl {
 		ttl = zone.TTL
 	}
-	if err := u.DNS.PutDHCPRecord(ctx, zone.ID, host, "A", ttl, dnsconf.RecordData{IP: l.IP.String()}, owner); err != nil {
-		u.Log.Warn("DDNS A record", "err", err)
-		return ""
-	}
 	fqdn := host + "." + zone.Name + "."
+	want := []dnsconf.DHCPRecord{{ZoneID: zone.ID, Name: host, Type: "A", TTL: ttl, Data: dnsconf.RecordData{IP: l.IP.String()}}}
 	// PTR in the reverse zone (created with the scope).
 	if rz, rel, ok := u.reverse(ctx, l.IP); ok {
-		if err := u.DNS.PutDHCPRecord(ctx, rz.ID, rel, "PTR", ttl, dnsconf.RecordData{Target: fqdn}, owner); err != nil {
-			u.Log.Warn("DDNS PTR record", "err", err)
+		want = append(want, dnsconf.DHCPRecord{ZoneID: rz.ID, Name: rel, Type: "PTR", TTL: ttl, Data: dnsconf.RecordData{Target: fqdn}})
+	}
+	return fqdn, want
+}
+
+// sameRecords reports whether two record lists hold the same records.
+func sameRecords(a, b []dnsconf.DHCPRecord) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, x := range a {
+		found := false
+		for _, y := range b {
+			if x == y {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
 		}
 	}
-	u.Log.Info("DDNS registered", "name", fqdn, "ip", l.IP)
-	return fqdn
+	return true
 }
 
 // reverse finds the reverse zone holding ip and the relative PTR name.

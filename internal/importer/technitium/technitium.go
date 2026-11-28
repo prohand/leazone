@@ -124,23 +124,28 @@ func (c *client) get(ctx context.Context, path string, params url.Values, out an
 	return json.Unmarshal(env.Response, out)
 }
 
+// raw calls the API with a POST form (accepted by Technitium for every call):
+// the token, the password and the other parameters travel in the body, never
+// in the URL (proxy and server logs, error messages).
 func (c *client) raw(ctx context.Context, path string, params url.Values) ([]byte, string, error) {
-	if params == nil {
-		params = url.Values{}
+	form := url.Values{}
+	for k, v := range params {
+		form[k] = v
 	}
 	if c.token != "" {
-		params.Set("token", c.token) // versions before 15 only read the parameter
+		form.Set("token", c.token) // versions before 15 only read the parameter
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path+"?"+params.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, "", err
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, "", RemoteError{fmt.Sprintf("Technitium injoignable : %v", err)}
+		return nil, "", RemoteError{"Technitium injoignable : " + transportError(err)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
@@ -151,6 +156,16 @@ func (c *client) raw(ctx context.Context, path string, params url.Values) ([]byt
 		return nil, "", RemoteError{fmt.Sprintf("Technitium a répondu HTTP %d sur %s", resp.StatusCode, path)}
 	}
 	return body, resp.Header.Get("Content-Type"), nil
+}
+
+// transportError describes a failed request without its URL (which could
+// carry secrets with another client or a redirect).
+func transportError(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err.Error()
+	}
+	return err.Error()
 }
 
 func (im *Importer) connect(ctx context.Context, o Options) (*client, error) {

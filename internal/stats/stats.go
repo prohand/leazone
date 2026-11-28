@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -98,20 +99,65 @@ func (r *Recorder) Record(q Query) {
 	}
 }
 
-// bump increments a bounded counter map: when full, the entries seen once
-// are dropped (they would not make a top list anyway).
+// bump increments a bounded counter map. When it is full, prune drops at
+// least half of the entries, so the O(n) pass runs at most once every n/2
+// new keys: O(1) amortized per call, whatever the traffic.
 func bump(m map[string]uint64, k string) {
 	if _, ok := m[k]; !ok && len(m) >= topCapacity {
-		for kk, v := range m {
-			if v <= 1 {
-				delete(m, kk)
-			}
-		}
-		if len(m) >= topCapacity {
-			return
-		}
+		prune(m)
 	}
 	m[k]++
+}
+
+// prunes counts prune passes (tests).
+var prunes atomic.Int64
+
+// prune drops the entries counted at most the median count (at least half
+// of them): rare names go, the frequent ones (the top lists) stay.
+func prune(m map[string]uint64) {
+	prunes.Add(1)
+	counts := make([]uint64, 0, len(m))
+	for _, v := range m {
+		counts = append(counts, v)
+	}
+	med := nth(counts, len(counts)/2)
+	for k, v := range m {
+		if v <= med {
+			delete(m, k)
+		}
+	}
+}
+
+// nth returns the k-th smallest value of a (reordered), in linear
+// expected time (quickselect).
+func nth(a []uint64, k int) uint64 {
+	lo, hi := 0, len(a)-1
+	for lo < hi {
+		p := a[lo+(hi-lo)/2]
+		i, j := lo, hi
+		for i <= j {
+			for a[i] < p {
+				i++
+			}
+			for a[j] > p {
+				j--
+			}
+			if i <= j {
+				a[i], a[j] = a[j], a[i]
+				i++
+				j--
+			}
+		}
+		switch {
+		case k <= j:
+			hi = j
+		case k >= i:
+			lo = i
+		default:
+			return a[k]
+		}
+	}
+	return a[k]
 }
 
 // Point is one minute of the series.

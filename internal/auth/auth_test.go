@@ -38,6 +38,14 @@ func newTestService(t *testing.T) (*Service, *time.Time) {
 	return s, &now
 }
 
+// giveTOTP marks a confirmed TOTP for the user (a second factor).
+func giveTOTP(t *testing.T, s *Service, userID string) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO totp(user_id, secret_enc, confirmed_at, created_at) VALUES (?, 'x', 1, 1)`, userID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPasswordHash(t *testing.T) {
 	h, err := HashPassword("correct horse battery", DefaultArgon2)
 	if err != nil {
@@ -237,6 +245,7 @@ func TestAPITokens(t *testing.T) {
 	s, now := newTestService(t)
 	ctx := context.Background()
 	u, _ := s.CreateUser(ctx, "dave", RoleOperator, "a long enough one")
+	giveTOTP(t, s, u.ID)
 	exp := now.Add(time.Hour)
 	plain, tk, err := s.CreateToken(ctx, u.ID, "script", "read", &exp)
 	if err != nil {

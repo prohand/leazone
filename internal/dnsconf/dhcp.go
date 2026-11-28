@@ -156,6 +156,39 @@ func (s *Store) DeleteDHCPOwnerAt(ctx context.Context, owner string, ip netip.Ad
 	return int(n), err
 }
 
+// DHCPRecord is a record registered for a DHCP lease.
+type DHCPRecord struct {
+	ZoneID string
+	Name   string
+	Type   string
+	TTL    uint32
+	Data   RecordData
+}
+
+// DHCPOwnerRecords returns the DHCP records of an owner.
+func (s *Store) DHCPOwnerRecords(ctx context.Context, owner string) ([]DHCPRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT zone_id, name, type, ttl, data FROM records WHERE source = 'dhcp' AND dhcp_owner = ?`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DHCPRecord
+	for rows.Next() {
+		var r DHCPRecord
+		var ttl sql.NullInt64
+		var raw string
+		if err := rows.Scan(&r.ZoneID, &r.Name, &r.Type, &ttl, &raw); err != nil {
+			return nil, err
+		}
+		r.TTL = uint32(ttl.Int64)
+		if err := json.Unmarshal([]byte(raw), &r.Data); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DeleteDHCPOwner removes every DHCP record of an owner. It returns how many.
 func (s *Store) DeleteDHCPOwner(ctx context.Context, owner string) (int, error) {
 	var n int64

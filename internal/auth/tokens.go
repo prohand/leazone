@@ -89,6 +89,18 @@ func (s *Service) AuthenticateToken(ctx context.Context, plain string) (*User, *
 	if err != nil || u.Disabled {
 		return nil, nil, ErrBadToken
 	}
+	// A token never outlives the MFA protection of its owner: when the
+	// policy requires a second factor that the owner does not have (or no
+	// longer has), the token is refused.
+	if sec := s.Security(); sec.MFARequired(u.Role) {
+		m, err := s.MFA(ctx, u.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !sec.FactorUsable(m) {
+			return nil, nil, ErrBadToken
+		}
+	}
 	if !used.Valid || now.Sub(time.UnixMilli(used.Int64)) > time.Minute {
 		_, _ = s.db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, now.UnixMilli(), t.ID)
 	}

@@ -6,6 +6,7 @@ package dhcpsrv
 
 import (
 	"context"
+	"database/sql"
 	"net/netip"
 	"time"
 
@@ -98,8 +99,13 @@ func (d *leaseDB) load(ctx context.Context) (map[string]map[uint32]*Lease, error
 	return out, rows.Err()
 }
 
-func (d *leaseDB) put(ctx context.Context, l *Lease) error {
-	_, err := d.db.ExecContext(ctx, `INSERT INTO dhcp_leases(scope_id, ip, mac, client_id, hostname, state, starts, ends,
+// execer is a database or a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func putLease(ctx context.Context, x execer, l *Lease) error {
+	_, err := x.ExecContext(ctx, `INSERT INTO dhcp_leases(scope_id, ip, mac, client_id, hostname, state, starts, ends,
 		circuit_id, remote_id, giaddr, dns_name, owner_node, hlc, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(scope_id, ip) DO UPDATE SET mac = excluded.mac, client_id = excluded.client_id, hostname = excluded.hostname,
 		state = excluded.state, starts = excluded.starts, ends = excluded.ends, circuit_id = excluded.circuit_id,
@@ -110,7 +116,7 @@ func (d *leaseDB) put(ctx context.Context, l *Lease) error {
 	return err
 }
 
-func (d *leaseDB) delete(ctx context.Context, scopeID string, ip netip.Addr) error {
-	_, err := d.db.ExecContext(ctx, `DELETE FROM dhcp_leases WHERE scope_id = ? AND ip = ?`, scopeID, ip.String())
+func deleteLease(ctx context.Context, x execer, scopeID string, ip netip.Addr) error {
+	_, err := x.ExecContext(ctx, `DELETE FROM dhcp_leases WHERE scope_id = ? AND ip = ?`, scopeID, ip.String())
 	return err
 }

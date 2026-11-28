@@ -38,6 +38,14 @@ func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
 	}
+	// Create the file private before SQLite opens it: SQLite would create it
+	// with the umask, and gives the WAL and shared-memory files the mode of
+	// the database file.
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
 	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)" +
 		"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
@@ -51,8 +59,12 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	// Files created by an older version.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			db.Close()
+			return nil, err
+		}
 	}
 	return &DB{DB: db, Path: path}, nil
 }
@@ -289,12 +301,24 @@ func splitSQL(script string) []string {
 // Backup writes a consistent copy of the database with VACUUM INTO and keeps
 // the 5 most recent copies in dir.
 func (db *DB) Backup(ctx context.Context, dir, tag string) (string, error) {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	// A private directory (also when created by an older version), and the
+	// copy created private before SQLite writes into it (VACUUM INTO accepts
+	// an empty file).
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", err
 	}
 	name := fmt.Sprintf("leazone-%s-%s.db", time.Now().UTC().Format("20060102T150405Z"), tag)
 	dst := filepath.Join(dir, name)
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	f.Close()
 	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, dst); err != nil {
+		_ = os.Remove(dst)
 		return "", err
 	}
 	_ = os.Chmod(dst, 0o600)

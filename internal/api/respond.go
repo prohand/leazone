@@ -103,6 +103,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.As(err, &rl):
 		writeProblem(w, Problem{Type: TRateLimited, Status: http.StatusTooManyRequests, Detail: rl.Error(),
 			RetryAfter: int(math.Ceil(rl.RetryAfter.Seconds()))})
+	case errors.Is(err, auth.ErrBusy):
+		writeProblem(w, Problem{Type: TRateLimited, Status: http.StatusTooManyRequests, Detail: err.Error(), RetryAfter: 2})
 	case errors.Is(err, store.ErrNotFound):
 		problem(w, http.StatusNotFound, TNotFound, "")
 	case errors.Is(err, auth.ErrInvalidCredentials), errors.Is(err, auth.ErrBadCode),

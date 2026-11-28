@@ -184,7 +184,7 @@ func TestMetrics(t *testing.T) {
 		t.Fatalf("bad token: %d", s)
 	}
 	s, body := get(tk.Token)
-	for _, want := range []string{"leazone_build_info", "leazone_dns_queries_total", "leazone_dns_cache_entries", "go_goroutines"} {
+	for _, want := range []string{"leazone_build_info", "leazone_dns_queries_total", "leazone_dns_cache_entries", "leazone_dns_rate_limited_total", "go_goroutines"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics %d: missing %s\n%.600s", s, want, body)
 		}

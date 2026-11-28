@@ -1,9 +1,19 @@
 # Leazone - witness (tie-breaker), on a THIRD host (small VM, NAS, Raspberry Pi).
-# It needs the same cluster key as the nodes and must be reachable on TCP 7443
-# from both nodes. It stores almost nothing (who is primary, epoch).
+# It needs the WITNESS key (not the cluster key) and must be reachable on TCP
+# 7443 from both nodes. It stores almost nothing (who is primary, epoch).
+# The witness key is derived from the cluster key on a node; it lets the
+# witness grant the primary lease but never act as a node.
 #
-#   mkdir -p compose/secrets && cp <cluster_key from node 1> compose/secrets/cluster_key
+#   # on node 1 (or anywhere the cluster key is), then copy the file to this host:
+#   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/compose/secrets/cluster_key:/run/cluster_key:ro" \
+#     -e LEAZONE_CLUSTER_KEY_FILE=/run/cluster_key ghcr.io/prohand/leazone:latest cluster witness-key > witness_key
+#   # on this host:
+#   mkdir -p compose/secrets && mv witness_key compose/secrets/witness_key
 #   docker compose -f compose/witness.yml up -d
+#
+# Do not copy the cluster key to this host. Older setups that still pass
+# LEAZONE_CLUSTER_KEY_FILE keep working, with a warning: see the README
+# ("Clé du témoin").
 #
 # Then on the nodes: LEAZONE_WITNESS=https://<witness-ip>:7443
 
@@ -28,11 +38,11 @@ services:
       - "7443:7443"
     environment:
       LEAZONE_CLUSTER_LISTEN: ":7443"
-      LEAZONE_CLUSTER_KEY_FILE: /run/secrets/cluster_key
+      LEAZONE_WITNESS_KEY_FILE: /run/secrets/witness_key
       LEAZONE_LOG_LEVEL: ${LEAZONE_LOG_LEVEL:-info}
       TZ: ${TZ:-Europe/Paris}
     secrets:
-      - cluster_key
+      - witness_key
     volumes:
       - witness-data:/data
     healthcheck:
@@ -47,8 +57,8 @@ services:
         max-file: "3"
 
 secrets:
-  cluster_key:
-    file: ./secrets/cluster_key
+  witness_key:
+    file: ./secrets/witness_key
 
 volumes:
   witness-data:

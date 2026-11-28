@@ -30,3 +30,33 @@ func TestBeginReplaceBlocksSeal(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// OnReplace hooks get the old and new keys after a real change only, and
+// DeriveKey on the old key gives the old SubKey.
+func TestOnReplaceHook(t *testing.T) {
+	k1, k2, k3 := NewDEK(), NewDEK(), NewDEK()
+	b, _ := NewBox(k1)
+	oldSub := b.SubKey("p")
+	var calls [][2][]byte
+	b.OnReplace(func(o, n []byte) {
+		_ = b.SubKey("p") // the Box is usable from the hook
+		calls = append(calls, [2][]byte{o, n})
+	})
+	if err := b.Replace(k1); err != nil { // same key: no call
+		t.Fatal(err)
+	}
+	if err := b.Replace(k2); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.BeginReplace()(k3); err != nil {
+		t.Fatal(err)
+	}
+	_ = b.BeginReplace()(nil)
+	if len(calls) != 2 || string(calls[0][0]) != string(k1) || string(calls[0][1]) != string(k2) ||
+		string(calls[1][0]) != string(k2) || string(calls[1][1]) != string(k3) {
+		t.Fatalf("hook calls: %d", len(calls))
+	}
+	if string(DeriveKey(k1, "p")) != string(oldSub) {
+		t.Fatal("DeriveKey differs from SubKey")
+	}
+}

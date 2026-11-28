@@ -85,7 +85,7 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 			s.afterRestore(ctx)
 		}
 		s.record(r, "backup.restore", res.Node, audit.Success, map[string]any{"createdAt": res.CreatedAt,
-			"version": res.Version, "tables": res.Tables})
+			"version": res.Version, "tables": res.Tables, "users": res.Users})
 	}
 	writeJSON(w, http.StatusOK, res)
 }
