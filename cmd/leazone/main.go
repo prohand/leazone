@@ -16,6 +16,7 @@ import (
 
 	"github.com/prohand/leazone/internal/app"
 	"github.com/prohand/leazone/internal/caps"
+	"github.com/prohand/leazone/internal/cluster/pki"
 	"github.com/prohand/leazone/internal/config"
 	"github.com/prohand/leazone/internal/control"
 	"github.com/prohand/leazone/internal/logging"
@@ -33,6 +34,9 @@ Usage : leazone <commande> [options]
 Commandes :
   serve                         Lance le nœud (commande par défaut)
   witness                       Lance le témoin de cluster (3e hôte)
+  cluster gen-key               Affiche une nouvelle clé de cluster aléatoire (32 octets)
+  cluster witness-key           Affiche la clé du témoin, dérivée de la clé de cluster
+                                (LEAZONE_CLUSTER_KEY_FILE) : c'est le seul secret du témoin
   healthcheck                   Vérifie que le nœud répond (HEALTHCHECK Docker)
   admin reset-mfa <user>        Supprime le MFA d'un compte (secours)
   admin reset-password <user>   Donne un nouveau mot de passe à un compte (secours)
@@ -80,6 +84,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return internal(args, stderr)
 	case "witness":
 		return runWitness()
+	case "cluster":
+		return clusterCmd(args, stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -121,9 +127,15 @@ func runWitness() int {
 	}
 	log, closer := logging.Setup(cfg.LogLevel, cfg.LogFormat, cfg.LogDir)
 	defer closer.Close()
-	if cfg.ClusterKey == "" {
-		log.Error("LEAZONE_CLUSTER_KEY_FILE is required for the witness")
+	key, legacy, err := witness.ResolveKey(cfg.WitnessKey, cfg.ClusterKey)
+	if err != nil {
+		log.Error("fatal", "err", err)
 		return 1
+	}
+	if legacy {
+		log.Warn("SÉCURITÉ : le témoin a reçu la clé de cluster (LEAZONE_CLUSTER_KEY_FILE). Elle permet de se faire passer " +
+			"pour un nœud. Remplacez-la par la clé témoin : sur un nœud, « leazone cluster witness-key », copiez la clé " +
+			"dans un fichier sur le témoin, utilisez LEAZONE_WITNESS_KEY_FILE et supprimez la clé de cluster de cet hôte (voir le README).")
 	}
 	if err := app.CheckWritable(cfg.DataDir); err != nil {
 		log.Error("fatal", "err", err)
@@ -136,11 +148,45 @@ func runWitness() int {
 	}, log); err != nil {
 		log.Warn("control socket", "err", err)
 	}
-	if err := witness.Run(ctx, cfg.ClusterListen, cfg.DataDir, cfg.ClusterKey, log); err != nil {
+	if err := witness.Run(ctx, cfg.ClusterListen, cfg.DataDir, key, log); err != nil {
 		log.Error("fatal", "err", err)
 		return 1
 	}
 	return 0
+}
+
+// clusterCmd holds the cluster key helpers.
+func clusterCmd(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage : leazone cluster gen-key | witness-key")
+		return 2
+	}
+	switch args[0] {
+	case "gen-key":
+		fmt.Fprintln(stdout, pki.GenerateClusterKey())
+		return 0
+	case "witness-key":
+		cfg, ok := loadConfig(stderr)
+		if !ok {
+			return 1
+		}
+		if cfg.ClusterKey == "" {
+			fmt.Fprintln(stderr, "LEAZONE_CLUSTER_KEY_FILE est requis (la clé de cluster des nœuds)")
+			return 1
+		}
+		keys, err := pki.DeriveKeys(cfg.ClusterKey)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if pki.WeakKey(cfg.ClusterKey) {
+			fmt.Fprintln(stderr, "attention : la clé de cluster semble faible (utilisez leazone cluster gen-key)")
+		}
+		fmt.Fprintln(stdout, keys.WitnessKey())
+		return 0
+	}
+	fmt.Fprintf(stderr, "sous-commande inconnue : %s\n", args[0])
+	return 2
 }
 
 func healthcheck(stderr io.Writer) int {

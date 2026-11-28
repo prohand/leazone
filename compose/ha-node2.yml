@@ -2,7 +2,8 @@
 #
 #   cp compose/.env.ha.example compose/.env          # same file on both hosts, then edit
 #   mkdir -p compose/secrets && touch compose/secrets/admin_password
-#   openssl rand -base64 32 > compose/secrets/cluster_key    # once, then copy to node 1, node 2 and the witness
+#   openssl rand -base64 32 > compose/secrets/cluster_key    # once (32 random bytes), then copy to node 1 and node 2 only
+#   (the witness gets the witness key instead: see compose/witness.yml)
 #   docker compose -f compose/ha-node2.yml --env-file compose/.env up -d
 
 name: leazone

@@ -102,7 +102,11 @@ type peer struct {
 	acked   uint64 // follower position confirmed by its pulls
 	ackedAt time.Time
 	compat  compatibility
-	hashes  map[string]string
+	// mismatch: the peer runs but refuses our certificates or we refuse
+	// its own (other cluster key or protocol version): nothing can be
+	// exchanged, not even the DHCP leases.
+	mismatch bool
+	hashes   map[string]string
 	// nodeID is the last node ID seen at this address (persisted): it
 	// changes when the peer is reinstalled.
 	nodeID string
@@ -121,10 +125,14 @@ type compatibility struct {
 
 // Node is a cluster member.
 type Node struct {
-	d        Deps
-	ca       *pki.CA
-	cert     tls.Certificate
+	d    Deps
+	ca   *pki.CA         // node CA: port 7443 between nodes
+	cert tls.Certificate // "node:<id>", node CA
+	kek  []byte          // wraps the data key in snapshots
+	// client talks to the peers (node CA, server must be "node:<id>");
+	// wclient talks to the witness (witness CA, server must be "witness").
 	client   *http.Client
+	wclient  *http.Client
 	started  time.Time
 	witnessM string // container | ping | none
 
@@ -168,20 +176,37 @@ type witnessState struct {
 
 // New prepares a node; Start runs it.
 func New(d Deps) (*Node, error) {
-	ca, err := pki.Derive(d.Config.ClusterKey)
+	keys, err := pki.DeriveKeys(d.Config.ClusterKey)
 	if err != nil {
 		return nil, err
 	}
-	cert, err := ca.Issue("node:" + d.NodeID)
+	if pki.WeakKey(d.Config.ClusterKey) {
+		d.Log.Warn("the cluster key looks weak: use 32 random bytes (leazone cluster gen-key), see the README")
+	}
+	ca, err := keys.NodeCA()
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{d: d, ca: ca, cert: cert, started: time.Now(), role: proto.RoleJoining, peers: map[string]*peer{},
+	cert, err := ca.Issue(pki.NodePrefix + d.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	wca, err := keys.WitnessCA()
+	if err != nil {
+		return nil, err
+	}
+	wcert, err := wca.Issue(pki.NodePrefix + d.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	n := &Node{d: d, ca: ca, cert: cert, kek: keys.KEK(), started: time.Now(), role: proto.RoleJoining, peers: map[string]*peer{},
 		appliedNotif: make(chan struct{}, 1)}
 	def := DefaultSettings()
 	n.settings.Store(&def)
-	n.client = &http.Client{Transport: &http.Transport{TLSClientConfig: ca.ClientConfig(cert), Proxy: nil,
+	n.client = &http.Client{Transport: &http.Transport{TLSClientConfig: ca.ClientConfig(cert, pki.AnyNode), Proxy: nil,
 		MaxIdleConnsPerHost: 4, IdleConnTimeout: 60 * time.Second}, Timeout: 10 * time.Second}
+	n.wclient = &http.Client{Transport: &http.Transport{TLSClientConfig: wca.ClientConfig(wcert, pki.OnlyWitness), Proxy: nil,
+		MaxIdleConnsPerHost: 2, IdleConnTimeout: 60 * time.Second}, Timeout: 10 * time.Second}
 	for _, a := range d.Config.Peers {
 		n.peers[a] = &peer{addr: a, needExchange: true}
 	}
@@ -398,6 +423,16 @@ func (n *Node) heartbeats(ctx context.Context) {
 			defer n.mu.Unlock()
 			if err != nil {
 				p.lastErr = err.Error()
+				if pki.IsMismatch(err) {
+					// The peer runs but with certificates of another cluster
+					// key or protocol version (e.g. during an update): it is
+					// alive and incompatible, so this node does not take its
+					// place (asFollower) and does not count it for the quorum
+					// (asPrimary). It may itself be primary, unseen by us.
+					p.lastOK, p.mismatch = time.Now(), true
+					p.compat = compatibility{message: "l'autre nœud refuse nos certificats (clé de cluster ou version du protocole " +
+						"de cluster différente) : mettez les deux nœuds et le témoin dans la même version, avec la même clé"}
+				}
 				return
 			}
 			p.lastOK, p.latency, p.lastErr = time.Now(), time.Since(start), ""
@@ -415,6 +450,7 @@ func (n *Node) peerStatus(p *peer, self, st proto.NodeStatus) {
 	}
 	p.status = st
 	p.compat = compare(self, st)
+	p.mismatch = false
 	if st.NodeID != "" && st.NodeID != p.nodeID {
 		// New peer, or reinstalled (new node ID): the old ID no longer
 		// takes a share of the DHCP pool.
@@ -476,6 +512,17 @@ func (n *Node) livePrimary() *peer {
 		}
 	}
 	return best
+}
+
+// anyCompatiblePeer returns a live peer we can work with (n.mu held). Only
+// such a peer counts for the quorum: an incompatible one may not see us.
+func (n *Node) anyCompatiblePeer() *peer {
+	for _, p := range n.peers {
+		if p.alive(n.deadAfter()) && p.compat.ok {
+			return p
+		}
+	}
+	return nil
 }
 
 func (n *Node) anyAlivePeer() *peer {
@@ -717,7 +764,7 @@ func (n *Node) asPrimary(ctx context.Context) {
 			return
 		}
 	}
-	peerUp := n.anyAlivePeer()
+	peerUp := n.anyCompatiblePeer()
 	// Partner-down (whole pool served here) waits two more intervals after
 	// the peer is declared dead, so that a peer cut from us has applied
 	// its own "no new addresses" policy first (see applyDHCPPolicy).
@@ -913,6 +960,10 @@ func (n *Node) applyDHCPPolicy() {
 	mode := n.Settings().DHCPMode
 	role, partnerDown := n.role, n.partnerDown
 	peerSeen := n.anyAlivePeer() != nil
+	mismatch := false
+	for _, p := range n.peers {
+		mismatch = mismatch || (p.mismatch && p.alive(n.deadAfter()))
+	}
 	// Only the nodes configured now share the pool: this node and the ID
 	// last seen at each peer address (a reinstalled peer replaces its old
 	// ID, so both nodes compute the same split).
@@ -933,11 +984,12 @@ func (n *Node) applyDHCPPolicy() {
 		n.d.DHCP.SetPolicy(all, allC)
 	case mode == "active-passive" && role == proto.RoleSecondary:
 		n.d.DHCP.SetPolicy(none, noneC)
-	case role != proto.RolePrimary && (mode == "active-passive" || (n.witnessM == "container" && !peerSeen)):
+	case role != proto.RolePrimary && (mode == "active-passive" || (n.witnessM == "container" && !peerSeen) || mismatch):
 		// Not following a primary that may be serving the whole pool
-		// (active-passive, or partner-down after the witness gave it the
-		// role while we are cut from it): no new address, existing leases
-		// and reservations only (own clients).
+		// (active-passive, partner-down after the witness gave it the role
+		// while we are cut from it, or a peer of another protocol version
+		// that cannot see us): no new address, existing leases and
+		// reservations only (own clients).
 		n.d.DHCP.SetPolicy(none, dhcpsrv.Buckets(nodes, n.d.NodeID))
 	default:
 		// Load balancing, or a degraded state: own clients and own addresses.

@@ -454,11 +454,16 @@ Deux nœuds Leazone (un conteneur par hôte) et un **témoin** sur un 3e hôte (
         IP virtuelle 192.168.1.10 (portée par le primaire)
 ```
 
-1. **Une clé de cluster**, la même partout (c'est elle qui authentifie les nœuds entre eux) :
+1. **Une clé de cluster** (32 octets aléatoires), la même sur les deux nœuds (c'est elle qui authentifie les nœuds
+   entre eux), et la **clé du témoin** qui en est dérivée :
    ```bash
    mkdir -p compose/secrets && openssl rand -base64 32 > compose/secrets/cluster_key && touch compose/secrets/admin_password
    ```
-   Copiez `compose/secrets/cluster_key` sur les 3 hôtes.
+   ```bash
+   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/compose/secrets/cluster_key:/run/cluster_key:ro" -e LEAZONE_CLUSTER_KEY_FILE=/run/cluster_key ghcr.io/prohand/leazone:latest cluster witness-key > compose/secrets/witness_key
+   ```
+   Copiez `compose/secrets/cluster_key` sur les hôtes 1 et 2 **seulement**, et `compose/secrets/witness_key` sur
+   l'hôte 3 **seulement**. (`leazone cluster gen-key` génère aussi une clé de cluster.)
 2. **Le témoin** (hôte 3) :
    ```bash
    docker compose -f compose/witness.yml up -d
@@ -506,6 +511,36 @@ sur l'IP virtuelle 4,3 s après la panne.
 | `ping:<ip>` (ex : la passerelle) | **Partielle** : protège si un nœud est isolé, mais si seul le lien entre les deux nœuds coupe, les deux peuvent devenir primaires. Le DHCP reste sûr (chaque nœud ne donne que ses propres adresses) ; les modifications faites des deux côtés finissent en conflits |
 | vide | Pas de bascule automatique : bouton *Promouvoir ce nœud* sur la page Cluster |
 
+### Clé du témoin
+
+Le témoin ne reçoit **pas** la clé de cluster mais une clé dérivée à sens unique (`leazone cluster witness-key`,
+`LEAZONE_WITNESS_KEY_FILE`). Avec elle, il peut accorder le rôle de primaire, mais ni se faire passer pour un nœud,
+ni lire la configuration ou les secrets répliqués. Chaque nœud ne parle qu'en son nom : son identité est celle de
+son certificat.
+
+La clé de cluster est étirée par Argon2id (64 Mio, une fois au démarrage) : utilisez 32 octets aléatoires
+(`openssl rand -base64 32` ou `leazone cluster gen-key`). Une clé plus faible est acceptée, avec un avertissement
+dans les journaux.
+
+Un témoin installé avant la version 2.0 du protocole de cluster reçoit encore la clé de cluster
+(`LEAZONE_CLUSTER_KEY_FILE`) : il fonctionne, mais affiche un avertissement « SÉCURITÉ ». Pour le passer à la clé
+du témoin, avec le `compose/witness.yml` de cette version :
+
+```bash
+# hôte 1 : calculer la clé du témoin
+docker compose -f compose/ha-node1.yml --env-file compose/.env exec -T leazone /leazone cluster witness-key > witness_key
+```
+
+```bash
+# copier vers l'hôte 3
+scp witness_key <hôte3>:<dossier-leazone>/compose/secrets/witness_key && rm witness_key
+```
+
+```bash
+# hôte 3 : relancer le témoin avec la clé du témoin, puis supprimer la clé de cluster de cet hôte
+docker compose -f compose/witness.yml up -d && rm compose/secrets/cluster_key
+```
+
 ### DHCP en HA
 
 - **Load-balancing** (par défaut) : chaque client est servi par un seul nœud selon le hachage de sa MAC ou de son
@@ -541,6 +576,14 @@ Le certificat importé est répliqué (chiffré) sur les deux nœuds.
 
 Deux versions trop éloignées (version majeure différente, ou plus d'une version mineure d'écart) refusent de se
 synchroniser, avec un message clair sur la page Cluster : mettez-les à jour l'une après l'autre.
+
+**Changement de protocole de cluster (ex : passage au protocole 2.0)** : les deux versions ne peuvent plus se
+parler du tout (certificats différents). La mise à jour sans coupure n'est pas possible : mettez à jour **les 3
+hôtes ensemble** (témoin, puis nœud 1, puis nœud 2, `pull` puis `up -d` sur chacun, à la suite). Pendant les
+quelques secondes où les versions diffèrent, aucun nœud ne peut devenir primaire à tort : un nœud qui voit l'autre
+refuser ses certificats reste « incompatible » (pas de nouvelle adresse DHCP, pas de prise de rôle), et un primaire
+qui perd le témoin redevient secondaire. La configuration est en lecture seule et l'IP virtuelle peut manquer
+jusqu'à ce que les 3 hôtes soient à jour. Ensuite, passez le témoin à sa propre clé (« Clé du témoin » plus haut).
 
 ---
 
@@ -588,6 +631,8 @@ Tout se règle par variables d'environnement (prioritaires) ou dans `/config/lea
 | `LEAZONE_ADMIN_USER` | `admin` | Nom du premier compte |
 | `LEAZONE_ADMIN_PASSWORD_FILE` | vide | Fichier (secret Docker) du mot de passe initial |
 | `LEAZONE_BACKUP_PASSWORD_FILE` | vide | Mot de passe des sauvegardes automatiques et de `leazone backup/restore` |
+| `LEAZONE_CLUSTER_KEY_FILE` | vide | Clé de cluster (nœuds HA seulement, 32 octets aléatoires) |
+| `LEAZONE_WITNESS_KEY_FILE` | vide | Clé du témoin (`leazone witness` seulement, voir « Clé du témoin ») |
 | `LEAZONE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LEAZONE_LOG_FORMAT` | `text` | Format de `docker logs` : `text` ou `json` |
 | `LEAZONE_DATA_DIR` / `LEAZONE_LOG_DIR` / `LEAZONE_CONFIG_DIR` | `/data` `/logs` `/config` | Dossiers |
@@ -703,7 +748,9 @@ Les noms locaux répondent à tous. Pour les noms externes, ajoutez le réseau d
 
 **Le cluster ne se forme pas (page Cluster : nœud « hors ligne »)**
 - TCP 7443 doit être ouvert entre les nœuds et vers le témoin (`nc -vz <ip> 7443`).
-- La clé de cluster doit être **identique** partout (sinon : « certificat de cluster refusé »).
+- La clé de cluster doit être **identique** sur les deux nœuds, et le témoin doit avoir la clé du témoin qui en
+  est dérivée (sinon : « certificat de cluster refusé »). Les 3 hôtes doivent avoir le même protocole de cluster
+  (`leazone version`).
 - `LEAZONE_CLUSTER_ADDR` / `NODEx_IP` : l'adresse que l'**autre** nœud utilise pour joindre celui-ci.
 
 **Un nœud reste « isolé »**
