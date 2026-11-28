@@ -112,7 +112,12 @@ le certificat de votre PKI et renvoie vers Leazone.
    ```dotenv
    LEAZONE_PUBLIC_URL=https://leazone.mondomaine.lan
    LEAZONE_TRUSTED_PROXIES=127.0.0.1          # IP de nginx (ici sur le même hôte)
+   LEAZONE_HTTP_LISTEN=127.0.0.1:8443         # seul nginx joint Leazone
    ```
+   Par défaut (`:8443`), Leazone écoute sur **toutes** les interfaces de l'hôte (`network_mode: host`), VLAN clients
+   compris. Avec `127.0.0.1:8443`, l'interface n'est plus joignable qu'à travers nginx. Limitez aussi qui peut
+   l'ouvrir : *Paramètres > Sécurité > Réseaux autorisés pour l'interface* (ex : le réseau d'administration).
+   Prometheus passe alors aussi par nginx (`https://leazone.mondomaine.lan/metrics`).
 2. Configuration nginx :
    ```nginx
    server {
@@ -150,7 +155,21 @@ vraie IP du client (blocage après échecs, audit, liste d'IP autorisées) sans 
 **Sans nginx** : importez votre certificat dans *Paramètres > HTTPS*, ou déposez `cert.pem` + `key.pem`
 dans `/data/tls/` puis redémarrez. Le certificat auto-signé créé au premier démarrage ne sert qu'à l'installation.
 
-**En HA** : faites pointer nginx vers l'IP virtuelle, pour garder le même nom (et donc les mêmes passkeys) après une bascule.
+**En HA** : gardez le même nom (et donc les mêmes passkeys) après une bascule. Deux choix :
+
+- nginx vers l'IP virtuelle : laissez `LEAZONE_HTTP_LISTEN=:8443` (l'IP virtuelle change d'hôte, Leazone doit
+  écouter partout) et réglez la liste *Réseaux autorisés pour l'interface* (IP de nginx, réseau d'administration) ;
+- ou chaque nœud n'écoute que sur son IP de gestion, dans `compose/.env` :
+  `NODE1_HTTP_LISTEN=192.168.1.2:8443` et `NODE2_HTTP_LISTEN=192.168.1.3:8443`, et nginx envoie au nœud 1, puis au
+  nœud 2 s'il ne répond pas :
+  ```nginx
+  upstream leazone {
+      server 192.168.1.2:8443;
+      server 192.168.1.3:8443 backup;
+  }
+  # puis, dans location / : proxy_pass https://leazone;
+  ```
+  `LEAZONE_TRUSTED_PROXIES` : l'IP de nginx (les deux IP de gestion si nginx tourne sur les nœuds eux-mêmes).
 
 ---
 
