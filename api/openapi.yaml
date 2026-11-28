@@ -2600,3 +2600,16 @@ components:
         version: { type: string, description: "Leazone version that made it" }
         node: { type: string }
         tables: { type: object, additionalProperties: { type: integer }, description: "Rows per table" }
+        users:
+          type: array
+          description: >
+            Accounts not restored as they are in the backup (backup of this installation only): deleted here since
+            the backup (restored disabled, API tokens revoked), or local values kept because more recent or more
+            restrictive.
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              username: { type: string }
+              disabled: { type: boolean, description: "Deleted since the backup: restored disabled, without API tokens" }
+              kept: { type: array, items: { type: string, enum: [password, disabled, role] } }

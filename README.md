@@ -433,6 +433,9 @@ Bon à savoir :
 
 - La restauration **remplace** toute la configuration. Les comptes, passkeys et TOTP redeviennent ceux de la sauvegarde :
   sur une installation neuve, reconnectez-vous avec le compte admin **de la sauvegarde**.
+- Rien de ce qui a été retiré depuis la sauvegarde ne revient : toutes les sessions sont fermées, un compte supprimé
+  depuis revient **désactivé** et sans jeton d'API, et un mot de passe changé, un compte désactivé ou un rôle abaissé
+  depuis la sauvegarde gardent leur valeur actuelle. Le résultat de la restauration liste ces comptes.
 - Les passkeys restent valables si l'adresse de l'interface (`LEAZONE_PUBLIC_URL`) est la même.
 - En HA, restaurez sur le **primaire** : le secondaire reprend tout seul la nouvelle configuration.
 - Une sauvegarde faite par une version plus récente est refusée (mettez Leazone à jour d'abord).
