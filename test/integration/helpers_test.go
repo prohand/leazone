@@ -203,9 +203,20 @@ func (a *api) loginAdmin() {
 	a.do("POST", "/api/v1/me/totp/setup", nil, &setup)
 	a.totpSecret = setup.Secret
 	code, _ := totp.GenerateCode(setup.Secret, time.Now())
-	if s := a.do("POST", "/api/v1/me/totp/confirm", map[string]string{"code": code}, nil); s != 200 {
+	// The session is renewed when it becomes full: new cookie (in the jar)
+	// and new CSRF token (in the answer).
+	var enroll struct {
+		Session struct {
+			CSRFToken string `json:"csrfToken"`
+		} `json:"session"`
+	}
+	if s := a.do("POST", "/api/v1/me/totp/confirm", map[string]string{"code": code}, &enroll); s != 200 {
 		a.t.Fatalf("totp confirm: %d", s)
 	}
+	if enroll.Session.CSRFToken == "" {
+		a.t.Fatal("totp confirm: no CSRF token for the renewed session")
+	}
+	a.csrf = enroll.Session.CSRFToken
 }
 
 func jsonDecode(resp *http.Response, v any) error {
