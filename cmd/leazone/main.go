@@ -330,14 +330,34 @@ func internal(args []string, stderr io.Writer) int {
 		if len(args) == 2 {
 			path = args[1]
 		}
+		// Reserved to the image build. On a host, every user who can run the
+		// binary would get these network capabilities with a configuration
+		// of their own (LEAZONE_VIP...): others lose the right to run it.
+		if err := restrictExec(path); err != nil {
+			fmt.Fprintln(stderr, "setcap:", err)
+			return 1
+		}
 		if err := caps.SetFile(path); err != nil {
 			fmt.Fprintln(stderr, "setcap:", err)
 			return 1
 		}
+		fmt.Fprintf(stderr, "attention : %s a maintenant les capabilities NET_BIND_SERVICE, NET_RAW et NET_ADMIN pour quiconque "+
+			"peut l'exécuter. Commande réservée à l'image Docker ; hors image, seuls le propriétaire et le groupe du fichier "+
+			"peuvent l'exécuter (droits ramenés à 0750 au plus).\n", path)
 		return 0
 	}
-	fmt.Fprintln(stderr, "usage : leazone internal setcap [path] | install <src> <dst>")
+	fmt.Fprintln(stderr, "usage : leazone internal setcap [path] | install <src> <dst>  (construction de l'image Docker seulement)")
 	return 2
+}
+
+// restrictExec removes every right of "others" on path (setcap outside
+// the image).
+func restrictExec(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(path, fi.Mode().Perm()&0o750)
 }
 
 func install(src, dst string) error {

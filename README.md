@@ -769,6 +769,12 @@ C'est normal : modifiez sur le primaire (lien dans le bandeau), ou passez par l'
 **Vérifier les capabilities effectives**
 `docker exec leazone leazone caps` affiche par exemple `NET_BIND_SERVICE=yes NET_RAW=yes NET_ADMIN=no`.
 
+`leazone internal setcap` et `leazone internal install` servent **uniquement** à construire l'image. Ne les lancez
+pas sur un binaire de l'hôte : tout utilisateur qui pourrait l'exécuter recevrait ces capabilities avec sa propre
+configuration. Hors image, `setcap` retire donc le droit d'exécution aux « autres » (droits 0750 au plus). Quoi qu'il
+arrive, Leazone ne retire jamais de l'interface une adresse principale de l'hôte qu'il n'a pas ajoutée : une
+`LEAZONE_VIP` égale à l'adresse de l'hôte est refusée (erreur sur la page Cluster).
+
 ---
 
 ## Développement
