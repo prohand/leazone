@@ -37,6 +37,7 @@ var (
 	mDNSCacheMisses = desc("dns_cache_misses_total", "Cache misses.")
 	mDNSCacheSize   = desc("dns_cache_entries", "Entries in the DNS cache.")
 	mDNSBogus       = desc("dns_dnssec_bogus_total", "Forwarded answers refused by DNSSEC validation.")
+	mDNSLimited     = desc("dns_rate_limited_total", "Queries dropped or refused by the abuse limits (rate limiting).")
 	mFwdUp          = desc("dns_forwarder_up", "Forwarder health (1 = answers).", "forwarder", "protocol", "address")
 	mFwdLatency     = desc("dns_forwarder_latency_seconds", "Latency of the last forwarder check.", "forwarder", "protocol", "address")
 	mScopeSize      = desc("dhcp_scope_addresses", "Addresses in the scope range.", "scope", "network")
@@ -55,7 +56,7 @@ var (
 )
 
 func (c *metricsCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{mBuild, mDNSQueries, mDNSAnswers, mDNSCacheHits, mDNSCacheMisses, mDNSCacheSize, mDNSBogus,
+	for _, d := range []*prometheus.Desc{mBuild, mDNSQueries, mDNSAnswers, mDNSCacheHits, mDNSCacheMisses, mDNSCacheSize, mDNSBogus, mDNSLimited,
 		mFwdUp, mFwdLatency, mScopeSize, mScopeUsed, mScopeActive, mBlockQueries, mBlockBlocked, mBlockDomains, mBlockPaused,
 		mRole, mPeerUp, mWitness, mEpoch, mGaps, mLogsDropped} {
 		ch <- d
@@ -85,6 +86,7 @@ func (c *metricsCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(mDNSCacheMisses, float64(st.CacheMisses))
 		gauge(mDNSCacheSize, float64(st.CacheEntries))
 		counter(mDNSBogus, float64(st.Bogus))
+		counter(mDNSLimited, float64(st.Limited))
 		if fwd, err := s.dns.Store.Forwarders(ctx); err == nil {
 			health := s.dns.Engine.Health()
 			for _, f := range fwd {

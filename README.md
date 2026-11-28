@@ -442,6 +442,7 @@ scrape_configs:
 |---|---|
 | `leazone_dns_queries_total`, `leazone_dns_answers_total{source}` | Requêtes, réponses par origine |
 | `leazone_dns_cache_hits_total`, `leazone_dns_cache_entries` | Cache |
+| `leazone_dns_rate_limited_total` | Requêtes ignorées ou refusées par les limites anti-abus |
 | `leazone_dns_forwarder_up`, `leazone_dns_forwarder_latency_seconds` | État de chaque redirecteur |
 | `leazone_dhcp_scope_addresses`, `…_used_addresses`, `…_active_leases` | Remplissage des étendues |
 | `leazone_blocking_blocked_total`, `leazone_blocking_paused` | Blocage |

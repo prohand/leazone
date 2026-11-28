@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prohand/leazone/internal/audit"
 	"github.com/prohand/leazone/internal/auth"
 )
 
@@ -156,6 +157,14 @@ func TestBackupRestore(t *testing.T) {
 	// the previous one still verify (keyring).
 	if id, err := h2.audit.Verify(t.Context()); err != nil || id != "" {
 		t.Fatalf("audit chain after a restore with another key: %q %v", id, err)
+	}
+	// The audit entry of the restore lists the accounts not restored as is.
+	entries, _, _ := h2.audit.List(t.Context(), audit.Query{Action: "backup.restore"})
+	if len(entries) == 0 {
+		t.Fatal("restore not audited")
+	}
+	if _, ok := entries[0].Details["users"]; !ok {
+		t.Fatalf("restore audit without the account changes: %+v", entries[0].Details)
 	}
 }
 

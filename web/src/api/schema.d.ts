@@ -5732,6 +5732,14 @@ export interface components {
             tables?: {
                 [key: string]: number;
             };
+            /** @description Accounts not restored as they are in the backup (backup of this installation only): deleted here since the backup (restored disabled, API tokens revoked), or local values kept because more recent or more restrictive. */
+            users?: {
+                id?: string;
+                username?: string;
+                /** @description Deleted since the backup: restored disabled, without API tokens */
+                disabled?: boolean;
+                kept?: ("password" | "disabled" | "role")[];
+            }[];
         };
     };
     responses: {
