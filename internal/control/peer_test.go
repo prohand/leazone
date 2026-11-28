@@ -100,8 +100,11 @@ func TestPeerUserChecked(t *testing.T) {
 		serverChecked.Store(true)
 		return 4242, nil
 	})
+	// The server writes its refusal and closes at once: depending on timing,
+	// the client reads that refusal or fails to write its request (broken
+	// pipe). Either way it must never get an answer.
 	resp, err := Call(path, Request{Cmd: "ping"}, time.Second)
-	if err != nil || resp.OK || !serverChecked.Load() {
+	if (err == nil && resp.OK) || !serverChecked.Load() {
 		t.Fatalf("server answered a client of another user: %+v %v", resp, err)
 	}
 }
