@@ -18,23 +18,25 @@ import (
 )
 
 func (s *Server) registerModuleRoutes() {
-	cfg, rec := auth.PermConfigWrite, auth.PermRecordsWrite
+	// The blocking module is configuration (PLAN §4: modules are not for
+	// operators): pause, manual rules and refresh need config.write.
+	cfg := auth.PermConfigWrite
 	s.handle("GET /settings/modules", need(auth.PermRead), s.getModules)
 	s.handle("PUT /settings/modules", needStepUp(auth.PermAdmin), s.putModules)
 
 	s.handle("GET /blocking/status", need(auth.PermRead), s.blockingStatus)
 	s.handle("GET /blocking/settings", need(auth.PermRead), s.getBlockingSettings)
 	s.handle("PUT /blocking/settings", need(cfg), s.putBlockingSettings)
-	s.handle("POST /blocking/pause", need(rec), s.pauseBlocking)
-	s.handle("POST /blocking/refresh", need(rec), s.refreshBlocking)
+	s.handle("POST /blocking/pause", need(cfg), s.pauseBlocking)
+	s.handle("POST /blocking/refresh", need(cfg), s.refreshBlocking)
 	s.handle("POST /blocking/check", need(auth.PermRead), s.checkBlocking)
 	s.handle("GET /blocking/lists", need(auth.PermRead), s.listBlockLists)
 	s.handle("POST /blocking/lists", need(cfg), s.createBlockList)
 	s.handle("PUT /blocking/lists/{id}", need(cfg), s.updateBlockList)
 	s.handle("DELETE /blocking/lists/{id}", need(cfg), s.deleteBlockList)
 	s.handle("GET /blocking/rules", need(auth.PermRead), s.listBlockRules)
-	s.handle("POST /blocking/rules", need(rec), s.createBlockRule)
-	s.handle("DELETE /blocking/rules/{id}", need(rec), s.deleteBlockRule)
+	s.handle("POST /blocking/rules", need(cfg), s.createBlockRule)
+	s.handle("DELETE /blocking/rules/{id}", need(cfg), s.deleteBlockRule)
 	s.handle("GET /blocking/policies", need(auth.PermRead), s.listBlockPolicies)
 	s.handle("POST /blocking/policies", need(cfg), s.createBlockPolicy)
 	s.handle("PUT /blocking/policies/{id}", need(cfg), s.updateBlockPolicy)
