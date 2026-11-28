@@ -266,6 +266,8 @@ Quand un client obtient un bail avec un nom d'hôte, Leazone crée :
 
 Ils sont supprimés à la fin du bail. Un enregistrement **manuel** n'est jamais remplacé, et un nom déjà pris par
 un autre client actif n'est pas volé. Le nom d'une réservation passe avant celui envoyé par le client.
+Les noms `wpad`, `isatap` et `localhost` ne sont jamais enregistrés pour un client qui les envoie lui-même (un
+poste pourrait se faire passer pour le proxy du réseau) ; une réservation créée par l'admin peut les utiliser.
 
 ### Pages utiles
 
