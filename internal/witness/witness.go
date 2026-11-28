@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -215,6 +216,12 @@ func (w *Witness) Handler() http.Handler {
 				http.Error(rw, "bad request", http.StatusBadRequest)
 				return
 			}
+			// A node only speaks for itself: the node ID of the request is
+			// the one of its client certificate.
+			if id, ok := pki.PeerNodeID(r); !ok || req.NodeID == "" || id != req.NodeID {
+				http.Error(rw, "le nœud indiqué n'est pas celui du certificat client", http.StatusForbidden)
+				return
+			}
 			rw.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(rw).Encode(fn(req))
 		})
@@ -229,13 +236,41 @@ func (w *Witness) Handler() http.Handler {
 	return mux
 }
 
-// Run serves the witness on listen (mutual TLS with the cluster CA).
-func Run(ctx context.Context, listen, dataDir, clusterKey string, log *slog.Logger) error {
-	ca, err := pki.Derive(clusterKey)
+// ResolveKey picks the witness key from the configuration: the witness key
+// (LEAZONE_WITNESS_KEY_FILE), or, for a deployment made before it existed,
+// the cluster key (LEAZONE_CLUSTER_KEY_FILE), from which the witness key is
+// derived. legacy is true in the second case: the witness then holds a
+// secret that makes it a full cluster member, and should be given the
+// witness key instead.
+func ResolveKey(witnessKey, clusterKey string) (key string, legacy bool, err error) {
+	switch {
+	case witnessKey != "":
+		if _, err := pki.WitnessCA(witnessKey); err != nil {
+			return "", false, fmt.Errorf("LEAZONE_WITNESS_KEY_FILE : %w", err)
+		}
+		return witnessKey, false, nil
+	case clusterKey != "":
+		if pki.IsWitnessKey(clusterKey) {
+			// The witness key was put in the old secret: use it as such.
+			return clusterKey, false, nil
+		}
+		k, err := pki.DeriveKeys(clusterKey)
+		if err != nil {
+			return "", false, err
+		}
+		return k.WitnessKey(), true, nil
+	}
+	return "", false, errors.New("LEAZONE_WITNESS_KEY_FILE est requis pour le témoin (clé obtenue sur un nœud avec : leazone cluster witness-key)")
+}
+
+// Run serves the witness on listen (mutual TLS with the witness CA, derived
+// from the witness key: the witness cannot act as a node).
+func Run(ctx context.Context, listen, dataDir, witnessKey string, log *slog.Logger) error {
+	ca, err := pki.WitnessCA(witnessKey)
 	if err != nil {
 		return err
 	}
-	cert, err := ca.Issue("witness")
+	cert, err := ca.Issue(pki.WitnessName)
 	if err != nil {
 		return err
 	}
@@ -250,7 +285,7 @@ func Run(ctx context.Context, listen, dataDir, clusterKey string, log *slog.Logg
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: w.Handler(), TLSConfig: ca.ServerConfig(cert), ReadHeaderTimeout: 5 * time.Second,
+	srv := &http.Server{Handler: w.Handler(), TLSConfig: ca.ServerConfig(cert, pki.AnyNode), ReadHeaderTimeout: 5 * time.Second,
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug)}
 	go func() {
 		<-ctx.Done()

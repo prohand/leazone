@@ -46,6 +46,22 @@ func (p *partition) RoundTrip(r *http.Request) (*http.Response, error) {
 	return p.next.RoundTrip(r)
 }
 
+// viaPartition applies the cuts of p to another transport (the witness one).
+type viaPartition struct {
+	p    *partition
+	next http.RoundTripper
+}
+
+func (v *viaPartition) RoundTrip(r *http.Request) (*http.Response, error) {
+	v.p.mu.Lock()
+	b := v.p.blocked[r.URL.Host]
+	v.p.mu.Unlock()
+	if b {
+		return nil, fmt.Errorf("network cut (test)")
+	}
+	return v.next.RoundTrip(r)
+}
+
 type testNode struct {
 	name   string
 	addr   string // host:port
@@ -74,14 +90,23 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, nodes: map[string]*testNode{}}
-	ca, _ := pki.Derive(testKey)
-	cert, _ := ca.Issue("witness")
+	keys, err := pki.DeriveKeys(testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The witness only knows the witness key.
+	ca, err := pki.WitnessCA(keys.WitnessKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, _ := ca.Issue(pki.WitnessName)
 	w, err := witness.New(t.TempDir(), quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.wsrv = httptest.NewUnstartedServer(w.Handler())
-	h.wsrv.TLS = ca.ServerConfig(cert)
+	h.wsrv.TLS = ca.ServerConfig(cert, pki.AnyNode)
+	h.wsrv.Config.ErrorLog = slog.NewLogLogger(quiet.Handler(), slog.LevelDebug)
 	h.wsrv.StartTLS()
 	t.Cleanup(h.wsrv.Close)
 	h.witness = h.wsrv.URL
@@ -108,7 +133,10 @@ func (h *harness) addWith(name string, leaseMs int) *testNode {
 	return tn
 }
 
-func (h *harness) start(tn *testNode, preferred string) {
+func (h *harness) start(tn *testNode, preferred string) { h.startWith(tn, preferred, nil) }
+
+// startWith starts a node; mod may change its configuration and deps first.
+func (h *harness) startWith(tn *testNode, preferred string, mod func(*config.Config, *Deps)) {
 	var peers []string
 	for _, o := range h.nodes {
 		if o != tn {
@@ -129,14 +157,19 @@ func (h *harness) start(tn *testNode, preferred string) {
 		h.t.Fatal(err)
 	}
 	nodeID := "id-" + tn.name
-	n, err := New(Deps{Config: cfg, DB: tn.db, Repl: rs, Box: box, NodeID: nodeID, Log: quiet.With("node", tn.name),
+	d := Deps{Config: cfg, DB: tn.db, Repl: rs, Box: box, NodeID: nodeID, Log: quiet.With("node", tn.name),
 		ConfigApplied: func(context.Context) {}, DHCP: eng,
-		SetDEK: func(_ context.Context, k []byte) error { return box.Replace(k) }})
+		SetDEK: func(_ context.Context, k []byte) error { return box.Replace(k) }}
+	if mod != nil {
+		mod(cfg, &d)
+	}
+	n, err := New(d)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	tn.net = &partition{blocked: map[string]bool{}, next: n.client.Transport}
 	n.client.Transport = tn.net
+	n.wclient.Transport = &viaPartition{p: tn.net, next: n.wclient.Transport}
 	tn.node = n
 	if err := n.Start(ctx); err != nil {
 		h.t.Fatal(err)

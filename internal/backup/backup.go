@@ -250,8 +250,43 @@ type Result struct {
 	Version   string         `json:"version"`
 	Node      string         `json:"node"`
 	Tables    map[string]int `json:"tables"`
+	// Users lists the accounts not restored as they are in the backup, so
+	// that no access removed since the backup comes back.
+	Users []UserChange `json:"users"`
 	// KeyChanged: the data key of the backup replaced the current one.
 	KeyChanged bool `json:"-"`
+}
+
+// UserChange is an account the restore did not copy as is from the backup.
+type UserChange struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	// Disabled: the account was deleted here since the backup. It is
+	// restored disabled, without API tokens (sessions are always revoked).
+	Disabled bool `json:"disabled"`
+	// Kept lists the local values kept because they are more recent or more
+	// restrictive than the backup: "password", "disabled", "role".
+	Kept []string `json:"kept"`
+}
+
+// Summary describes the account changes in one sentence (empty: none).
+func (r *Result) Summary() string {
+	var gone, kept []string
+	for _, u := range r.Users {
+		if u.Disabled {
+			gone = append(gone, u.Username)
+		} else {
+			kept = append(kept, u.Username+" ("+strings.Join(u.Kept, ", ")+")")
+		}
+	}
+	var out []string
+	if len(gone) > 0 {
+		out = append(out, "comptes supprimés depuis la sauvegarde, restaurés désactivés et sans jeton d'API : "+strings.Join(gone, ", "))
+	}
+	if len(kept) > 0 {
+		out = append(out, "valeurs locales gardées (plus récentes ou plus restrictives) : "+strings.Join(kept, ", "))
+	}
+	return strings.Join(out, " ; ")
 }
 
 // Open checks a backup file with its password and returns its content and
@@ -298,6 +333,12 @@ func (s *Service) Open(ctx context.Context, data []byte, password string) (*File
 // A backup is an old copy of the credentials, so the restore must not bring
 // back access that was taken away since:
 //   - every session is revoked (users log in again);
+//   - when the backup comes from this installation (it shares at least one
+//     account with it), an account deleted here since the backup is restored
+//     disabled, with its API tokens revoked; for an account that exists here,
+//     the local password is kept when it was changed after the backup, and
+//     the local disabled flag and role when they are more restrictive (see
+//     mergeUsers). Result.Users lists these accounts;
 //   - for users that exist on this node, API tokens that are not active here
 //     (revoked or deleted since the backup) stay revoked; tokens of users that
 //     only exist in the backup (restore on a new install) keep working;
@@ -321,16 +362,17 @@ func (s *Service) Restore(ctx context.Context, data []byte, password string, dry
 			return nil, fmt.Errorf("table inconnue dans la sauvegarde : %s", n)
 		}
 	}
+	local, err := localFactors(ctx, s.DB)
+	if err != nil {
+		return nil, err
+	}
+	res.Users = mergeUsers(f.Tables, local.accounts, s.now())
 	// Nobody could administer the restored configuration.
 	if !hasActiveAdmin(f.Tables["users"]) {
 		return nil, ErrNoAdmin
 	}
 	if dryRun {
 		return res, nil
-	}
-	local, err := localFactors(ctx, s.DB)
-	if err != nil {
-		return nil, err
 	}
 	res.KeyChanged = !hmac.Equal(dek, s.Box.Key())
 	// Seal and Open wait from the end of the restore transaction until the
@@ -375,8 +417,106 @@ func hasActiveAdmin(users []map[string]any) bool {
 	return false
 }
 
-// factors lists the second factors present on this node before a restore.
+// account is the local state of a user before a restore.
+type account struct {
+	role              string
+	passwordHash      string
+	passwordChangedAt int64
+	disabled          bool
+}
+
+// roleRank orders roles from the least to the most powerful.
+var roleRank = map[string]int{"readonly": 0, "operator": 1, "admin": 2}
+
+func asInt(v any) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	case bool:
+		if x {
+			return 1
+		}
+		return 0
+	case json.Number:
+		n, _ := x.Int64()
+		return n
+	case string:
+		var n int64
+		fmt.Sscan(x, &n)
+		return n
+	}
+	return 0
+}
+
+// mergeUsers adjusts the users and API tokens of the backup (tables, in
+// place) so that the restore gives back no access removed since the backup,
+// and returns the accounts it changed.
+//
+// A backup that shares no account with this node comes from another
+// installation (or this one is new): it is restored as is. Otherwise:
+//   - an account of the backup unknown here was deleted since: restored
+//     disabled, its API tokens revoked;
+//   - for an account known here, the local password (hash and date) is kept
+//     when it is more recent, the local disabled flag when it is set, and
+//     the local role when it is lower.
+func mergeUsers(tables map[string][]map[string]any, local map[string]account, now time.Time) []UserChange {
+	users := tables["users"]
+	same := false
+	for _, u := range users {
+		if _, ok := local[fmt.Sprint(u["id"])]; ok {
+			same = true
+			break
+		}
+	}
+	changes := []UserChange{}
+	if !same {
+		return changes
+	}
+	deleted := map[string]bool{}
+	for _, u := range users {
+		id := fmt.Sprint(u["id"])
+		ch := UserChange{ID: id, Username: fmt.Sprint(u["username"]), Kept: []string{}}
+		loc, ok := local[id]
+		if !ok {
+			deleted[id] = true
+			u["disabled"] = int64(1)
+			ch.Disabled = true
+			changes = append(changes, ch)
+			continue
+		}
+		if loc.passwordChangedAt > asInt(u["password_changed_at"]) {
+			u["password_hash"], u["password_changed_at"] = loc.passwordHash, loc.passwordChangedAt
+			ch.Kept = append(ch.Kept, "password")
+		}
+		if loc.disabled && asInt(u["disabled"]) == 0 {
+			u["disabled"] = int64(1)
+			ch.Kept = append(ch.Kept, "disabled")
+		}
+		if r, ok := roleRank[fmt.Sprint(u["role"])]; !ok || roleRank[loc.role] < r {
+			u["role"] = loc.role
+			ch.Kept = append(ch.Kept, "role")
+		}
+		if len(ch.Kept) > 0 {
+			changes = append(changes, ch)
+		}
+	}
+	ms := now.UnixMilli()
+	for _, t := range tables["api_tokens"] {
+		if deleted[fmt.Sprint(t["user_id"])] && t["revoked_at"] == nil {
+			t["revoked_at"] = ms
+		}
+	}
+	return changes
+}
+
+// factors lists the accounts and second factors present on this node before
+// a restore.
 type factors struct {
+	accounts map[string]account
 	users    map[string]bool
 	tokens   map[string]bool // api_tokens.id, active only
 	passkeys map[string]bool // webauthn_credentials.id
@@ -385,7 +525,25 @@ type factors struct {
 }
 
 func localFactors(ctx context.Context, db *store.DB) (*factors, error) {
-	f := &factors{users: map[string]bool{}, tokens: map[string]bool{}, passkeys: map[string]bool{}, totp: map[string]bool{}, recovery: map[string]bool{}}
+	f := &factors{accounts: map[string]account{}, users: map[string]bool{}, tokens: map[string]bool{}, passkeys: map[string]bool{},
+		totp: map[string]bool{}, recovery: map[string]bool{}}
+	rows, err := db.QueryContext(ctx, `SELECT id, role, password_hash, password_changed_at, disabled FROM users`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		var a account
+		if err := rows.Scan(&id, &a.role, &a.passwordHash, &a.passwordChangedAt, &a.disabled); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		f.accounts[id] = a
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	for _, q := range []struct {
 		sql string
 		set map[string]bool

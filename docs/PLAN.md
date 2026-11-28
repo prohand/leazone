@@ -160,7 +160,8 @@ L'état réel des interfaces (IP, parent, type) n'est **pas** stocké : il vient
 ### Secrets
 - Une **clé de données (DEK)** AES-256 chiffre : secrets TOTP, clés privées DNSSEC, clés TLS, CA du cluster.
 - Nœud seul : DEK protégée par une clé maître locale (`/data/keys/master.key`).
-- Cluster : DEK protégée par une clé dérivée (Argon2id) de la **clé de cluster** (`LEAZONE_CLUSTER_KEY_FILE`). Même DEK sur tous les nœuds → chaque nœud déchiffre les secrets répliqués.
+- Cluster : DEK protégée par une clé dérivée (Argon2id 64 Mio puis HKDF) de la **clé de cluster** (`LEAZONE_CLUSTER_KEY_FILE`). Même DEK sur tous les nœuds → chaque nœud déchiffre les secrets répliqués.
+- Témoin : il ne reçoit qu'une **clé témoin** dérivée à sens unique (`leazone cluster witness-key`, `LEAZONE_WITNESS_KEY_FILE`) ; il ne peut ni se faire passer pour un nœud, ni lire les secrets.
 - Mots de passe, codes de secours, jetons d'API : **hachés**, jamais chiffrés ni stockés en clair.
 
 ### Migrations
@@ -503,7 +504,7 @@ logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
 | Baux « temps réel » | SSE | Rafraîchissement toutes les 5 s | Plus simple ; SSE reporté au tableau de bord (phase 6) |
 | Import Technitium | Phase 6 | Phase 3 | Demandé plus tôt |
 | Tables DHCP | Tables séparées pour exclusions/options | Colonnes JSON | Toujours lues avec l'étendue |
-| CA du cluster | CA générée puis enrôlement par défi HMAC | CA Ed25519 **dérivée** de la clé de cluster (HKDF) sur chaque nœud | Aucun enrôlement : connaître la clé = être membre ; mêmes garanties (mTLS 1.3) |
+| CA du cluster | CA générée puis enrôlement par défi HMAC | CA Ed25519 **dérivée** de la clé de cluster (Argon2id puis HKDF) sur chaque nœud ; CA témoin séparée, dérivée de la clé témoin | Aucun enrôlement : connaître la clé = être nœud ; identité = CN du certificat (`node:<id>`, `witness`) vérifiée à chaque requête ; mêmes garanties (mTLS 1.3) |
 | Journal de config | Entrées écrites par le code | Triggers SQLite générés depuis le schéma | Aucune modification ne peut échapper à la réplication |
 | Actions « Mon compte » sur le secondaire | Relayées au primaire | Refusées (lecture seule, lien vers le primaire) | Plus simple et sûr ; en pratique on passe par l'IP virtuelle |
 | Dernière connexion d'un utilisateur | Colonne de `users` | Table d'état `user_activity` | Écrite sur n'importe quel nœud |

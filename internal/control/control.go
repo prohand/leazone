@@ -1,6 +1,9 @@
 // Package control is a tiny JSON protocol on a local Unix socket, used by
 // CLI sub-commands (healthcheck, admin reset-mfa...) run with "docker exec".
 // Only processes running as the same user can open the socket (mode 0600).
+// Both ends check who is on the other side (SO_PEERCRED: same user, or
+// root), and the socket directory must be private, so that no other local
+// user can stand in for the server (and receive a backup password, say).
 package control
 
 import (
@@ -13,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -32,8 +36,61 @@ type Response struct {
 // Handler executes a request.
 type Handler func(ctx context.Context, req Request) Response
 
+// geteuid is os.Geteuid (tests change it).
+var geteuid = os.Geteuid
+
+// peerFn is peerUID (tests change it, see setPeerFn).
+var (
+	peerMu sync.Mutex
+	peerFn = peerUID
+)
+
+func peerOf(c net.Conn) (int, error) {
+	peerMu.Lock()
+	f := peerFn
+	peerMu.Unlock()
+	return f(c)
+}
+
+// checkDir verifies that nobody but us (or root) can create a socket in the
+// directory of path: it must belong to the current user (or root) and be
+// writable by nobody else. It returns the owner of the directory.
+func checkDir(path string) (int, error) {
+	dir := filepath.Dir(path)
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return -1, err
+	}
+	owner, ok := ownerUID(fi)
+	if !ok {
+		return -1, fmt.Errorf("propriétaire du dossier %s inconnu", dir)
+	}
+	me := geteuid()
+	if owner != me && owner != 0 && me != 0 {
+		return -1, fmt.Errorf("le dossier %s de la socket de contrôle appartient à l'UID %d et non à l'UID courant %d", dir, owner, me)
+	}
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		return -1, fmt.Errorf("le dossier %s de la socket de contrôle est modifiable par d'autres utilisateurs (droits %o) : utilisez un dossier privé (0700)", dir, perm)
+	}
+	return owner, nil
+}
+
+// trustedPeer reports whether the process at the other end of the socket
+// may be trusted: same user, root, or (for root) the owner of the directory.
+func trustedPeer(peer, dirOwner int) bool {
+	me := geteuid()
+	return peer == me || peer == 0 || (me == 0 && peer == dirOwner)
+}
+
 // Serve listens on path until ctx is done.
 func Serve(ctx context.Context, path string, h Handler, log *slog.Logger) error {
+	owner, err := checkDir(path)
+	if err != nil {
+		return fmt.Errorf("control socket %s: %w", path, err)
+	}
 	_ = os.Remove(path) // stale socket from a previous run
 	ln, err := listenPrivate(path)
 	if err != nil {
@@ -54,7 +111,7 @@ func Serve(ctx context.Context, path string, h Handler, log *slog.Logger) error 
 				log.Warn("control accept", "err", err)
 				continue
 			}
-			go handle(ctx, conn, h)
+			go handle(ctx, conn, h, owner)
 		}
 	}()
 	return nil
@@ -87,9 +144,13 @@ func listenPrivate(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-func handle(ctx context.Context, conn net.Conn, h Handler) {
+func handle(ctx context.Context, conn net.Conn, h Handler, dirOwner int) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if uid, err := peerOf(conn); err != nil || !trustedPeer(uid, dirOwner) {
+		_ = json.NewEncoder(conn).Encode(Response{Message: "refusé : client d'un autre utilisateur"})
+		return
+	}
 	var req Request
 	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&req); err != nil {
 		_ = json.NewEncoder(conn).Encode(Response{Message: "bad request"})
@@ -98,13 +159,25 @@ func handle(ctx context.Context, conn net.Conn, h Handler) {
 	_ = json.NewEncoder(conn).Encode(h(ctx, req))
 }
 
-// Call sends one request and waits for the answer.
+// Call sends one request and waits for the answer. It only talks to a
+// server of the same user (or root) behind a private directory.
 func Call(path string, req Request, timeout time.Duration) (Response, error) {
+	owner, err := checkDir(path)
+	if err != nil {
+		return Response{}, fmt.Errorf("cannot reach the running Leazone process (%s): %w", path, err)
+	}
 	conn, err := net.DialTimeout("unix", path, timeout)
 	if err != nil {
 		return Response{}, fmt.Errorf("cannot reach the running Leazone process (%s): %w", path, err)
 	}
 	defer conn.Close()
+	uid, err := peerOf(conn)
+	if err != nil {
+		return Response{}, fmt.Errorf("socket de contrôle %s : %w", path, err)
+	}
+	if !trustedPeer(uid, owner) {
+		return Response{}, fmt.Errorf("socket de contrôle %s : le serveur tourne sous l'UID %d, pas sous l'UID %d : refusé", path, uid, geteuid())
+	}
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return Response{}, err
