@@ -69,7 +69,8 @@ haute disponibilité, authentification, API, sauvegarde, interface, publication)
   liste ces comptes. Une sauvegarde d'une autre installation est restaurée comme avant.
 - `serve` et `witness` créent leurs fichiers avec umask 077 ; `/data/backups` passe en 0700, la base en 0600.
 - Socket de contrôle : un dossier modifiable par d'autres (ex. `/tmp`) est refusé ; `leazone admin ...` sous un autre
-  UID que le serveur est refusé (root autorisé).
+  UID que le serveur est refusé (root autorisé). Si vous aviez réglé `LEAZONE_CONTROL_SOCKET=/tmp/...`, retirez ce
+  réglage (défaut : `/data/run/leazone.sock`), sinon le healthcheck et les commandes `leazone admin` ne marchent plus.
 - IP virtuelle : une `LEAZONE_VIP` égale à une adresse principale de l'hôte n'est plus ajoutée ni retirée.
 - Import Technitium : appels en POST (identifiants hors de l'URL).
 
@@ -119,6 +120,7 @@ haute disponibilité, authentification, API, sauvegarde, interface, publication)
 - `release.yml` : plus d'injection par l'entrée `version`, publication depuis `main` seulement, tests avant
   publication, environnement d'approbation.
 - Actions GitHub épinglées par SHA, Dependabot, scan des vulnérabilités (`govulncheck`, `npm audit`).
+- Go 1.26.11 exigé (la CI testait avec Go 1.26.0, qui a des failles connues dans la bibliothèque standard).
 - `.dockerignore` : secrets locaux (`.env`, `*.pem`, `*.key`, `compose/secrets`) exclus du contexte de build.
 - Documentation nginx : écouter l'interface sur `127.0.0.1:8443` derrière un proxy.
 
