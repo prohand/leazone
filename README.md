@@ -240,7 +240,15 @@ En HA, mettez les **deux** nœuds en `helper-address`.
 ### Isolation stricte
 
 - Une requête reçue en direct ne sert **que** l'étendue liée à l'interface d'arrivée.
-- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (ou ses *agents relais supplémentaires*).
+- Une requête relayée ne sert que l'étendue dont le réseau contient l'adresse du relais (giaddr), ou dont les
+  *agents relais supplémentaires* listent cette adresse. Elle doit venir de l'adresse du relais (adresse source UDP
+  = giaddr) : si votre relais envoie depuis une autre adresse (son interface vers Leazone), ajoutez cette adresse
+  aux *agents relais supplémentaires* de l'étendue.
+- Les options de choix du réseau (82.5 *link selection*, 118 *subnet selection*) ne sont prises en compte que si le
+  relais est listé dans les *agents relais supplémentaires* de l'étendue qu'elles désignent ; sinon elles sont ignorées
+  (un client pourrait les forger).
+- L'interface d'arrivée d'une requête relayée n'est pas contrôlée (un relais sur un autre réseau routé arrive par
+  n'importe quelle interface) : filtrez UDP 67 sur l'interface WAN avec le pare-feu de l'hôte.
 - Aucune étendue trouvée → pas de réponse. Une demande d'adresse d'un autre réseau → refus (NAK).
 - Deux étendues ne peuvent pas avoir des réseaux qui se chevauchent.
 
@@ -687,7 +695,8 @@ désactivez la validation.
   `sudo ss -lunp | grep ':67 '`, puis arrêtez ce service.
 - Mode direct : l'étendue doit avoir son *Interface*, **et** le DHCP doit être activé sur cette interface (*Interfaces*).
 - Mode relais : *Relais* activé sur l'étendue, et l'adresse du relais (giaddr) dans le réseau de l'étendue
-  (sinon ajoutez-la dans *agents relais supplémentaires*). Le pare-feu de l'hôte doit laisser passer UDP 67.
+  (sinon ajoutez-la dans *agents relais supplémentaires*). Si le relais envoie depuis une autre adresse que giaddr,
+  ajoutez aussi cette adresse source. Le pare-feu de l'hôte doit laisser passer UDP 67.
 - Le conteneur doit être en `network_mode: host` pour recevoir les broadcasts.
 
 **Le DNS ne répond pas aux clients d'un autre réseau**

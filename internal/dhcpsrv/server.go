@@ -92,7 +92,7 @@ func (s *Server) open(ctx context.Context) error {
 func (s *Server) loop(pc *ipv4.PacketConn) {
 	buf := make([]byte, 4096)
 	for {
-		n, cm, _, err := pc.ReadFrom(buf)
+		n, cm, from, err := pc.ReadFrom(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -105,6 +105,11 @@ func (s *Server) loop(pc *ipv4.PacketConn) {
 			continue
 		}
 		p := Packet{Msg: msg}
+		if u, ok := from.(*net.UDPAddr); ok {
+			if a, ok := netip.AddrFromSlice(u.IP.To4()); ok {
+				p.Src = a
+			}
+		}
 		if cm != nil {
 			p.IfIndex = cm.IfIndex
 			if d, ok := netip.AddrFromSlice(cm.Dst.To4()); ok {

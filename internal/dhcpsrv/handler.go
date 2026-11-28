@@ -19,6 +19,7 @@ type Packet struct {
 	Msg     *dhcpv4.DHCPv4
 	IfIndex int        // receiving interface
 	Dst     netip.Addr // destination address (broadcast or one of ours)
+	Src     netip.Addr // UDP source address (invalid when unknown)
 }
 
 // Reply is what to send back.
@@ -79,34 +80,11 @@ func (e *Engine) selectScope(p Packet) (*scopeRT, netip.Addr) {
 	m := p.Msg
 	gi := ipOf(m.GatewayIPAddr)
 	if gi.IsValid() && !gi.IsUnspecified() {
-		// Relayed: link selection (82.5) or subnet selection (118) first.
-		sel := gi
-		if ri := m.RelayAgentInfo(); ri != nil {
-			if b := ri.Get(subLinkSelection); len(b) == 4 {
-				sel = netip.AddrFrom4([4]byte(b))
-			}
+		s := e.relayScope(p, gi)
+		if s == nil {
+			return nil, netip.Addr{}
 		}
-		if b := m.Options.Get(dhcpv4.OptionSubnetSelection); len(b) == 4 {
-			sel = netip.AddrFrom4([4]byte(b))
-		}
-		// The network named by the relay wins; the relay agent list is only
-		// a fallback when no scope holds that address.
-		for _, s := range e.ordered {
-			if s.Enabled && s.Relay && s.prefix.Contains(sel) {
-				return s, e.localAddr(p, s)
-			}
-		}
-		for _, s := range e.ordered {
-			if !s.Enabled || !s.Relay {
-				continue
-			}
-			for _, a := range s.RelayAgents {
-				if a == gi.String() {
-					return s, e.localAddr(p, s)
-				}
-			}
-		}
-		return nil, netip.Addr{}
+		return s, e.localAddr(p, s)
 	}
 	it, ok := e.ifaces[p.IfIndex]
 	if !ok || !e.dhcpOn[it.Name] {
@@ -144,6 +122,79 @@ func (e *Engine) selectScope(p Packet) (*scopeRT, netip.Addr) {
 		}
 	}
 	return found, src
+}
+
+// relayScope selects the scope of a relayed request (giaddr = gi), or nil.
+//
+// giaddr and the options are written by whoever sent the packet, so:
+//   - the relay must be known: gi in the network of an enabled relayed
+//     scope, or listed in the relay agents of one;
+//   - the packet must come from gi (UDP source address) or from an address
+//     listed in the relay agents of the scope (relays that send from
+//     another interface than the one named in giaddr);
+//   - link selection (82.5) and subnet selection (118) only count when gi
+//     is listed in the relay agents of the scope they designate: without
+//     that a client could forge them (and giaddr) to get an address of
+//     another network.
+//
+// The receiving interface is not checked: a relay on another routed
+// network reaches us through any of our interfaces.
+func (e *Engine) relayScope(p Packet, gi netip.Addr) *scopeRT {
+	m := p.Msg
+	var s *scopeRT
+	var sel netip.Addr
+	if ri := m.RelayAgentInfo(); ri != nil {
+		if b := ri.Get(subLinkSelection); len(b) == 4 {
+			sel = netip.AddrFrom4([4]byte(b))
+		}
+	}
+	if b := m.Options.Get(dhcpv4.OptionSubnetSelection); !sel.IsValid() && len(b) == 4 {
+		sel = netip.AddrFrom4([4]byte(b))
+	}
+	if sel.IsValid() {
+		for _, c := range e.ordered {
+			if c.Enabled && c.Relay && c.prefix.Contains(sel) && c.trustsRelay(gi) {
+				s = c
+				break
+			}
+		}
+	}
+	// The network of the relay wins; the relay agent list is only a
+	// fallback when no scope holds that address.
+	if s == nil {
+		for _, c := range e.ordered {
+			if c.Enabled && c.Relay && c.prefix.Contains(gi) {
+				s = c
+				break
+			}
+		}
+	}
+	if s == nil {
+		for _, c := range e.ordered {
+			if c.Enabled && c.Relay && c.trustsRelay(gi) {
+				s = c
+				break
+			}
+		}
+	}
+	if s == nil {
+		return nil
+	}
+	if p.Src.IsValid() && p.Src != gi && !s.trustsRelay(p.Src) {
+		e.log.Debug("DHCP relayed request ignored: source is not the relay", "giaddr", gi, "src", p.Src, "scope", s.Name)
+		return nil
+	}
+	return s
+}
+
+// trustsRelay reports whether a is listed in the scope's relay agents.
+func (s *scopeRT) trustsRelay(a netip.Addr) bool {
+	for _, r := range s.RelayAgents {
+		if r == a.String() {
+			return true
+		}
+	}
+	return false
 }
 
 // localAddr returns our address for a relayed request: the unicast
@@ -211,6 +262,12 @@ func (e *Engine) handle(ctx context.Context, p Packet) *Reply {
 	case dhcpv4.MessageTypeRelease:
 		e.release(ctx, p, s, mac, cid)
 	case dhcpv4.MessageTypeInform:
+		// The ACK goes to ciaddr by unicast: it must be an address of the
+		// client's network, not any host the sender names.
+		if ci := ipOf(m.ClientIPAddr); ci.IsValid() && !ci.IsUnspecified() && !s.prefix.Contains(ci) {
+			e.log.Debug("DHCP INFORM ignored: client address outside its network", "mac", mac, "ciaddr", ci, "scope", s.Name)
+			return nil
+		}
 		return e.reply(p, s, src, dhcpv4.MessageTypeAck, netip.Addr{}, 0)
 	}
 	return nil
