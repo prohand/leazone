@@ -114,7 +114,11 @@ func TestPasswordAndMFAResetRevokeTokens(t *testing.T) {
 	s, _ := newTestService(t)
 	ctx := context.Background()
 	u, _ := s.CreateUser(ctx, "dave", RoleOperator, "a long enough one")
+	giveTOTP(t, s, u.ID)
 	plain, _, _ := s.CreateToken(ctx, u.ID, "script", "write", nil)
+	if _, _, err := s.AuthenticateToken(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SetPassword(ctx, u.ID, "another long one", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -170,8 +174,8 @@ func TestCeremonyStoreBounds(t *testing.T) {
 	for i := 0; i < 3*ceremonyPerOwner; i++ {
 		c.put("ip:10.0.0.1", CeremonyLogin, "", webauthn.SessionData{})
 	}
-	if len(c.byOwner["ip:10.0.0.1"]) != ceremonyPerOwner || c.order.Len() != ceremonyPerOwner+1 {
-		t.Fatalf("per-client limit not applied: %d / %d", len(c.byOwner["ip:10.0.0.1"]), c.order.Len())
+	if len(c.byOwner["ip:10.0.0.1"]) != ceremonyPerOwner || c.anon.Len() != ceremonyPerOwner+1 {
+		t.Fatalf("per-client limit not applied: %d / %d", len(c.byOwner["ip:10.0.0.1"]), c.anon.Len())
 	}
 	if _, ok := c.take(first, CeremonyLogin, ""); ok {
 		t.Fatal("oldest challenge of the client kept")
