@@ -9,12 +9,15 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
+
+	"github.com/prohand/leazone/internal/ratelimit"
 )
 
 // Server owns the UDP socket. One socket on 0.0.0.0:67 receives the
@@ -29,11 +32,53 @@ type Server struct {
 	pc      *ipv4.PacketConn
 	conn    net.PacketConn
 	lastErr string
+
+	// Flood protection: requests handled at once (beyond, packets are
+	// dropped, the clients retry), and request rates per client MAC and per
+	// receiving interface or relay.
+	workers  chan struct{}
+	perMAC   *ratelimit.Limiter[string]
+	perLink  *ratelimit.Limiter[string]
+	dropped  atomic.Uint64
+	lastWarn atomic.Int64
 }
+
+// Flood protection limits. A client needs a few packets per minute; a
+// relay or a VLAN of a few hundred clients after a power cut stays below
+// the per-link rate (the clients retry what is dropped).
+const (
+	maxWorkers   = 64
+	macRate      = 1   // requests per second per client MAC
+	macBurst     = 10  //
+	linkRate     = 200 // requests per second per interface or relay
+	linkBurst    = 500
+	limiterKeys  = 20000
+	dropWarnSecs = 60
+)
 
 // NewServer returns a server bound to nothing yet.
 func NewServer(e *Engine, port int, log *slog.Logger) *Server {
-	return &Server{Engine: e, Port: port, log: log}
+	return &Server{Engine: e, Port: port, log: log, workers: make(chan struct{}, maxWorkers),
+		perMAC: ratelimit.New[string](macRate, macBurst, limiterKeys), perLink: ratelimit.New[string](linkRate, linkBurst, 4096)}
+}
+
+// admit applies the rate limits to a received request.
+func (s *Server) admit(p Packet) bool {
+	link := "if:" + strconv.Itoa(p.IfIndex)
+	if gi := ipOf(p.Msg.GatewayIPAddr); gi.IsValid() && !gi.IsUnspecified() {
+		link = "gi:" + gi.String()
+	}
+	return s.perLink.Allow(link) && s.perMAC.Allow(string(p.Msg.ClientHWAddr))
+}
+
+// drop counts a request dropped by the flood protection and warns at most
+// once a minute.
+func (s *Server) drop(why string) {
+	n := s.dropped.Add(1)
+	now := time.Now().Unix()
+	if last := s.lastWarn.Load(); now-last >= dropWarnSecs && s.lastWarn.CompareAndSwap(last, now) {
+		s.log.Warn("DHCP: requests dropped (flood protection)", "reason", why, "total", n)
+	}
 }
 
 // Status describes the socket.
@@ -116,7 +161,19 @@ func (s *Server) loop(pc *ipv4.PacketConn) {
 				p.Dst = d
 			}
 		}
-		go s.answer(pc, p)
+		if !s.admit(p) {
+			s.drop("débit trop élevé")
+			continue
+		}
+		select {
+		case s.workers <- struct{}{}:
+			go func() {
+				defer func() { <-s.workers }()
+				s.answer(pc, p)
+			}()
+		default:
+			s.drop("trop de requêtes en cours")
+		}
 	}
 }
 
@@ -169,12 +226,16 @@ func bindError(err error, port int) string {
 type ICMPPinger struct {
 	Timeout time.Duration
 	log     *slog.Logger
+	sem     chan struct{} // bounds the pings (one ICMP socket each) at once
 }
+
+// maxPings bounds the ping checks running at once.
+const maxPings = 16
 
 // NewPinger returns a pinger, or nil when ICMP sockets are not available
 // (no NET_RAW and unprivileged ping disabled).
 func NewPinger(log *slog.Logger) *ICMPPinger {
-	p := &ICMPPinger{Timeout: 400 * time.Millisecond, log: log}
+	p := &ICMPPinger{Timeout: 400 * time.Millisecond, log: log, sem: make(chan struct{}, maxPings)}
 	if c, err := p.listen(); err == nil {
 		c.Close()
 		return p
@@ -192,6 +253,21 @@ func (p *ICMPPinger) listen() (*icmp.PacketConn, error) {
 
 // InUse reports whether ip answers an ICMP echo.
 func (p *ICMPPinger) InUse(ctx context.Context, ip netip.Addr) bool {
+	if p.sem != nil {
+		// Wait for a slot at most one ping time: past that the address is
+		// offered unchecked rather than holding the request longer.
+		t := time.NewTimer(p.Timeout)
+		select {
+		case p.sem <- struct{}{}:
+			t.Stop()
+			defer func() { <-p.sem }()
+		case <-t.C:
+			return false
+		case <-ctx.Done():
+			t.Stop()
+			return false
+		}
+	}
 	c, err := p.listen()
 	if err != nil {
 		return false

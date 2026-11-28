@@ -214,6 +214,8 @@ func (e *Engine) localAddr(p Packet, s *scopeRT) netip.Addr {
 // Handle processes one request and returns the reply (nil = no answer).
 func (e *Engine) Handle(ctx context.Context, p Packet) *Reply {
 	r := e.handle(ctx, p)
+	// The lease must be on disk before the client is told about it.
+	e.persisted(ctx)
 	if e.OnEvent != nil {
 		e.emit(p, r)
 	}

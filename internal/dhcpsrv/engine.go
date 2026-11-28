@@ -42,6 +42,7 @@ type scopeRT struct {
 type Engine struct {
 	log    *slog.Logger
 	db     leaseDB
+	w      *leaseWriter
 	Hooks  Hooks
 	Pinger Pinger
 	Now    func() time.Time
@@ -90,6 +91,7 @@ func NewEngine(ctx context.Context, db *store.DB, log *slog.Logger) (*Engine, er
 	if e.leases, err = e.db.load(ctx); err != nil {
 		return nil, err
 	}
+	e.w = newLeaseWriter(e.db, log)
 	for _, m := range e.leases {
 		for _, l := range m {
 			e.hlc = max(e.hlc, l.HLC)
@@ -195,7 +197,7 @@ func (e *Engine) clientLease(scopeID, mac, cid string) *Lease {
 	return best
 }
 
-func (e *Engine) store(ctx context.Context, l *Lease) {
+func (e *Engine) store(_ context.Context, l *Lease) {
 	if e.leases[l.ScopeID] == nil {
 		e.leases[l.ScopeID] = map[uint32]*Lease{}
 	}
@@ -211,13 +213,16 @@ func (e *Engine) store(ctx context.Context, l *Lease) {
 	l.HLC = e.hlc
 	e.leases[l.ScopeID][u] = l
 	e.version.Add(1)
-	if err := e.db.put(ctx, l); err != nil {
-		e.log.Error("lease persist failed", "ip", l.IP, "err", err)
-	}
+	// Written by the lease writer, outside the lock (see persisted).
+	e.w.put(l)
 	if len(e.outbox) < 100000 {
 		e.outbox = append(e.outbox, *l)
 	}
 }
+
+// persisted returns once the lease changes made so far are written to the
+// database (or ctx ends). Call it without e.mu.
+func (e *Engine) persisted(ctx context.Context) { e.w.wait(ctx) }
 
 // TakeOutbox returns and clears the lease changes not yet sent to the peer.
 func (e *Engine) TakeOutbox() []Lease {
@@ -282,12 +287,11 @@ func (e *Engine) ApplyRemote(ctx context.Context, list []Lease) {
 			}
 			e.leases[r.ScopeID][u] = &nl
 			e.version.Add(1)
-			if err := e.db.put(ctx, &nl); err != nil {
-				e.log.Error("lease persist failed", "ip", nl.IP, "err", err)
-			}
+			e.w.put(&nl)
 			changes = append(changes, change{sc.Scope, old, nl})
 		}
 	}()
+	e.persisted(ctx)
 	if e.Hooks == nil {
 		return
 	}
@@ -311,7 +315,7 @@ func (e *Engine) setDNSName(ctx context.Context, l Lease, name string) {
 	defer e.mu.Unlock()
 	if cur := e.leaseAt(l.ScopeID, dhcpconf.U32(l.IP)); cur != nil && cur.sameClient(l.MAC, l.ClientID) && cur.DNSName != name {
 		cur.DNSName = name
-		_ = e.db.put(ctx, cur)
+		e.w.put(cur)
 	}
 }
 
@@ -478,6 +482,7 @@ func (e *Engine) Release(ctx context.Context, scopeID string, ip netip.Addr) (Le
 	if !ok {
 		return Lease{}, store.ErrNotFound
 	}
+	e.persisted(ctx)
 	if sc != nil && e.Hooks != nil && was.State == StateBound {
 		e.Hooks.Ended(ctx, sc.Scope, was)
 	}
@@ -511,11 +516,12 @@ func (e *Engine) Sweep(ctx context.Context) {
 				}
 			case (l.State == StateExpired || l.State == StateReleased || l.State == StateDeclined) && now.Sub(l.Ends) > 30*24*time.Hour:
 				delete(m, ip)
-				_ = e.db.delete(ctx, scopeID, l.IP)
+				e.w.delete(scopeID, l.IP)
 			}
 		}
 	}
 	e.mu.Unlock()
+	e.persisted(ctx)
 	// Forget the rate limit of "ignored" events once its window is over.
 	e.ignored.Range(func(k, v any) bool {
 		if now.Sub(v.(time.Time)) >= ignoredEvery {
