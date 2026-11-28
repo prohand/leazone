@@ -131,6 +131,7 @@ func newHarness(t *testing.T, env map[string]string) *harness {
 		t.Fatal(err)
 	}
 	h.audit = audit.New(db, "node-test", log)
+	h.audit.SetKey(box)
 	tm, err := tlsmgr.New(ctx, db, box, log, dir, []string{testHost})
 	if err != nil {
 		t.Fatal(err)

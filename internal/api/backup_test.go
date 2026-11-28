@@ -152,6 +152,11 @@ func TestBackupRestore(t *testing.T) {
 	ro := h2.client()
 	ro.login("lecteur", adminPass)
 	ro.expect("POST", "/api/v1/backup", map[string]string{"password": pw}, 403, TForbidden)
+	// The restore brought another data key: the audit entries signed with
+	// the previous one still verify (keyring).
+	if id, err := h2.audit.Verify(t.Context()); err != nil || id != "" {
+		t.Fatalf("audit chain after a restore with another key: %q %v", id, err)
+	}
 }
 
 // A backup without an active admin would lock everyone out: refused, even
