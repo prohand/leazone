@@ -398,12 +398,15 @@ func (v *validator) negative(ctx context.Context, name string, qtype uint16, m *
 	name = strings.ToLower(dns.Fqdn(name))
 	sets := group(m.Ns)
 	signer := ""
+	// The parent of the trust anchor cannot be validated: the anchor itself
+	// may deny its own DS (the root for "DS .").
+	strict := qtype == dns.TypeDS && name != v.anchorZone()
 find:
 	for _, s := range sets {
 		for _, sig := range s.sigs {
 			// The denial must come from the zone of name (from the parent
 			// zone for a DS), not from a zone the sender picked.
-			if c := strings.ToLower(sig.SignerName); v.signerOK(c, name, qtype == dns.TypeDS) {
+			if c := strings.ToLower(sig.SignerName); v.signerOK(c, name, strict) {
 				signer = c
 				break find
 			}

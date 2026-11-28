@@ -99,6 +99,14 @@ func TestDNSSECWildcardLabelsFromVerifiedSig(t *testing.T) {
 	}
 }
 
+// The trust anchor denies its own DS (like the root for "DS ."): secure.
+func TestDNSSECDSDenialAtAnchor(t *testing.T) {
+	_, val, _ := signedPair(t, dns.ED25519, "nsec")
+	if m := askDO(val, "maison.lan", dns.TypeDS); m.Rcode != dns.RcodeSuccess || !m.AuthenticatedData {
+		t.Fatalf("DS denial at the anchor: %v", m)
+	}
+}
+
 // Data below a proven insecure delegation stays "insecure" (no AD, no
 // SERVFAIL), signed by the child's own keys or not at all.
 func TestDNSSECInsecureDelegationStillAnswers(t *testing.T) {
