@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # Leazone image: web UI build, static Go build, then a minimal "scratch" image
 # running as UID 1000 with file capabilities in the permitted set only.
@@ -6,8 +6,11 @@
 # Multi-arch: docker buildx build --platform linux/amd64,linux/arm64 .
 # (the last stage runs the target binary once, so cross builds need QEMU/binfmt).
 
-ARG NODE_IMAGE=node:22-alpine
-ARG GO_IMAGE=golang:1.26-alpine
+# Base images pinned by digest (multi-arch index). To update, take the new digest
+# from "docker buildx imagetools inspect node:22-alpine" (same for golang).
+# Override with --build-arg (registry mirror, for example).
+ARG NODE_IMAGE=node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a
+ARG GO_IMAGE=golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab
 
 # ---- 1. Web UI -------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web

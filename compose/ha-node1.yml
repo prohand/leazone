@@ -38,7 +38,9 @@ services:
       LEAZONE_VIP_INTERFACE: ${NODE1_VIP_INTERFACE:-}
       LEAZONE_PUBLIC_URL: ${LEAZONE_PUBLIC_URL:-}
       LEAZONE_TRUSTED_PROXIES: ${LEAZONE_TRUSTED_PROXIES:-}
-      LEAZONE_HTTP_LISTEN: ${LEAZONE_HTTP_LISTEN:-:8443}
+      # Web UI / API address: NODE1_HTTP_LISTEN (this node only), else LEAZONE_HTTP_LISTEN,
+      # else ":8443" (every interface of the host, needed to serve the UI on the virtual IP).
+      LEAZONE_HTTP_LISTEN: ${NODE1_HTTP_LISTEN:-${LEAZONE_HTTP_LISTEN:-:8443}}
       LEAZONE_LOG_LEVEL: ${LEAZONE_LOG_LEVEL:-info}
       LEAZONE_ADMIN_USER: ${LEAZONE_ADMIN_USER:-admin}
       LEAZONE_ADMIN_PASSWORD_FILE: /run/secrets/admin_password

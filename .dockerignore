@@ -1,3 +1,12 @@
+# Secrets and private keys never enter the build context.
+.env
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+compose/secrets
+
 .git
 **/node_modules
 web/dist/*
@@ -7,4 +16,3 @@ test
 compose
 *.db
 *.db-*
-.env
