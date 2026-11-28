@@ -5282,7 +5282,7 @@ export interface components {
             interface?: string | null;
             /** @description Relay mode: accept requests relayed with a giaddr in this network */
             relay?: boolean;
-            /** @description Trusted relays: giaddr outside the network, or UDP source address of a relay that does not send from giaddr. Link selection (82.5) and subnet selection (118) are honored only for these relays. */
+            /** @description Trusted relays: giaddr outside the network, or UDP source address of a relay that sends from a directly served network instead of giaddr. Link selection (82.5) and subnet selection (118) are honored only for these relays. */
             relayAgents?: string[];
             /** @default true */
             ddnsEnabled?: boolean;
