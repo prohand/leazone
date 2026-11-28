@@ -862,7 +862,7 @@ export function ScopeDialog({
                     label="Agents relais supplémentaires"
                     htmlFor={form.relayAgents.length > 0 ? "sc-relays" : undefined}
                     error={err("relayAgents")}
-                    help="Facultatif : adresses de relais (giaddr) hors du réseau de l'étendue. Celles du réseau sont acceptées d'office."
+                    help="Facultatif : relais de confiance. Ajoutez un relais dont l'adresse (giaddr) est hors du réseau de l'étendue, ou qui envoie depuis une autre adresse que giaddr. Les options 82.5 et 118 ne sont suivies que pour ces relais."
                   >
                     <ListInput
                       id="sc-relays"
