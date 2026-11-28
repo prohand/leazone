@@ -85,7 +85,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Password login (first factor) */
+        /**
+         * Password login (first factor)
+         * @description A user name longer than 64 bytes or outside the allowed characters is refused like a wrong password. When the login completes (second factor or forced MFA setup), the session cookie and the CSRF token are replaced: use the `csrfToken` of the returned session state.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -475,7 +478,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** TOTP step-up */
+        /**
+         * TOTP step-up
+         * @description Also accepted during the forced MFA setup (mfa_setup_required): a user whose TOTP is no longer accepted by the policy (passkey only) proves with it his identity before enrolling a passkey.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -486,6 +492,51 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": components["schemas"]["CodeRequest"];
+                };
+            };
+            responses: {
+                /** @description Session elevated */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionState"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/step-up/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Password step-up, only for accounts without a usable passkey or TOTP
+         * @description Before adding a first factor or an API token from a session older than 5 minutes. Accounts that have a factor accepted by the policy get 403 and must use it. A wrong password answers 422 (errors.password), not 401: the session stays valid.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        password: string;
+                    };
                 };
             };
             responses: {
@@ -630,7 +681,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start passkey registration (step-up required once the account has a passkey or TOTP, except during the forced MFA setup) */
+        /**
+         * Start passkey registration (step-up required, see description)
+         * @description Re-verification asked when the session is not elevated: passkey or TOTP once the account has one; the password (POST /auth/step-up/password) for an account without factor; during the forced MFA setup, nothing, except a TOTP code (POST /auth/step-up/totp) when the account has a TOTP that the policy no longer accepts. Passkeys only work at LEAZONE_PUBLIC_URL when it is set, else when the browser address is the RP ID itself.
+         */
         post: {
             parameters: {
                 query?: never;
@@ -831,7 +885,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate a new TOTP secret, not active until confirmed (step-up required once the account has a passkey or TOTP, except during the forced MFA setup) */
+        /** Generate a new TOTP secret, not active until confirmed (step-up required as for POST /me/passkeys/begin) */
         post: {
             parameters: {
                 query?: never;
@@ -1071,7 +1125,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Create an API token, secret returned once (step-up required when the account has a passkey or TOTP) */
+        /** Create an API token, secret returned once (step-up required as for POST /me/passkeys/begin) */
         post: {
             parameters: {
                 query?: never;
@@ -3492,7 +3546,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Pause blocking for N minutes (0 = resume now) (records.write) */
+        /** Pause blocking for N minutes (0 = resume now) (config.write) */
         post: {
             parameters: {
                 query?: never;
@@ -3534,7 +3588,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Download all enabled lists now (on this node; the other node refreshes on its own schedule) (records.write) */
+        /** Download all enabled lists now (on this node; the other node refreshes on its own schedule) (config.write) */
         post: {
             parameters: {
                 query?: never;
@@ -3774,7 +3828,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** Add a domain to the blacklist or whitelist (records.write). The whitelist wins. */
+        /** Add a domain to the blacklist or whitelist (config.write). The whitelist wins. */
         post: {
             parameters: {
                 query?: never;
@@ -3823,7 +3877,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Remove a manual rule (records.write) */
+        /** Remove a manual rule (config.write) */
         delete: {
             parameters: {
                 query?: never;
@@ -4896,8 +4950,13 @@ export interface components {
             sessionIdleMinutes?: number;
             /** @description CIDR list, empty = all */
             uiAllowedNetworks?: string[];
-            /** @description Empty = host name of the public URL or of the request */
+            /** @description Empty = host name of the public URL or of the request. A parent domain needs LEAZONE_PUBLIC_URL: without it, passkeys only work when the browser address is the RP ID itself. */
             webauthnRpId?: string;
+            /**
+             * @description Audit entries older than this are deleted (missing or 0 = 365).
+             * @default 365
+             */
+            auditRetentionDays?: number;
         };
         TlsInfo: {
             /** @enum {string} */
@@ -5673,6 +5732,14 @@ export interface components {
             tables?: {
                 [key: string]: number;
             };
+            /** @description Accounts not restored as they are in the backup (backup of this installation only): deleted here since the backup (restored disabled, API tokens revoked), or local values kept because more recent or more restrictive. */
+            users?: {
+                id?: string;
+                username?: string;
+                /** @description Deleted since the backup: restored disabled, without API tokens */
+                disabled?: boolean;
+                kept?: ("password" | "disabled" | "role")[];
+            }[];
         };
     };
     responses: {

@@ -12,13 +12,13 @@ export type Action =
   | "leases.write" // same right as records.write: reservations
   | "leases.release" // same right as records.write; local to the node (works on a secondary)
   | "cache.flush" // same right as records.write; local to the node
-  | "blocking.refresh" // same right as records.write; downloads the lists on this node only
-  | "config.write" // zones, forwarders, scopes, interfaces, blocking lists/policies, DNSSEC signing
+  | "blocking.refresh" // same right as config.write; downloads the lists on this node only
+  | "config.write" // zones, forwarders, scopes, interfaces, blocking (lists, rules, pause, policies), DNSSEC signing
   | "admin" // users, HA, settings, modules, backup, DNSSEC key export
 
 const matrix: Record<Role, ReadonlySet<Action>> = {
   admin: new Set<Action>(["read", "records.write", "leases.write", "leases.release", "cache.flush", "blocking.refresh", "config.write", "admin"]),
-  operator: new Set<Action>(["read", "records.write", "leases.write", "leases.release", "cache.flush", "blocking.refresh"]),
+  operator: new Set<Action>(["read", "records.write", "leases.write", "leases.release", "cache.flush"]),
   readonly: new Set<Action>(["read"]),
 }
 

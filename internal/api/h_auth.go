@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -115,16 +116,43 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 
 // rp returns the WebAuthn relying party for this request, or a French
 // explanation of why passkeys cannot work.
+//
+// The origin the browser must report never comes from the request alone:
+// with LEAZONE_PUBLIC_URL it is that URL (and the request must use it);
+// without it, the browser address is accepted only when it is the RP ID
+// itself. Otherwise, with a parent RP ID, a page on any sub-domain could
+// get an assertion and replay it here with a matching Host header.
 func (s *Server) rp(r *http.Request) (auth.RP, string) {
 	c := client(r)
-	id := s.auth.Security().WebAuthnRPID
-	if id == "" {
-		id = c.Host
-	}
 	if net.ParseIP(c.Host) != nil || c.Host == "" {
 		return auth.RP{}, "Les passkeys exigent un nom de domaine. Ouvrez l'interface par son nom (ex : https://leazone.mondomaine.lan), pas par une adresse IP."
 	}
-	if c.Host != id && !strings.HasSuffix(c.Host, "."+id) {
+	id := s.auth.Security().WebAuthnRPID
+	if s.cfg.PublicURL != "" {
+		pub := ""
+		if u, err := url.Parse(s.cfg.PublicURL); err == nil {
+			pub = hostOnly(u.Host)
+		}
+		if c.Host != pub {
+			return auth.RP{}, "Les passkeys ne fonctionnent qu'à l'adresse configurée (" + s.cfg.PublicURL +
+				"). Ouvrez l'interface par cette adresse, pas par " + c.Host + "."
+		}
+		if id == "" {
+			id = pub
+		}
+		if pub != id && !strings.HasSuffix(pub, "."+id) {
+			return auth.RP{}, "Le RP ID configuré (" + id + ") ne correspond pas à l'adresse de l'interface (" + pub + ")."
+		}
+		return auth.RP{ID: id, Origins: []string{s.cfg.PublicURL}}, ""
+	}
+	if id == "" {
+		id = c.Host
+	}
+	if c.Host != id {
+		if strings.HasSuffix(c.Host, "."+id) {
+			return auth.RP{}, "Le RP ID configuré (" + id + ") est un domaine parent du nom utilisé dans le navigateur (" + c.Host +
+				") : indiquez l'adresse exacte de l'interface dans LEAZONE_PUBLIC_URL (ex : https://" + c.Host + ") pour utiliser les passkeys."
+		}
 		return auth.RP{}, "Le RP ID configuré (" + id + ") ne correspond pas au nom utilisé dans le navigateur (" + c.Host + ")."
 	}
 	return auth.RP{ID: id, Origins: []string{c.Origin}}, ""
@@ -162,13 +190,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := client(r).IP.String()
 	u, err := s.auth.Authenticate(r.Context(), in.Username, in.Password, ip)
 	if err != nil {
-		var rl *auth.RateLimitError
-		reason := "bad_credentials"
-		if errors.As(err, &rl) {
-			reason = "rate_limited"
-		}
-		s.recordAs(r, strings.ToLower(in.Username), "auth.login.failure", strings.ToLower(in.Username), audit.Failure,
-			map[string]any{"method": "password", "reason": reason})
+		s.recordLoginFailure(r, in.Username, err)
 		s.fail(w, r, err)
 		return
 	}
@@ -179,6 +201,34 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	level := s.auth.LoginLevel(u, m)
 	s.startSession(w, r, u, level, "password")
+}
+
+// rateLimitedAuditWindow: refused logins of a locked client are written
+// once per client and window, with the number of skipped attempts.
+const rateLimitedAuditWindow = 5 * time.Minute
+
+// recordLoginFailure audits a refused password login without letting an
+// anonymous client fill the disk: impossible names are not stored, and
+// attempts refused by the lockout are aggregated per client.
+func (s *Server) recordLoginFailure(r *http.Request, rawName string, err error) {
+	if errors.Is(err, auth.ErrBusy) || errors.Is(err, r.Context().Err()) {
+		return // not an authentication failure
+	}
+	name, valid := auth.LoginName(rawName)
+	details := map[string]any{"method": "password", "reason": "bad_credentials"}
+	if !valid {
+		name = ""
+		details["reason"] = "invalid_username"
+	}
+	e := audit.Entry{Actor: name, IP: client(r).IP.String(), Action: "auth.login.failure", Target: name,
+		Result: audit.Failure, Details: details}
+	var rl *auth.RateLimitError
+	if errors.As(err, &rl) {
+		details["reason"] = "rate_limited"
+		s.audit.RecordThrottled(r.Context(), "login:"+auth.IPKey(e.IP), rateLimitedAuditWindow, e)
+		return
+	}
+	s.audit.Record(r.Context(), e)
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *auth.User, level auth.Level, method string) {
@@ -303,7 +353,7 @@ func (s *Server) passkeyBegin(w http.ResponseWriter, r *http.Request, kind strin
 
 func (s *Server) mfaPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	s.verifyPasskey(w, r, auth.CeremonySecondFactor, func(p *principal) error {
-		return s.completeMFA(r, p, "passkey")
+		return s.completeMFA(w, r, p, "passkey")
 	})
 }
 
@@ -337,10 +387,15 @@ func failureAction(kind string) string {
 	return "auth.mfa.failure"
 }
 
-func (s *Server) completeMFA(r *http.Request, p *principal, method string) error {
-	if err := s.auth.UpgradeSession(r.Context(), p.Session); err != nil {
+// completeMFA ends the login: the pending session is replaced by a new full
+// session (new cookie, new CSRF token, returned by the next writeState).
+func (s *Server) completeMFA(w http.ResponseWriter, r *http.Request, p *principal, method string) error {
+	token, se, err := s.auth.PromoteSession(r.Context(), p.Session, client(r).IP.String(), r.UserAgent())
+	if err != nil {
 		return err
 	}
+	setSessionCookie(w, token)
+	p.Session = se
 	_ = s.auth.GuardReset(r.Context(), auth.MFAKey(p.User.Username))
 	_ = s.auth.TouchLogin(r.Context(), p.User.ID)
 	s.record(r, "auth.login.success", p.User.Username, audit.Success, map[string]any{"method": "password+" + method})
@@ -383,7 +438,7 @@ func (s *Server) mfaTOTP(w http.ResponseWriter, r *http.Request) {
 	if !s.codeCheck(w, r, "auth.mfa.failure", func(c string) error { return s.auth.VerifyTOTP(r.Context(), p.User.ID, c) }) {
 		return
 	}
-	if err := s.completeMFA(r, p, "totp"); err != nil {
+	if err := s.completeMFA(w, r, p, "totp"); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -396,7 +451,7 @@ func (s *Server) mfaRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.record(r, "auth.recovery_code.used", p.User.Username, audit.Success, nil)
-	if err := s.completeMFA(r, p, "recovery"); err != nil {
+	if err := s.completeMFA(w, r, p, "recovery"); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -434,7 +489,15 @@ func (s *Server) stepUpTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := current(r)
-	if !s.codeCheck(w, r, "auth.stepup.failure", func(c string) error { return s.auth.VerifyTOTP(r.Context(), p.User.ID, c) }) {
+	verify := s.auth.VerifyTOTP
+	if p.Session.Level == auth.LevelMFASetup {
+		// Forced setup under a passkey-only policy: the TOTP no longer logs
+		// in, but proves the identity before a passkey replaces it. The
+		// elevation only opens the passkey enrollment (other step-up routes
+		// need a full session).
+		verify = s.auth.VerifyTOTPProof
+	}
+	if !s.codeCheck(w, r, "auth.stepup.failure", func(c string) error { return verify(r.Context(), p.User.ID, c) }) {
 		return
 	}
 	if err := s.auth.Elevate(r.Context(), p.Session); err != nil {
@@ -442,5 +505,47 @@ func (s *Server) stepUpTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.record(r, "auth.stepup.success", p.User.Username, audit.Success, map[string]any{"method": "totp"})
+	s.writeState(w, r, p.User, p.Session)
+}
+
+// stepUpPassword re-verifies an account that has no usable second factor
+// with its password (before it adds a factor or a token from a session
+// that is no longer fresh). Accounts with a factor must use it.
+func (s *Server) stepUpPassword(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSession(w, r) {
+		return
+	}
+	var in struct {
+		Password string `json:"password"`
+	}
+	if err := decode(r, &in); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	p := current(r)
+	m, err := s.auth.MFA(r.Context(), p.User.ID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if s.auth.CanStepUp(m) {
+		problem(w, http.StatusForbidden, TForbidden, "Confirmez votre identité avec votre passkey ou un code TOTP.")
+		return
+	}
+	if _, err := s.auth.Authenticate(r.Context(), p.User.Username, in.Password, client(r).IP.String()); err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			s.record(r, "auth.stepup.failure", p.User.Username, audit.Failure, map[string]any{"method": "password"})
+			// Not a 401: the session itself is fine.
+			s.fail(w, r, auth.ErrValidation{"password": "mot de passe incorrect"})
+			return
+		}
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.auth.Elevate(r.Context(), p.Session); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.record(r, "auth.stepup.success", p.User.Username, audit.Success, map[string]any{"method": "password"})
 	s.writeState(w, r, p.User, p.Session)
 }

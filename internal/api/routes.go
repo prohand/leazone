@@ -27,7 +27,11 @@ func (s *Server) registerRoutes() {
 	s.handle("POST /auth/mfa/recovery", mfaStep, s.mfaRecovery)
 	s.handle("POST /auth/step-up/passkey/begin", need(self), s.stepUpPasskeyBegin)
 	s.handle("POST /auth/step-up/passkey/finish", need(self), s.stepUpPasskeyFinish)
-	s.handle("POST /auth/step-up/totp", need(self), s.stepUpTOTP)
+	// Also during the forced setup: proof of a TOTP that the policy no longer
+	// accepts, before enrolling a passkey.
+	s.handle("POST /auth/step-up/totp", enrolling, s.stepUpTOTP)
+	// Accounts without a usable factor only.
+	s.handle("POST /auth/step-up/password", need(self), s.stepUpPassword)
 
 	// Own account
 	s.handle("GET /me", enrolling, s.getMe)

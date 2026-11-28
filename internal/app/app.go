@@ -98,6 +98,7 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		}
 	}
 	n.audit = audit.New(n.db, nodeID, log)
+	n.audit.SetKey(n.box) // chain keyed with a sub-key of the shared data key
 
 	// Replication journal: on a cluster node, local config writes are not
 	// journaled until this node is elected primary.
@@ -402,6 +403,7 @@ func (n *Node) firstStart(ctx context.Context) error {
 func (n *Node) housekeeping(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
+	n.audit.Maintain(ctx, n.auth.Security().AuditRetentionDays) // verifies and anchors at startup
 	for {
 		select {
 		case <-ctx.Done():
@@ -410,6 +412,8 @@ func (n *Node) housekeeping(ctx context.Context) {
 			if err := n.auth.PurgeSessions(ctx); err != nil {
 				n.log.Warn("session purge", "err", err)
 			}
+			// Audit retention, chain heads in the application log, daily check.
+			n.audit.Maintain(ctx, n.auth.Security().AuditRetentionDays)
 			// Keep the journal bounded; a single node has nobody to ship state to.
 			_ = n.repl.Trim(ctx, 20000)
 			if !n.cfg.Clustered() {

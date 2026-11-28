@@ -155,6 +155,8 @@ vraie IP du client (blocage après échecs, audit, liste d'IP autorisées) sans 
 
 **Sans nginx** : importez votre certificat dans *Paramètres > HTTPS*, ou déposez `cert.pem` + `key.pem`
 dans `/data/tls/` puis redémarrez. Le certificat auto-signé créé au premier démarrage ne sert qu'à l'installation.
+Avec un certificat importé, Leazone envoie l'en-tête HSTS (1 an) : le navigateur n'acceptera plus de certificat
+non valide pour ce nom.
 
 **En HA** : gardez le même nom (et donc les mêmes passkeys) après une bascule. Deux choix :
 
@@ -440,6 +442,7 @@ scrape_configs:
 |---|---|
 | `leazone_dns_queries_total`, `leazone_dns_answers_total{source}` | Requêtes, réponses par origine |
 | `leazone_dns_cache_hits_total`, `leazone_dns_cache_entries` | Cache |
+| `leazone_dns_rate_limited_total` | Requêtes ignorées ou refusées par les limites anti-abus |
 | `leazone_dns_forwarder_up`, `leazone_dns_forwarder_latency_seconds` | État de chaque redirecteur |
 | `leazone_dhcp_scope_addresses`, `…_used_addresses`, `…_active_leases` | Remplissage des étendues |
 | `leazone_blocking_blocked_total`, `leazone_blocking_paused` | Blocage |
@@ -639,14 +642,23 @@ jusqu'à ce que les 3 hôtes soient à jour. Ensuite, passez le témoin à sa pr
 
 ## Comptes et sécurité
 
-- **Rôles** : `admin` (tout), `operator` (baux, réservations, enregistrements DNS), `readonly` (lecture seule).
+- **Rôles** : `admin` (tout), `operator` (baux, réservations, enregistrements DNS ; pas le module de blocage),
+  `readonly` (lecture seule).
 - **MFA** : passkeys (YubiKey, Windows Hello, Touch ID, Face ID, gestionnaires de mots de passe) ou TOTP
   (Google Authenticator, Aegis, Bitwarden…). Règles dans *Paramètres > Sécurité*.
 - **Actions sensibles** (supprimer un utilisateur, changer la sécurité, importer un certificat…) : Leazone redemande
   une passkey ou un code TOTP si la dernière vérification date de plus de 5 minutes.
 - **Blocage** : 5 échecs sur un compte (ou 20 depuis une IP) → blocage 1 min, doublé à chaque nouvel échec (max 1 h).
+  Au plus 4 vérifications de mot de passe en même temps (4 par IP) : au-delà, « réessayez dans quelques secondes ».
+- **Ajouter une passkey, un TOTP ou un jeton** demande une confirmation récente : passkey/TOTP, ou le mot de passe
+  pour un compte qui n'a encore aucun facteur. Après le passage à « passkey seulement », un compte qui n'a qu'un TOTP
+  doit donner un code TOTP avant d'enregistrer sa passkey.
 - **Jetons d'API** (*Mon compte > Jetons*) : `Authorization: Bearer lz_…`. Un jeton « lecture » ne fait que des GET,
-  et un jeton n'a jamais plus de droits que son propriétaire.
+  et un jeton n'a jamais plus de droits que son propriétaire. Il est révoqué si le rôle change, et refusé tant que
+  le propriétaire n'a pas le second facteur exigé par la politique.
+- **Audit** : journal chaîné et signé (clé dérivée de la clé de données, partagée en HA). Conservation réglable dans
+  *Paramètres > Sécurité* (365 jours par défaut). La tête de chaîne est écrite chaque heure dans les journaux du
+  conteneur (`audit chain head`) : gardez ces journaux, ils révèlent une suppression des dernières lignes.
 - **API** : spec OpenAPI sur `/api/v1/openapi.json` (source : [api/openapi.yaml](api/openapi.yaml)).
 
 ### Commandes de secours
@@ -797,7 +809,9 @@ Les noms locaux répondent à tous. Pour les noms externes, ajoutez le réseau d
 - Ouvrez l'interface par un **nom de domaine**, pas par une IP.
 - Le certificat doit être **de confiance** pour le navigateur (pas l'auto-signé).
 - Derrière nginx : `LEAZONE_PUBLIC_URL` doit être exactement l'URL du navigateur, et `LEAZONE_TRUSTED_PROXIES` l'IP de nginx.
-- Si vous avez réglé un RP ID (*Paramètres > Sécurité*), le nom du navigateur doit être ce domaine ou un sous-domaine.
+- Avec `LEAZONE_PUBLIC_URL`, les passkeys ne marchent qu'à cette adresse exacte.
+- Si vous avez réglé un RP ID (*Paramètres > Sécurité*) : sans `LEAZONE_PUBLIC_URL`, le nom du navigateur doit être
+  exactement ce domaine ; pour un sous-domaine (RP ID parent), réglez `LEAZONE_PUBLIC_URL` sur l'adresse de l'interface.
 - Une passkey est liée au nom : si vous changez de nom, il faut en enregistrer une nouvelle.
 
 **Le cluster ne se forme pas (page Cluster : nœud « hors ligne »)**

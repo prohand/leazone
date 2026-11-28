@@ -35,7 +35,7 @@ const text: Record<BlockRuleKind, { hint: string; empty: string; placeholder: st
 export function RulesTab({ kind }: { kind: BlockRuleKind }) {
   const qc = useQueryClient()
   const perms = usePermissions()
-  const canEdit = perms.can("records.write")
+  const canEdit = perms.can("config.write")
   const rules = useQuery(blockRulesQuery)
   // Errors are shown under the form (no global toast on top).
   const add = useAddRule({ silent: true })
@@ -121,7 +121,7 @@ export function RulesTab({ kind }: { kind: BlockRuleKind }) {
 
   return (
     <div className="space-y-4">
-      {perms.allowed("records.write") ? (
+      {perms.allowed("config.write") ? (
         <WriteGuard block>
           <form onSubmit={submit} className="space-y-2 rounded-lg border p-4" data-testid={`rule-form-${kind}`}>
             <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">

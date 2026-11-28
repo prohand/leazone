@@ -86,7 +86,7 @@ export function StatusCard() {
               </p>
             </div>
           </div>
-          {perms.allowed("records.write") && s?.enabled !== false && (
+          {perms.allowed("config.write") && s?.enabled !== false && (
             <WriteGuard className="flex-wrap gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 {s?.paused && (
@@ -125,7 +125,7 @@ export function TopBlockedCard() {
   const add = useAddRule()
   const top = (status.data?.top ?? []).slice(0, 10)
   const allowed = new Set((rules.data?.items ?? []).filter((r) => r.kind === "allow").map((r) => r.domain))
-  const canAllow = perms.can("records.write")
+  const canAllow = perms.can("config.write")
 
   return (
     <Card className="gap-4">

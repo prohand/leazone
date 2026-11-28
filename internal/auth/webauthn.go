@@ -314,11 +314,14 @@ func (s *Service) DeletePasskey(ctx context.Context, userID, id string) error {
 // challenge is single use and bound to a kind and (when known) a user.
 // Anonymous callers can fill it (passwordless login), so it is bounded per
 // owner (client network or user) and globally; when full, the oldest
-// challenges go first.
+// challenges go first. Anonymous challenges and the challenges of a known
+// user have separate quotas: a flood of anonymous requests never evicts
+// the challenge of a user who is logging in or enrolling.
 type ceremonyStore struct {
 	mu      sync.Mutex
-	items   map[string]*list.Element // id -> element of order
-	order   *list.List               // *ceremony, oldest first
+	items   map[string]*list.Element // id -> element of anon or user
+	anon    *list.List               // *ceremony without a user, oldest first
+	user    *list.List               // *ceremony bound to a user, oldest first
 	byOwner map[string][]string      // owner -> ids, oldest first
 }
 
@@ -333,12 +336,20 @@ type ceremony struct {
 
 const (
 	ceremonyTTL      = 5 * time.Minute
-	ceremonyMax      = 10000
+	ceremonyMaxAnon  = 5000
+	ceremonyMaxUser  = 10000
 	ceremonyPerOwner = 20
 )
 
 func newCeremonyStore() *ceremonyStore {
-	return &ceremonyStore{items: map[string]*list.Element{}, order: list.New(), byOwner: map[string][]string{}}
+	return &ceremonyStore{items: map[string]*list.Element{}, anon: list.New(), user: list.New(), byOwner: map[string][]string{}}
+}
+
+func (c *ceremonyStore) listOf(userID string) (*list.List, int) {
+	if userID == "" {
+		return c.anon, ceremonyMaxAnon
+	}
+	return c.user, ceremonyMaxUser
 }
 
 // put stores a challenge for owner ("ip:..." for anonymous callers, else
@@ -348,17 +359,20 @@ func (c *ceremonyStore) put(owner, kind, userID string, sd webauthn.SessionData)
 	defer c.mu.Unlock()
 	now := time.Now()
 	// Same TTL for all: the oldest are the expired ones.
-	for e := c.order.Front(); e != nil && now.After(e.Value.(*ceremony).expires); e = c.order.Front() {
-		c.remove(e.Value.(*ceremony).id)
+	for _, l := range []*list.List{c.anon, c.user} {
+		for e := l.Front(); e != nil && now.After(e.Value.(*ceremony).expires); e = l.Front() {
+			c.remove(e.Value.(*ceremony).id)
+		}
 	}
 	if pending := c.byOwner[owner]; len(pending) >= ceremonyPerOwner {
 		c.remove(pending[0])
 	}
-	if c.order.Len() >= ceremonyMax {
-		c.remove(c.order.Front().Value.(*ceremony).id)
+	l, limit := c.listOf(userID)
+	if l.Len() >= limit {
+		c.remove(l.Front().Value.(*ceremony).id)
 	}
 	id := ids.New()
-	c.items[id] = c.order.PushBack(&ceremony{id: id, owner: owner, kind: kind, userID: userID, data: sd, expires: now.Add(ceremonyTTL)})
+	c.items[id] = l.PushBack(&ceremony{id: id, owner: owner, kind: kind, userID: userID, data: sd, expires: now.Add(ceremonyTTL)})
 	c.byOwner[owner] = append(c.byOwner[owner], id)
 	return id
 }
@@ -370,7 +384,8 @@ func (c *ceremonyStore) remove(id string) *ceremony {
 		return nil
 	}
 	delete(c.items, id)
-	v := c.order.Remove(e).(*ceremony)
+	l, _ := c.listOf(e.Value.(*ceremony).userID)
+	v := l.Remove(e).(*ceremony)
 	owned := c.byOwner[v.owner]
 	for i, x := range owned {
 		if x == id {

@@ -16,7 +16,16 @@ type SecuritySettings struct {
 	SessionIdleMinutes int      `json:"sessionIdleMinutes"`
 	UIAllowedNetworks  []string `json:"uiAllowedNetworks"`
 	WebAuthnRPID       string   `json:"webauthnRpId"`
+	// AuditRetentionDays: audit entries older than this are deleted.
+	AuditRetentionDays int `json:"auditRetentionDays"`
 }
+
+// Audit retention bounds (days).
+const (
+	DefaultAuditRetentionDays = 365
+	MinAuditRetentionDays     = 30
+	MaxAuditRetentionDays     = 3650
+)
 
 // SettingsKey is the settings table key for SecuritySettings.
 const SettingsKey = "security"
@@ -29,6 +38,7 @@ func DefaultSecurity() SecuritySettings {
 		SessionMaxHours:    12,
 		SessionIdleMinutes: 30,
 		UIAllowedNetworks:  []string{},
+		AuditRetentionDays: DefaultAuditRetentionDays,
 	}
 }
 
@@ -46,6 +56,12 @@ func (s *SecuritySettings) Validate() map[string]string {
 	}
 	if s.SessionIdleMinutes < 5 || s.SessionIdleMinutes > 1440 {
 		errs["sessionIdleMinutes"] = "entre 5 et 1440 minutes"
+	}
+	if s.AuditRetentionDays == 0 { // field missing (older clients): default
+		s.AuditRetentionDays = DefaultAuditRetentionDays
+	}
+	if s.AuditRetentionDays < MinAuditRetentionDays || s.AuditRetentionDays > MaxAuditRetentionDays {
+		errs["auditRetentionDays"] = "entre 30 et 3650 jours"
 	}
 	nets := make([]string, 0, len(s.UIAllowedNetworks))
 	for _, n := range s.UIAllowedNetworks {
@@ -90,6 +106,11 @@ func (s SecuritySettings) MFARequired(r Role) bool {
 
 // TOTPAllowed tells whether TOTP is an accepted second factor.
 func (s SecuritySettings) TOTPAllowed() bool { return s.MFAMethods == "passkey_or_totp" }
+
+// FactorUsable tells whether the user has a second factor the policy accepts.
+func (s SecuritySettings) FactorUsable(m MFAStatus) bool {
+	return m.PasskeyCount > 0 || (m.TOTPEnabled && s.TOTPAllowed())
+}
 
 // EnrollableMethods lists methods a user may enroll under this policy.
 func (s SecuritySettings) EnrollableMethods() []string {

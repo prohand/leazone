@@ -1,8 +1,8 @@
 import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Fingerprint, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
+import { Fingerprint, KeyRound, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
 import { api, isApiError, ProblemType, setStepUpHandler } from "@/api/client"
-import { meQuery, qk, systemInfoQuery } from "@/api/queries"
+import { meQuery, qk, sessionQuery, systemInfoQuery } from "@/api/queries"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { errorMessage } from "@/lib/errors"
@@ -63,13 +64,21 @@ function StepUpBody({ onDone }: { onDone: (ok: boolean) => void }) {
   const qc = useQueryClient()
   const me = useQuery(meQuery)
   const info = useQuery(systemInfoQuery)
+  const session = useQuery(sessionQuery)
   const [code, setCode] = React.useState("")
-  const [busy, setBusy] = React.useState<"passkey" | "totp" | null>(null)
+  const [password, setPassword] = React.useState("")
+  const [busy, setBusy] = React.useState<"passkey" | "totp" | "password" | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
+  // Forced MFA setup: the only check asked is a code of a TOTP that the
+  // policy no longer accepts, before a passkey replaces it.
+  const setup = session.data?.state === "mfa_setup_required"
+  const totpUsable = !!me.data?.totpEnabled && me.data?.totpAllowed !== false
   const hasPasskey = (me.data?.passkeyCount ?? 0) > 0 && info.data?.passkeysAvailable !== false && webauthnSupported()
-  // A TOTP enabled before the policy switched to "passkey only" is refused by the server.
-  const hasTotp = !!me.data?.totpEnabled && me.data?.totpAllowed !== false
+  // A TOTP enabled before the policy switched to "passkey only" is refused by the server (except as a proof in the setup).
+  const hasTotp = !!me.data?.totpEnabled && (me.data?.totpAllowed !== false || setup)
+  // No usable second factor at all: the server asks for the password.
+  const usePassword = !setup && (me.data?.passkeyCount ?? 0) === 0 && !totpUsable
 
   const succeed = (s: unknown) => {
     if (s && typeof s === "object" && "state" in s) qc.setQueryData(qk.session, s)
@@ -106,13 +115,33 @@ function StepUpBody({ onDone }: { onDone: (ok: boolean) => void }) {
     }
   }
 
+  const viaPassword = async () => {
+    if (!password) return
+    setBusy("password")
+    setError(null)
+    try {
+      succeed(await api.post("/auth/step-up/password", { body: { password } }))
+    } catch (e) {
+      setPassword("")
+      setError(isApiError(e) && e.is(ProblemType.validation) ? "Mot de passe incorrect." : errorMessage(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
     <>
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2">
           <ShieldCheck className="size-5" /> Confirmez votre identité
         </DialogTitle>
-        <DialogDescription>Cette action est sensible. Vérifiez votre identité pour continuer.</DialogDescription>
+        <DialogDescription>
+          {setup
+            ? "Avant d'ajouter une passkey, entrez un code de l'application TOTP configurée sur votre compte."
+            : usePassword
+              ? "Cette action est sensible. Entrez votre mot de passe pour continuer."
+              : "Cette action est sensible. Vérifiez votre identité pour continuer."}
+        </DialogDescription>
       </DialogHeader>
 
       {me.isPending ? (
@@ -167,7 +196,31 @@ function StepUpBody({ onDone }: { onDone: (ok: boolean) => void }) {
               </Button>
             </form>
           )}
-          {!hasPasskey && !hasTotp && (
+          {usePassword && (
+            <form
+              className="space-y-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                void viaPassword()
+              }}
+            >
+              <Label htmlFor="stepup-password">Mot de passe</Label>
+              <Input
+                id="stepup-password"
+                type="password"
+                autoComplete="current-password"
+                autoFocus
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={busy !== null}
+              />
+              <Button type="submit" className="w-full" disabled={busy !== null || !password}>
+                {busy === "password" ? <Loader2 className="animate-spin" /> : <KeyRound />}
+                Vérifier
+              </Button>
+            </form>
+          )}
+          {!hasPasskey && !hasTotp && !usePassword && (
             <Alert>
               <AlertDescription>
                 Aucune méthode de vérification n'est disponible. Ajoutez une passkey ou une application TOTP dans

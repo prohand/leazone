@@ -28,6 +28,9 @@ type Box struct {
 	mu   sync.RWMutex
 	aead cipher.AEAD
 	key  []byte
+
+	hookMu sync.Mutex
+	hooks  []func(old, new []byte)
 }
 
 // NewBox builds a Box from a 32-byte key.
@@ -46,6 +49,28 @@ func NewBox(key []byte) (*Box, error) {
 	return &Box{aead: aead, key: append([]byte(nil), key...)}, nil
 }
 
+// OnReplace registers fn, called after each change of the key with copies
+// of the old and the new key, outside the Box lock (fn may use the Box).
+// Data derived from the key (the audit chain keyed with SubKey...) can keep
+// what it needs of the old key.
+func (b *Box) OnReplace(fn func(old, new []byte)) {
+	b.hookMu.Lock()
+	b.hooks = append(b.hooks, fn)
+	b.hookMu.Unlock()
+}
+
+func (b *Box) replaced(old, new []byte) {
+	if hmac.Equal(old, new) {
+		return
+	}
+	b.hookMu.Lock()
+	hooks := append([]func(old, new []byte){}, b.hooks...)
+	b.hookMu.Unlock()
+	for _, fn := range hooks {
+		fn(append([]byte(nil), old...), append([]byte(nil), new...))
+	}
+}
+
 // Replace swaps the key.
 func (b *Box) Replace(key []byte) error {
 	nb, err := NewBox(key)
@@ -53,8 +78,10 @@ func (b *Box) Replace(key []byte) error {
 		return err
 	}
 	b.mu.Lock()
+	old := b.key
 	b.aead, b.key = nb.aead, nb.key
 	b.mu.Unlock()
+	b.replaced(old, nb.key)
 	return nil
 }
 
@@ -67,6 +94,7 @@ func (b *Box) BeginReplace() func(key []byte) error {
 	var once sync.Once
 	return func(key []byte) error {
 		var err error
+		var old, cur []byte
 		once.Do(func() {
 			defer b.mu.Unlock()
 			if key == nil {
@@ -74,9 +102,14 @@ func (b *Box) BeginReplace() func(key []byte) error {
 			}
 			var nb *Box
 			if nb, err = NewBox(key); err == nil {
+				old = b.key
 				b.aead, b.key = nb.aead, nb.key
+				cur = nb.key
 			}
 		})
+		if cur != nil {
+			b.replaced(old, cur)
+		}
 		return err
 	}
 }
@@ -129,7 +162,13 @@ func (b *Box) Open(sealed, aad string) ([]byte, error) {
 func (b *Box) SubKey(purpose string) []byte {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	k, err := hkdf.Key(sha256.New, b.key, nil, "leazone:"+purpose, 32)
+	return DeriveKey(b.key, purpose)
+}
+
+// DeriveKey is SubKey for a raw data key (for example the old key given to
+// an OnReplace hook).
+func DeriveKey(key []byte, purpose string) []byte {
+	k, err := hkdf.Key(sha256.New, key, nil, "leazone:"+purpose, 32)
 	if err != nil {
 		panic(err)
 	}

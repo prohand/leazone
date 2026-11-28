@@ -50,10 +50,9 @@ type access struct {
 	levels []auth.Level    // accepted session levels (default: full only)
 	perm   auth.Permission // required permission (ignored when public)
 	stepUp bool            // requires a recent passkey/TOTP re-verification
-	// stepUpMFA requires the step-up from a fully authenticated session whose
-	// user has a factor to step up with. Adding a factor or a token must not
-	// turn a stolen session into lasting access; the forced enrollment
-	// (mfa_setup) and accounts without any factor are not asked.
+	// stepUpMFA requires a recent re-verification to add a factor or a
+	// token: a stolen session must not become lasting access (see
+	// enrollStepUp for the method asked).
 	stepUpMFA bool
 	local     bool // set by handle(): does not change replicated config
 }
@@ -153,14 +152,14 @@ func (s *Server) guard(a access, h http.HandlerFunc) http.Handler {
 				return
 			}
 		}
-		if a.stepUpMFA && p.Session != nil && p.Session.Level == auth.LevelFull && !s.auth.Elevated(p.Session) {
-			m, err := s.auth.MFA(r.Context(), p.User.ID)
+		if a.stepUpMFA && p.Session != nil && !s.auth.Elevated(p.Session) {
+			detail, err := s.enrollStepUp(r, p)
 			if err != nil {
 				s.fail(w, r, err)
 				return
 			}
-			if s.auth.CanStepUp(m) {
-				problem(w, http.StatusForbidden, TStepUp, "Confirmez votre identité avec une passkey ou un code TOTP.")
+			if detail != "" {
+				problem(w, http.StatusForbidden, TStepUp, detail)
 				return
 			}
 		}
@@ -170,6 +169,33 @@ func (s *Server) guard(a access, h http.HandlerFunc) http.Handler {
 		}
 		h(w, r)
 	})
+}
+
+// enrollStepUp tells which re-verification adding a factor or a token needs
+// from a session that is not elevated ("" = none). A stolen session must
+// not be turned into lasting access:
+//   - full session, user with a usable factor: passkey or TOTP;
+//   - full session, user without one: the password (the session is no
+//     longer fresh: a login elevates it for StepUpWindow);
+//   - forced setup (a password typed less than 10 minutes ago): nothing,
+//     unless the user has a TOTP that the policy no longer accepts. The
+//     password alone must not replace it by a passkey: a TOTP code first.
+func (s *Server) enrollStepUp(r *http.Request, p *principal) (string, error) {
+	m, err := s.auth.MFA(r.Context(), p.User.ID)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case p.Session.Level == auth.LevelMFASetup:
+		if m.TOTPEnabled {
+			return "Confirmez votre identité avec un code de votre application TOTP avant d'ajouter une passkey.", nil
+		}
+		return "", nil
+	case s.auth.CanStepUp(m):
+		return "Confirmez votre identité avec une passkey ou un code TOTP.", nil
+	default:
+		return "Confirmez votre identité avec votre mot de passe.", nil
+	}
 }
 
 func containsLevel(ls []auth.Level, l auth.Level) bool {
